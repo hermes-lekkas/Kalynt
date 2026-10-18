@@ -11,11 +11,7 @@ import { getDependencyManager } from '../terminal/dependencyManager'
 export function registerDependencyHandlers(getMainWindow: () => BrowserWindow | null): void {
     const dependencyManager = getDependencyManager()
 
-    // Set main window when available
-    const mainWindow = getMainWindow()
-    if (mainWindow) {
-        dependencyManager.setMainWindow(mainWindow)
-    }
+    dependencyManager.setWindowGetter(getMainWindow)
 
     // Detect package manager in workspace
     ipcMain.handle('deps:detect', async (_event, workspacePath: string) => {

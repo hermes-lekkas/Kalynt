@@ -4,154 +4,34 @@
 
 import path from 'node:path'
 import fs from 'node:fs'
-import { spawn } from 'node:child_process'
 import * as chokidar from 'chokidar'
 import type { BrowserWindow as BrowserWindowType } from 'electron'
 import { nativeHelperService } from '../services/native-helper-service'
-import { binaryManager } from '../services/binary-manager'
-
-// JavaScript search result type
-interface JSSearchResult {
-    file: string
-    line: number
-    content: string
-}
-
-// JavaScript fallback search function - used when ripgrep is unavailable or fails
-async function performJSSearch(
-    searchPath: string,
-    pattern: string,
-    filePattern: string | undefined,
-    maxResults: number
-): Promise<JSSearchResult[]> {
-    const results: JSSearchResult[] = []
-    const searchRegex = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
-    
-    const shouldSearchFile = (filename: string): boolean => {
-        if (filePattern) {
-            const fp = filePattern.replace(/\*/g, '.*')
-            return new RegExp(fp, 'i').test(filename)
-        }
-        return true
-    }
-    
-    const binaryExts = new Set([
-        '.exe', '.dll', '.so', '.dylib', '.bin', '.png', '.jpg', '.jpeg', '.gif',
-        '.bmp', '.ico', '.pdf', '.zip', '.tar', '.gz', '.rar', '.7z', '.mp3',
-        '.mp4', '.avi', '.mov', '.woff', '.woff2', '.ttf', '.otf'
-    ])
-    
-    const searchDirectory = async (dirPath: string, relativePath: string): Promise<void> => {
-        if (results.length >= maxResults) return
-        
-        // Yield to event loop to keep UI responsive
-        await new Promise(resolve => setImmediate(resolve))
-        
-        const entries = await fs.promises.readdir(dirPath, { withFileTypes: true })
-        
-        for (const entry of entries) {
-            if (results.length >= maxResults) break
-            
-            const entryName = entry.name
-            const entryRelativePath = path.join(relativePath, entryName)
-            const entryFullPath = path.join(dirPath, entryName)
-            
-            // Skip hidden dirs, node_modules, etc.
-            if (entry.isDirectory()) {
-                if (entryName.startsWith('.') || entryName === 'node_modules' || entryName === 'dist' || entryName === 'build') {
-                    continue
-                }
-                await searchDirectory(entryFullPath, entryRelativePath)
-            } else if (entry.isFile() && shouldSearchFile(entryName)) {
-                // Skip binary files and very large files
-                const ext = path.extname(entryName).toLowerCase()
-                
-                if (binaryExts.has(ext)) continue
-                
-                try {
-                    const stats = await fs.promises.stat(entryFullPath)
-                    if (stats.size > 5 * 1024 * 1024) continue // Skip files > 5MB
-                    
-                    const content = await fs.promises.readFile(entryFullPath, 'utf-8')
-                    const lines = content.split('\n')
-                    
-                    lines.forEach((line, index) => {
-                        if (results.length >= maxResults) return
-                        if (searchRegex.test(line)) {
-                            results.push({
-                                file: entryRelativePath,
-                                line: index + 1,
-                                content: line.trim().substring(0, 200) // Limit line length
-                            })
-                        }
-                    })
-                } catch {
-                    // Skip files that can't be read
-                }
-            }
-        }
-    }
-    
-    await searchDirectory(searchPath, '')
-    return results
-}
+import { validatePath } from '../utils/pathValidator'
+import { searchFolder } from './fs-search'
+import { copyFolder } from './fs-backup'
 
 // Stateful maps for file watchers
 const watchers = new Map<string, chokidar.FSWatcher>()
 const nativeWatchers = new Set<string>() // Track IDs using native watcher
 
-// Set up native event forwarding
-nativeHelperService.on('file-changed', (params: { path: string, flags: number, watcherId?: string }) => {
-    // SECURITY: Validate that the watcherId exists and is being tracked
-    if (params.watcherId && nativeWatchers.has(params.watcherId)) {
-        // Broadcast specifically to the mapped watcher ID
-        const mainWindow = nativeHelperService.getMainWindow()
-        if (mainWindow) {
-            let event: 'add' | 'unlink' | 'change' | 'unlinkDir' = 'change'
-            // kFSEventStreamEventFlagItemCreated = 0x00000100
-            // kFSEventStreamEventFlagItemRemoved = 0x00000200
-            if (params.flags & 0x00000100) event = 'add'
-            if (params.flags & 0x00000200) event = 'unlink'
+// Folders the explorer never shows and that are far too large to watch.
+const WATCH_IGNORED = /(^|[\\/])(\.[^\\/]*|node_modules|__pycache__)([\\/]|$)/
 
-            mainWindow.webContents.send('fs:change', {
-                id: params.watcherId,
-                event,
-                path: params.path
-            })
-        }
+// macOS FSEvents from the native helper. An event names its watcher when the
+// helper knows it; otherwise every native watcher is told.
+nativeHelperService.on('file-changed', (params: { path: string, flags: number, watcherId?: string }) => {
+    const mainWindow = nativeHelperService.getMainWindow()
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    // kFSEventStreamEventFlagItemCreated = 0x100, ItemRemoved = 0x200
+    let event: 'add' | 'unlink' | 'change' = 'change'
+    if (params.flags & 0x00000100) event = 'add'
+    if (params.flags & 0x00000200) event = 'unlink'
+    const targets = params.watcherId ? (nativeWatchers.has(params.watcherId) ? [params.watcherId] : []) : [...nativeWatchers]
+    for (const id of targets) {
+        mainWindow.webContents.send('fs:change', { id, event, path: params.path })
     }
 })
-
-// Path validation helper - prevents path traversal attacks
-// SECURITY FIX: Use fs.realpathSync to resolve symlinks and prevent symlink-based escapes
-function validatePath(base: string, target: string): string {
-    const resolvedTarget = path.resolve(base, target)
-    const resolvedBase = path.resolve(base)
-
-    // First check: resolved path must be within base (catches ../../../ attacks)
-    if (!resolvedTarget.startsWith(resolvedBase + path.sep) && resolvedTarget !== resolvedBase) {
-        throw new Error('Path traversal detected')
-    }
-
-    // If target exists, also verify its real path (catches symlink attacks)
-    // Note: We only check if the file exists to avoid errors on new file creation
-    if (fs.existsSync(resolvedTarget)) {
-        try {
-            const realTarget = fs.realpathSync(resolvedTarget)
-            const realBase = fs.realpathSync(resolvedBase)
-            if (!realTarget.startsWith(realBase + path.sep) && realTarget !== realBase) {
-                throw new Error('Path traversal via symlink detected')
-            }
-        } catch (e) {
-            // If realpath fails (broken symlink, permission denied), reject to be safe
-            if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
-                throw new Error('Path validation failed: ' + (e as Error).message)
-            }
-        }
-    }
-
-    return resolvedTarget
-}
 
 export function registerFileSystemHandlers(
     ipcMain: Electron.IpcMain,
@@ -353,9 +233,14 @@ export function registerFileSystemHandlers(
                 return { success: false, error: 'No workspace open' }
             }
             const safePath = validatePath(currentWorkspacePath, filePath)
-            await fs.promises.writeFile(safePath, '', 'utf-8')
+            await fs.promises.mkdir(path.dirname(safePath), { recursive: true })
+            // 'wx' fails instead of emptying a file that already exists.
+            await fs.promises.writeFile(safePath, '', { encoding: 'utf-8', flag: 'wx' })
             return { success: true }
         } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+                return { success: false, error: `${path.basename(filePath)} already exists` }
+            }
             return { success: false, error: String(error) }
         }
     })
@@ -404,36 +289,16 @@ export function registerFileSystemHandlers(
             }
             const safeOld = validatePath(currentWorkspacePath, options.oldPath)
             const safeNew = validatePath(currentWorkspacePath, options.newPath)
+            // Never replace something else; a case-only rename points at the same file.
+            if (fs.existsSync(safeNew) && fs.realpathSync(safeNew) !== fs.realpathSync(safeOld)) {
+                return { success: false, error: `${path.basename(safeNew)} already exists there` }
+            }
+            await fs.promises.mkdir(path.dirname(safeNew), { recursive: true })
             await fs.promises.rename(safeOld, safeNew)
             return { success: true }
         } catch (error) {
             return { success: false, error: String(error) }
         }
-    })
-
-    // NEW: Native file change forwarding
-    nativeHelperService.on('file-changed', (params: { path: string, flags: number }) => {
-        const mainWindow = getMainWindow()
-        if (!mainWindow) return
-
-        // Broadcast to all active native watchers
-        // FSEvents flags mapping (simplified)
-        // kFSEventStreamEventFlagItemCreated = 0x00000100
-        // kFSEventStreamEventFlagItemRemoved = 0x00000200
-        // kFSEventStreamEventFlagItemModified = 0x00001000
-        // kFSEventStreamEventFlagItemRenamed = 0x00000800
-
-        let event: 'add' | 'unlink' | 'change' | 'unlinkDir' = 'change'
-        if (params.flags & 0x00000100) event = 'add'
-        if (params.flags & 0x00000200) event = 'unlink'
-
-        nativeWatchers.forEach(id => {
-            mainWindow.webContents.send('fs:change', {
-                id: id,
-                event,
-                path: params.path
-            })
-        })
     })
 
     // Watch directory for changes
@@ -476,12 +341,18 @@ export function registerFileSystemHandlers(
 
             // Fallback to Chokidar
             const watcher = chokidar.watch(safePath, {
-                ignored: /(^|[\\/])\../,
+                // Tested relative to the root so a workspace inside a hidden folder still works.
+                ignored: (candidate: string) => {
+                    const relative = path.relative(safePath, candidate)
+                    return relative !== '' && !relative.startsWith('..') && WATCH_IGNORED.test(relative)
+                },
                 persistent: true,
                 ignoreInitial: true
             })
+            watcher.on('error', err => console.warn(`[FS] Watcher ${options.id} error:`, err))
             watcher.on('all', (event, filePath) => {
-                mainWindow?.webContents.send('fs:change', {
+                if (!mainWindow || mainWindow.isDestroyed()) return
+                mainWindow.webContents.send('fs:change', {
                     id: options.id,
                     event,
                     path: filePath
@@ -526,74 +397,8 @@ export function registerFileSystemHandlers(
                 return { success: false, error: 'No workspace open' }
             }
             
-            const safePath = validatePath(currentWorkspacePath, options.searchPath)
-            const maxResults = options.maxResults || 100
-
-            // PRIORITY: Use Bundled Ripgrep (rg)
-            const rgPath = binaryManager.getRipgrepPath()
-            if (rgPath) {
-                return new Promise((resolve) => {
-                    const args = [
-                        '--json',
-                        '--max-count', maxResults.toString(),
-                        '--ignore-case',
-                        '--fixed-strings',
-                        options.pattern,
-                        safePath
-                    ]
-
-                    const rg = spawn(rgPath, args)
-                    const results: any[] = []
-                    let buffer = ''
-
-                    rg.stdout.on('data', (data) => {
-                        buffer += data.toString()
-                        const lines = buffer.split('\n')
-                        buffer = lines.pop() || ''
-
-                        for (const line of lines) {
-                            try {
-                                const entry = JSON.parse(line)
-                                if (entry.type === 'match') {
-                                    results.push({
-                                        file: path.relative(safePath, entry.data.path.text),
-                                        line: entry.data.line_number,
-                                        content: entry.data.lines.text.trim().substring(0, 200)
-                                    })
-                                }
-                            } catch (_e) {
-                                // Ignore malformed lines
-                            }
-                        }
-                    })
-
-                    rg.on('close', () => {
-                        resolve({ success: true, results, truncated: results.length >= maxResults })
-                    })
-
-                    rg.on('error', async (err) => {
-                        console.error('[FS] Ripgrep error:', err)
-                        // FALLBACK: Use JS search when ripgrep fails
-                        console.log('[FS] Falling back to JavaScript search')
-                        try {
-                            const jsResults = await performJSSearch(safePath, options.pattern, options.filePattern, maxResults)
-                            resolve({ success: true, results: jsResults, truncated: jsResults.length >= maxResults })
-                        } catch (jsError) {
-                            console.error('[FS] JavaScript search also failed:', jsError)
-                            resolve({ success: false, error: `Search failed: ripgrep error (${err.message}), JS fallback also failed (${String(jsError)})` })
-                        }
-                    })
-                })
-            }
-            
-            // Use JavaScript fallback search when ripgrep is not available
-            const results = await performJSSearch(safePath, options.pattern, options.filePattern, maxResults)
-            
-            return {
-                success: true,
-                results,
-                truncated: results.length >= maxResults
-            }
+            const safePath = validatePath(currentWorkspacePath, options.searchPath || currentWorkspacePath)
+            return await searchFolder(safePath, options.pattern, options.filePattern, options.maxResults || 100)
         } catch (error) {
             return { success: false, error: String(error) }
         }
@@ -607,62 +412,25 @@ export function registerFileSystemHandlers(
             if (!currentWorkspace || !mainWindow) return { success: false, error: 'No workspace or window' }
 
             const { canceled, filePath: destPath } = await dialog.showSaveDialog(mainWindow, {
-                title: 'Select Backup Destination',
-                defaultPath: `backup-${path.basename(currentWorkspace)}-${Date.now()}`,
-                buttonLabel: 'Restore'
+                title: 'Back up workspace',
+                defaultPath: `${path.basename(currentWorkspace)}-backup-${new Date().toISOString().slice(0, 10)}`,
+                buttonLabel: 'Back up'
             })
 
             if (canceled || !destPath) return { success: false, canceled: true }
 
-            await fs.promises.mkdir(destPath, { recursive: true })
-
-            const copyRecursive = async (src: string, dest: string) => {
-                // Yield to event loop
-                await new Promise(resolve => setImmediate(resolve))
-                
-                const entries = await fs.promises.readdir(src, { withFileTypes: true })
-                for (const entry of entries) {
-                    const srcPath = path.join(src, entry.name)
-                    const destPath = path.join(dest, entry.name)
-
-                    if (entry.name === 'node_modules' || entry.name === '.git') continue
-
-                    if (entry.isDirectory()) {
-                        await fs.promises.mkdir(destPath, { recursive: true })
-                        await copyRecursive(srcPath, destPath)
-                    } else {
-                        await fs.promises.copyFile(srcPath, destPath)
-                    }
-                }
+            const resolvedDest = path.resolve(destPath)
+            if (resolvedDest === path.resolve(currentWorkspace) || resolvedDest.startsWith(path.resolve(currentWorkspace) + path.sep)) {
+                return { success: false, error: 'Choose a location outside the workspace folder' }
             }
-
-            await copyRecursive(currentWorkspace, destPath)
+            if (fs.existsSync(resolvedDest) && (await fs.promises.readdir(resolvedDest)).length > 0) {
+                return { success: false, error: 'Choose a new or empty folder for the backup' }
+            }
+            await copyFolder(currentWorkspace, resolvedDest)
             return { success: true, path: destPath }
         } catch (error) {
             console.error('[Main] Backup failed:', error)
             return { success: false, error: String(error) }
         }
     })
-
-    // Write file (with optional base64 encoding for binary data)
-    // ipcMain.handle('fs:writeFile', async (_event, filePath: string, data: string, options?: { encoding?: 'utf-8' | 'base64' }) => {
-    //     try {
-    //         // Ensure directory exists
-    //         const dir = path.dirname(filePath)
-    //         await fs.promises.mkdir(dir, { recursive: true })
-
-    //         // Write file
-    //         if (options?.encoding === 'base64') {
-    //             const buffer = Buffer.from(data, 'base64')
-    //             await fs.promises.writeFile(filePath, buffer)
-    //         } else {
-    //             await fs.promises.writeFile(filePath, data, 'utf-8')
-    //         }
-
-    //         return { success: true }
-    //     } catch (error) {
-    //         console.error('[Main] Write file failed:', error)
-    //         return { success: false, error: String(error) }
-    //     }
-    // })
 }

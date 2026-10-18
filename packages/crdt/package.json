@@ -1,6 +1,6 @@
 {
     "name": "@kalynt/crdt",
-    "version": "1.0.5-beta",
+    "version": "2.0.0",
     "author": {
         "name": "Hermes Lekkas",
         "email": "hermeslekkasdev@gmail.com"

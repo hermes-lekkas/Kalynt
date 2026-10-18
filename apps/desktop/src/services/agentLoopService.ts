@@ -910,11 +910,11 @@ Then execute the plan step by step.`
         } else if (this.cloudProvider === 'openai') {
             options.model = 'gpt-4o'
         } else if (this.cloudProvider === 'anthropic') {
-            options.model = 'claude-3-5-sonnet-latest'
-            // Only Anthropic supports extended thinking mode
+            options.model = 'claude-sonnet-5-5'
+            // Adaptive thinking at the model's default effort
             options.thinking = true
         } else if (this.cloudProvider === 'google') {
-            options.model = 'gemini-1.5-pro'
+            options.model = 'gemini-2.5-pro'
         }
 
         const response = await new Promise<string>((resolve, reject) => {

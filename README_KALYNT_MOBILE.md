@@ -21,7 +21,7 @@
   </p>
 
   [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-  [![Platform](https://img.shields.io/badge/platform-Android-green)](https://github.com/Hermes-Lekkas/Kalynt/releases)
+  [![Platform](https://img.shields.io/badge/platform-Android-green)](https://github.com/trisle-app/Kalynt/releases)
   [![F-Droid](https://img.shields.io/badge/F--Droid-Coming%20Soon-1976D2?logo=fdroid)](https://f-droid.org/)
 </div>
 
@@ -176,7 +176,7 @@ kalynt/
 ### Requirements
 - Android 8.0+ (API 26)
 - Local network access (WiFi) for P2P connection
-- Kalynt Desktop v1.0.5+ running on the same network
+- Kalynt Desktop 2.0+ running on the same network (see the pairing status note below)
 
 ### Download Options
 
@@ -184,7 +184,7 @@ kalynt/
 Coming soon to F-Droid for automatic updates and open-source verification.
 
 #### GitHub Releases
-Download the APK from the [Releases Page](https://github.com/Hermes-Lekkas/Kalynt/releases).
+Download the APK from the [Releases Page](https://github.com/trisle-app/Kalynt/releases).
 
 #### Build from Source
 ```bash
@@ -203,11 +203,10 @@ cd apps/mobile/android
 
 ## Setup & Pairing
 
+> **Pairing status (Kalynt Desktop 2.0):** the desktop side of the bridge (pairing server, QR payload, approval dialog and GitHub proxy) is in place, but the desktop app doesn't show a pairing screen yet, so a phone can't be paired from the released app. Agent commands sent from the phone are also not yet connected to the desktop agent. Both are planned for a later desktop release; the steps below describe the intended flow.
+
 ### 1. Enable Mobile Bridge on Desktop
-```bash
-# In Kalynt Desktop, go to Settings → Mobile Companion
-# Click "Generate QR Code" to start the mobile bridge server
-```
+The mobile bridge server starts only when you begin pairing, and every pairing must be approved in a dialog on the desktop.
 
 ### 2. Pair Your Device
 1. Open Kalynt Mobile app

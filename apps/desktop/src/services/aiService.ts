@@ -34,6 +34,13 @@ export interface ImageGenerationResponse {
     error?: string
 }
 
+export interface ChatOptions {
+    model?: string
+    maxTokens?: number
+    temperature?: number
+    thinking?: boolean
+}
+
 export interface StreamCallbacks {
     onToken: (token: string) => void
     onComplete: (content: string) => void
@@ -47,8 +54,6 @@ const PROVIDER_CONFIG = {
         models: {
             chat: 'gpt-4o-mini',
             chatPro: 'gpt-4o',
-            thinking: 'o3-mini',
-            thinkingPro: 'o1',
             image: 'dall-e-3'
         }
     },
@@ -56,18 +61,18 @@ const PROVIDER_CONFIG = {
         baseUrl: 'https://api.anthropic.com/v1',
         contextWindow: 200000,
         models: {
-            chat: 'claude-3-5-haiku-latest',
-            chatPro: 'claude-3-5-sonnet-latest',
-            chatUltra: 'claude-3-opus-latest'
+            chat: 'claude-haiku-5-5',
+            chatPro: 'claude-sonnet-5-5',
+            chatUltra: 'claude-opus-5-5'
         }
     },
     google: {
         baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
         contextWindow: 1000000,
         models: {
-            chat: 'gemini-1.5-flash',
-            chatPro: 'gemini-1.5-pro',
-            chatUltra: 'gemini-2.0-flash'
+            chat: 'gemini-2.5-flash',
+            chatPro: 'gemini-2.5-pro',
+            chatUltra: 'gemini-3.8-flash'
         }
     }
 }
@@ -75,11 +80,45 @@ const PROVIDER_CONFIG = {
 /**
  * Exported model lists per provider for UI dropdowns.
  * Single source of truth — do NOT duplicate these elsewhere.
+ * Providers retire model IDs on a schedule (OpenAI, Anthropic and Google each
+ * publish a deprecations page); check them before each release.
  */
 export const PROVIDER_MODELS: Record<AIProvider, string[]> = {
-    openai: ['gpt-4o', 'gpt-4o-mini', 'o1', 'o3-mini'],
-    anthropic: ['claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest', 'claude-3-opus-latest'],
-    google: ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro']
+    openai: ['gpt-4o', 'gpt-4o-mini'],
+    anthropic: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'],
+    google: ['gemini-2.5-pro', 'gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-3.5-flash-lite']
+}
+
+/** Anthropic models that accept server-side refusal fallbacks (`fallbacks: "default"`). */
+const ANTHROPIC_FALLBACK_MODELS = new Set(['claude-opus-5-5', 'claude-sonnet-5-5'])
+
+/**
+ * Current Claude and Gemini models think before answering, and those tokens
+ * count against the output limit, so a small limit can leave no room for the
+ * answer itself.
+ */
+const MIN_OUTPUT_TOKENS_WITH_THINKING = 16000
+
+/** GPT-4-era chat models take `temperature`; reasoning models reject it. */
+const openAIAcceptsTemperature = (model: string) => /^gpt-(4|3\.5)/.test(model)
+
+/**
+ * Reads a server-sent-events body line by line. Network chunks can end in the
+ * middle of a line, so the unfinished tail is kept for the next chunk.
+ */
+async function readSSE(reader: ReadableStreamDefaultReader<Uint8Array>, onData: (data: string) => void): Promise<void> {
+    const decoder = new TextDecoder()
+    let buffer = ''
+    for (;;) {
+        const { done, value } = await reader.read()
+        buffer += done ? decoder.decode() : decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = done ? '' : lines.pop() ?? ''
+        for (const line of lines) {
+            if (line.startsWith('data: ')) onData(line.slice(6).trim())
+        }
+        if (done) return
+    }
 }
 
 class AIService {
@@ -114,18 +153,29 @@ class AIService {
         return Object.keys(this.apiKeys).filter(k => this.apiKeys[k]) as AIProvider[]
     }
 
+    /**
+     * Checks a key against the provider's model list: free, and independent of
+     * which model IDs are still being served.
+     */
     async verifyKey(provider: AIProvider, key: string): Promise<boolean> {
         try {
-            const messages: AIMessage[] = [{ role: 'user', content: 'Test' }]
-            const options = { maxTokens: 1 }
-
+            let response: Response
             if (provider === 'openai') {
-                await this.chatOpenAI(messages, key, options)
+                response = await fetch(`${PROVIDER_CONFIG.openai.baseUrl}/models`, {
+                    headers: { 'Authorization': `Bearer ${key}` }
+                })
             } else if (provider === 'anthropic') {
-                await this.chatAnthropic(messages, key, options)
-            } else if (provider === 'google') {
-                await this.chatGoogle(messages, key, options)
+                response = await fetch(`${PROVIDER_CONFIG.anthropic.baseUrl}/models?limit=1`, {
+                    headers: {
+                        'x-api-key': key,
+                        'anthropic-version': '2023-06-01',
+                        'anthropic-dangerous-direct-browser-access': 'true'
+                    }
+                })
+            } else {
+                response = await fetch(`${PROVIDER_CONFIG.google.baseUrl}/models?pageSize=1&key=${encodeURIComponent(key)}`)
             }
+            if (!response.ok) throw new Error(`${provider} rejected the key: ${response.status}`)
             return true
         } catch (error) {
             logger.ai.warn(`API Key verification failed for ${provider}`, error)
@@ -136,7 +186,7 @@ class AIService {
     async chat(
         messages: AIMessage[],
         provider: AIProvider = 'openai',
-        options?: { model?: string; maxTokens?: number; temperature?: number; thinking?: boolean }
+        options?: ChatOptions
     ): Promise<AIResponse> {
         const key = this.apiKeys[provider]
         if (!key) {
@@ -180,7 +230,7 @@ class AIService {
         messages: AIMessage[],
         callbacks: StreamCallbacks,
         provider: AIProvider = 'openai',
-        options?: { model?: string; maxTokens?: number; temperature?: number; thinking?: boolean }
+        options?: ChatOptions
     ): Promise<string> {
         const key = this.apiKeys[provider]
         if (!key) {
@@ -229,25 +279,35 @@ class AIService {
         }
     }
 
+    // ---- OpenAI ------------------------------------------------------------
+
+    private openAIBody(messages: AIMessage[], options: ChatOptions | undefined, stream: boolean) {
+        const model = options?.model || PROVIDER_CONFIG.openai.models.chat
+        // max_completion_tokens works on every chat model; reasoning models reject max_tokens.
+        const body: Record<string, unknown> = {
+            model,
+            messages: messages.map(m => ({ role: m.role, content: m.content })),
+            max_completion_tokens: options?.maxTokens || 2048
+        }
+        if (openAIAcceptsTemperature(model)) body.temperature = options?.temperature ?? 0.7
+        else if (options?.thinking) body.reasoning_effort = 'high'
+        if (stream) body.stream = true
+        return { model, body }
+    }
+
     private async streamOpenAI(
         messages: AIMessage[],
         apiKey: string,
         callbacks: StreamCallbacks,
         signal: AbortSignal,
-        options?: { model?: string; maxTokens?: number; temperature?: number }
+        options?: ChatOptions
     ): Promise<string> {
-        const model = options?.model || PROVIDER_CONFIG.openai.models.chat
+        const { body } = this.openAIBody(messages, options, true)
 
-        // Create a timeout controller for fetch timeout
+        // Give up if the server sends nothing for 60 seconds.
         const timeoutController = new AbortController()
-        const timeoutId = setTimeout(() => {
-            timeoutController.abort()
-        }, 60000) // 60 second timeout
-
-        // Combine external signal with timeout
-        const handleAbort = () => {
-            timeoutController.abort()
-        }
+        const timeoutId = setTimeout(() => timeoutController.abort(), 60000)
+        const handleAbort = () => timeoutController.abort()
         signal.addEventListener('abort', handleAbort)
 
         try {
@@ -257,13 +317,7 @@ class AIService {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${apiKey}`
                 },
-                body: JSON.stringify({
-                    model,
-                    messages: messages.map(m => ({ role: m.role, content: m.content })),
-                    max_tokens: options?.maxTokens || 2048,
-                    temperature: options?.temperature ?? 0.7,
-                    stream: true
-                }),
+                body: JSON.stringify(body),
                 signal: timeoutController.signal
             })
 
@@ -275,19 +329,19 @@ class AIService {
             const reader = response.body?.getReader()
             if (!reader) throw new Error('No response body')
 
-            const decoder = new TextDecoder()
             let fullContent = ''
-            let iterations = 0
-
-            while (iterations++ < 1000000) {
-                const { done, value } = await reader.read()
-                if (done) break
-
-                const chunk = decoder.decode(value, { stream: true })
-                fullContent += this.processOpenAILines(chunk, callbacks)
-            }
-
-            if (iterations >= 1000000) throw new Error('Streaming timeout')
+            await readSSE(reader, data => {
+                if (data === '[DONE]') return
+                try {
+                    const token = JSON.parse(data).choices?.[0]?.delta?.content || ''
+                    if (token) {
+                        fullContent += token
+                        callbacks.onToken(token)
+                    }
+                } catch (error) {
+                    logger.ai.debug('Failed to parse OpenAI stream chunk', { data, error })
+                }
+            })
             return fullContent
         } finally {
             clearTimeout(timeoutId)
@@ -295,24 +349,71 @@ class AIService {
         }
     }
 
-    private processOpenAILines(chunk: string, callbacks: StreamCallbacks): string {
-        let content = ''
-        const lines = chunk.split('\n').filter(line => line.startsWith('data: '))
-        for (const line of lines) {
-            const data = line.slice(6)
-            if (data === '[DONE]') continue
-            try {
-                const json = JSON.parse(data)
-                const token = json.choices[0]?.delta?.content || ''
-                if (token) {
-                    content += token
-                    callbacks.onToken(token)
-                }
-            } catch (e) {
-                console.debug('[AI] Malformed JSON in stream:', e)
-            }
+    private async chatOpenAI(messages: AIMessage[], apiKey: string, options?: ChatOptions): Promise<AIResponse> {
+        const { model, body } = this.openAIBody(messages, options, false)
+
+        const response = await fetch(`${PROVIDER_CONFIG.openai.baseUrl}/chat/completions`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`
+            },
+            body: JSON.stringify(body)
+        })
+
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({}))
+            throw new Error(error.error?.message || `OpenAI API error: ${response.status}`)
         }
-        return content
+
+        const data = await response.json()
+        return {
+            content: data.choices?.[0]?.message?.content || '',
+            provider: 'openai',
+            model,
+            usage: data.usage ? {
+                promptTokens: data.usage.prompt_tokens,
+                completionTokens: data.usage.completion_tokens,
+                totalTokens: data.usage.total_tokens
+            } : undefined
+        }
+    }
+
+    // ---- Anthropic ---------------------------------------------------------
+
+    /**
+     * Current Claude models always think (adaptively), so the response can
+     * start with thinking blocks and `max_tokens` must leave room for them.
+     * Small requested limits mean "a short, quick answer", so effort drops to low.
+     */
+    private anthropicRequest(messages: AIMessage[], apiKey: string, options: ChatOptions | undefined, stream: boolean) {
+        const model = options?.model || PROVIDER_CONFIG.anthropic.models.chat
+        const systemMsg = messages.find(m => m.role === 'system')
+        const requested = options?.maxTokens || 2048
+
+        const body: Record<string, unknown> = {
+            model,
+            max_tokens: Math.max(requested, MIN_OUTPUT_TOKENS_WITH_THINKING),
+            system: systemMsg?.content || 'You are a helpful AI assistant.',
+            messages: messages.filter(m => m.role !== 'system').map(m => ({ role: m.role, content: m.content }))
+        }
+        if (options?.thinking) body.thinking = { type: 'adaptive' }
+        else if (requested < 4096) body.output_config = { effort: 'low' }
+        if (stream) body.stream = true
+
+        const headers: Record<string, string> = {
+            'Content-Type': 'application/json',
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true'
+        }
+        // If a safety classifier declines the request, Anthropic re-runs it on
+        // the model it recommends for that case instead of returning a refusal.
+        if (ANTHROPIC_FALLBACK_MODELS.has(model)) {
+            body.fallbacks = 'default'
+            headers['anthropic-beta'] = 'server-side-fallback-2026-07-01'
+        }
+        return { model, body, headers }
     }
 
     private async streamAnthropic(
@@ -320,38 +421,14 @@ class AIService {
         apiKey: string,
         callbacks: StreamCallbacks,
         signal: AbortSignal,
-        options?: { model?: string; maxTokens?: number; temperature?: number; thinking?: boolean }
+        options?: ChatOptions
     ): Promise<string> {
-        const model = options?.model || PROVIDER_CONFIG.anthropic.models.chat
-        const systemMsg = messages.find(m => m.role === 'system')
-        const chatMessages = messages.filter(m => m.role !== 'system')
-
-        const requestBody: any = {
-            model,
-            max_tokens: options?.maxTokens || 2048,
-            system: systemMsg?.content || 'You are a helpful AI assistant.',
-            messages: chatMessages.map(m => ({ role: m.role, content: m.content })),
-            stream: true
-        }
-
-        if (options?.thinking) {
-            requestBody.thinking = {
-                type: 'enabled',
-                budget_tokens: Math.min(options.maxTokens || 2048, 16000) // Thinking budget
-            }
-            // Anthropic requires max_tokens to be larger than thinking budget
-            requestBody.max_tokens = Math.max(requestBody.max_tokens, (requestBody.thinking.budget_tokens || 0) + 1024)
-        }
+        const { body, headers } = this.anthropicRequest(messages, apiKey, options, true)
 
         const response = await fetch(`${PROVIDER_CONFIG.anthropic.baseUrl}/messages`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'x-api-key': apiKey,
-                'anthropic-version': '2023-06-01',
-                'anthropic-dangerous-direct-browser-access': 'true'
-            },
-            body: JSON.stringify(requestBody),
+            headers,
+            body: JSON.stringify(body),
             signal
         })
 
@@ -363,51 +440,81 @@ class AIService {
         const reader = response.body?.getReader()
         if (!reader) throw new Error('No response body')
 
-        const decoder = new TextDecoder()
         let fullContent = ''
-        let iterations = 0
-
-        while (iterations++ < 1000000) {
-            const { done, value } = await reader.read()
-            if (done) break
-
-            const chunk = decoder.decode(value, { stream: true })
-            fullContent += this.processAnthropicLines(chunk, callbacks)
-        }
-
-        if (iterations >= 1000000) throw new Error('Streaming timeout')
+        let refused = false
+        await readSSE(reader, data => {
+            try {
+                const json = JSON.parse(data)
+                if (json.type === 'content_block_delta' && json.delta?.type === 'text_delta') {
+                    const token = json.delta.text || ''
+                    if (token) {
+                        fullContent += token
+                        callbacks.onToken(token)
+                    }
+                } else if (json.type === 'message_delta' && json.delta?.stop_reason === 'refusal') {
+                    refused = true
+                } else if (json.type === 'error') {
+                    throw new Error(json.error?.message || 'Anthropic stream error')
+                }
+            } catch (error) {
+                if (error instanceof SyntaxError) logger.ai.debug('Failed to parse Anthropic stream chunk', { data, error })
+                else throw error
+            }
+        })
+        if (refused) throw new Error('Claude declined this request. Rephrase it or choose another model.')
         return fullContent
     }
 
-    private processAnthropicLines(chunk: string, callbacks: StreamCallbacks): string {
-        let content = ''
-        const lines = chunk.split('\n').filter(line => line.startsWith('data: '))
-        for (const line of lines) {
-            try {
-                const json = JSON.parse(line.slice(6))
-                if (json.type === 'content_block_delta') {
-                    const token = json.delta?.text || ''
-                    const thought = json.delta?.thought || ''
+    private async chatAnthropic(messages: AIMessage[], apiKey: string, options?: ChatOptions): Promise<AIResponse> {
+        const { model, body, headers } = this.anthropicRequest(messages, apiKey, options, false)
 
-                    if (thought) {
-                        // For the UI to detect thinking, we wrap it in tags
-                        // Since multiple deltas come, we only add tags if it's the first time
-                        // or we just stream the raw tokens if the UI handles partial tags
-                        // Actually, the easiest is to just send wrapped tokens
-                        const wrappedThought = `<thinking>${thought}</thinking>`
-                        callbacks.onToken(wrappedThought)
-                    }
+        const response = await fetch(`${PROVIDER_CONFIG.anthropic.baseUrl}/messages`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body)
+        })
 
-                    if (token) {
-                        content += token
-                        callbacks.onToken(token)
-                    }
-                }
-            } catch (error) {
-                logger.ai.debug('Failed to parse Anthropic stream chunk', { line, error })
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({}))
+            throw new Error(error.error?.message || `Anthropic API error: ${response.status}`)
+        }
+
+        const data = await response.json()
+        if (data.stop_reason === 'refusal') throw new Error('Claude declined this request. Rephrase it or choose another model.')
+        // Read text blocks by type: thinking (and fallback marker) blocks can come first.
+        const blocks: Array<{ type: string; text?: string }> = Array.isArray(data.content) ? data.content : []
+        return {
+            content: blocks.filter(b => b.type === 'text').map(b => b.text ?? '').join(''),
+            provider: 'anthropic',
+            model: data.model || model,
+            usage: data.usage ? {
+                promptTokens: data.usage.input_tokens,
+                completionTokens: data.usage.output_tokens,
+                totalTokens: data.usage.input_tokens + data.usage.output_tokens
+            } : undefined
+        }
+    }
+
+    // ---- Google ------------------------------------------------------------
+
+    private googleBody(messages: AIMessage[], options: ChatOptions | undefined) {
+        const systemInstruction = messages.find(m => m.role === 'system')
+        return {
+            contents: messages
+                .filter(m => m.role !== 'system')
+                .map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })),
+            systemInstruction: systemInstruction ? { parts: [{ text: systemInstruction.content }] } : undefined,
+            generationConfig: {
+                // Gemini 2.5 and later think too, within the same output limit.
+                maxOutputTokens: Math.max(options?.maxTokens || 2048, MIN_OUTPUT_TOKENS_WITH_THINKING),
+                temperature: options?.temperature ?? 0.7
             }
         }
-        return content
+    }
+
+    /** Answer text of a Gemini candidate, skipping thought-summary parts. */
+    private static googleText(json: { candidates?: Array<{ content?: { parts?: Array<{ text?: string; thought?: boolean }> } }> }): string {
+        return (json.candidates?.[0]?.content?.parts ?? []).filter(p => !p.thought).map(p => p.text ?? '').join('')
     }
 
     private async streamGoogle(
@@ -415,32 +522,16 @@ class AIService {
         apiKey: string,
         callbacks: StreamCallbacks,
         signal: AbortSignal,
-        options?: { model?: string; maxTokens?: number; temperature?: number }
+        options?: ChatOptions
     ): Promise<string> {
         const model = options?.model || PROVIDER_CONFIG.google.models.chat
-
-        const contents = messages
-            .filter(m => m.role !== 'system')
-            .map(m => ({
-                role: m.role === 'assistant' ? 'model' : 'user',
-                parts: [{ text: m.content }]
-            }))
-
-        const systemInstruction = messages.find(m => m.role === 'system')
 
         const response = await fetch(
             `${PROVIDER_CONFIG.google.baseUrl}/models/${model}:streamGenerateContent?key=${apiKey}&alt=sse`,
             {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    contents,
-                    systemInstruction: systemInstruction ? { parts: [{ text: systemInstruction.content }] } : undefined,
-                    generationConfig: {
-                        maxOutputTokens: options?.maxTokens || 2048,
-                        temperature: options?.temperature ?? 0.7
-                    }
-                }),
+                body: JSON.stringify(this.googleBody(messages, options)),
                 signal
             }
         )
@@ -451,165 +542,32 @@ class AIService {
         }
 
         const reader = response.body?.getReader()
-        const decoder = new TextDecoder()
-        let fullContent = ''
-
         if (!reader) throw new Error('No response body')
 
-        let maxIterations = 1000000
-        while (maxIterations-- > 0) {
-            const { done, value } = await reader.read()
-            if (done) break
-
-            const chunk = decoder.decode(value, { stream: true })
-            const lines = chunk.split('\n').filter(line => line.startsWith('data: '))
-
-            for (const line of lines) {
-                try {
-                    const json = JSON.parse(line.slice(6))
-                    const token = json.candidates?.[0]?.content?.parts?.[0]?.text || ''
-                    if (token) {
-                        fullContent += token
-                        callbacks.onToken(token)
-                    }
-                } catch (error) {
-                    logger.ai.debug('Failed to parse Google stream chunk', { line, error })
+        let fullContent = ''
+        await readSSE(reader, data => {
+            try {
+                const token = AIService.googleText(JSON.parse(data))
+                if (token) {
+                    fullContent += token
+                    callbacks.onToken(token)
                 }
+            } catch (error) {
+                logger.ai.debug('Failed to parse Google stream chunk', { data, error })
             }
-        }
-        if (maxIterations <= 0) {
-            throw new Error('Streaming timeout: Max iterations reached')
-        }
-
+        })
         return fullContent
     }
 
-    private async chatOpenAI(
-        messages: AIMessage[],
-        apiKey: string,
-        options?: { model?: string; maxTokens?: number; temperature?: number; thinking?: boolean }
-    ): Promise<AIResponse> {
-        const model = options?.model || PROVIDER_CONFIG.openai.models.chat
-
-        const requestBody: any = {
-            model,
-            messages: messages.map(m => ({ role: m.role, content: m.content })),
-            max_tokens: options?.maxTokens || 2048,
-            temperature: options?.temperature ?? 0.7
-        }
-
-        if (options?.thinking && (model.includes('o1') || model.includes('o3'))) {
-            requestBody.reasoning_effort = 'high'
-        }
-
-        const response = await fetch(`${PROVIDER_CONFIG.openai.baseUrl}/chat/completions`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`
-            },
-            body: JSON.stringify(requestBody)
-        })
-
-        if (!response.ok) {
-            const error = await response.json().catch(() => ({}))
-            throw new Error(error.error?.message || `OpenAI API error: ${response.status}`)
-        }
-
-        const data = await response.json()
-        return {
-            content: data.choices[0]?.message?.content || '',
-            provider: 'openai',
-            model,
-            usage: data.usage ? {
-                promptTokens: data.usage.prompt_tokens,
-                completionTokens: data.usage.completion_tokens,
-                totalTokens: data.usage.total_tokens
-            } : undefined
-        }
-    }
-
-    private async chatAnthropic(
-        messages: AIMessage[],
-        apiKey: string,
-        options?: { model?: string; maxTokens?: number; temperature?: number; thinking?: boolean }
-    ): Promise<AIResponse> {
-        const model = options?.model || PROVIDER_CONFIG.anthropic.models.chat
-        const systemMsg = messages.find(m => m.role === 'system')
-        const chatMessages = messages.filter(m => m.role !== 'system')
-
-        const requestBody: any = {
-            model,
-            max_tokens: options?.maxTokens || 2048,
-            system: systemMsg?.content || 'You are a helpful AI assistant.',
-            messages: chatMessages.map(m => ({ role: m.role, content: m.content }))
-        }
-
-        if (options?.thinking) {
-            requestBody.thinking = {
-                type: 'enabled',
-                budget_tokens: 1024
-            }
-        }
-
-        const response = await fetch(`${PROVIDER_CONFIG.anthropic.baseUrl}/messages`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'x-api-key': apiKey,
-                'anthropic-version': '2023-06-01',
-                'anthropic-dangerous-direct-browser-access': 'true'
-            },
-            body: JSON.stringify(requestBody)
-        })
-
-        if (!response.ok) {
-            const error = await response.json().catch(() => ({}))
-            throw new Error(error.error?.message || `Anthropic API error: ${response.status}`)
-        }
-
-        const data = await response.json()
-        return {
-            content: data.content[0]?.text || '',
-            provider: 'anthropic',
-            model,
-            usage: data.usage ? {
-                promptTokens: data.usage.input_tokens,
-                completionTokens: data.usage.output_tokens,
-                totalTokens: data.usage.input_tokens + data.usage.output_tokens
-            } : undefined
-        }
-    }
-
-    private async chatGoogle(
-        messages: AIMessage[],
-        apiKey: string,
-        options?: { model?: string; maxTokens?: number; temperature?: number }
-    ): Promise<AIResponse> {
+    private async chatGoogle(messages: AIMessage[], apiKey: string, options?: ChatOptions): Promise<AIResponse> {
         const model = options?.model || PROVIDER_CONFIG.google.models.chat
-
-        const contents = messages
-            .filter(m => m.role !== 'system')
-            .map(m => ({
-                role: m.role === 'assistant' ? 'model' : 'user',
-                parts: [{ text: m.content }]
-            }))
-
-        const systemInstruction = messages.find(m => m.role === 'system')
 
         const response = await fetch(
             `${PROVIDER_CONFIG.google.baseUrl}/models/${model}:generateContent?key=${apiKey}`,
             {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    contents,
-                    systemInstruction: systemInstruction ? { parts: [{ text: systemInstruction.content }] } : undefined,
-                    generationConfig: {
-                        maxOutputTokens: options?.maxTokens || 2048,
-                        temperature: options?.temperature ?? 0.7
-                    }
-                })
+                body: JSON.stringify(this.googleBody(messages, options))
             }
         )
 
@@ -620,7 +578,7 @@ class AIService {
 
         const data = await response.json()
         return {
-            content: data.candidates[0]?.content?.parts[0]?.text || '',
+            content: AIService.googleText(data),
             provider: 'google',
             model,
             usage: data.usageMetadata ? {

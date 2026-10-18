@@ -1,25 +1,25 @@
-﻿/*
+/*
  * SPDX-License-Identifier: AGPL-3.0-only
+ *
+ * Last-resort boundary around the whole app. Regions use RegionBoundary so a
+ * single failure rarely reaches this screen.
  */
-import { Component, ReactNode, ErrorInfo } from 'react'
+import { Component, type ErrorInfo, type ReactNode } from 'react'
+import { LOGO_URL } from './shell/brand'
 
 interface Props {
     children: ReactNode
 }
 
 interface State {
-    hasError: boolean
-    error?: Error
+    error: Error | null
 }
 
 export class ErrorBoundary extends Component<Props, State> {
-    constructor(props: Props) {
-        super(props)
-        this.state = { hasError: false }
-    }
+    state: State = { error: null }
 
     static getDerivedStateFromError(error: Error): State {
-        return { hasError: true, error }
+        return { error }
     }
 
     componentDidCatch(error: Error, errorInfo: ErrorInfo) {
@@ -27,49 +27,54 @@ export class ErrorBoundary extends Component<Props, State> {
     }
 
     render() {
-        if (this.state.hasError) {
-            return (
-                <div style={{
-                    padding: '2rem',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    height: '100vh',
-                    backgroundColor: '#111827',
-                    color: '#e5e7eb',
-                    fontFamily: 'system-ui, -apple-system, sans-serif'
-                }}>
-                    <h1 style={{ fontSize: '1.5rem', marginBottom: '1rem', color: '#ef4444' }}>
-                        âŒ Something went wrong
-                    </h1>
-                    <div style={{
-                        backgroundColor: '#1f2937',
-                        padding: '1rem',
-                        borderRadius: '0.5rem',
-                        maxWidth: '600px',
-                        overflow: 'auto',
-                        marginBottom: '1rem'
-                    }}>
-                        <code style={{ fontFamily: 'monospace' }}>{this.state.error?.message}</code>
-                    </div>
-                    <button
-                        onClick={() => window.location.reload()}
-                        style={{
-                            padding: '0.5rem 1rem',
-                            backgroundColor: '#3b82f6',
-                            color: 'white',
-                            border: 'none',
-                            borderRadius: '0.25rem',
-                            cursor: 'pointer'
-                        }}
-                    >
-                        Reload App
-                    </button>
-                </div>
-            )
-        }
+        const { error } = this.state
+        if (!error) return this.props.children
 
-        return this.props.children
+        return (
+            <div className="app-crash" role="alert">
+                <img src={LOGO_URL} alt="" width={40} height={40} />
+                <h1>Kalynt hit an unexpected error</h1>
+                <p>Your files are safe on disk. Reload the window to continue; unsaved editor changes since the last save may be lost.</p>
+                <pre className="selectable">{error.message}</pre>
+                <button type="button" onClick={() => window.location.reload()}>Reload window</button>
+                <style>{`
+                    .app-crash {
+                        height: 100%;
+                        display: flex;
+                        flex-direction: column;
+                        align-items: center;
+                        justify-content: center;
+                        gap: 12px;
+                        padding: 32px;
+                        text-align: center;
+                        background: var(--surface, #1a1920);
+                        color: var(--text, #eceaf2);
+                        font-family: var(--font-ui, system-ui, sans-serif);
+                    }
+                    .app-crash h1 { font-size: 18px; font-weight: 600; }
+                    .app-crash p { max-width: 52ch; color: var(--text-2, #b0adbd); line-height: 1.6; }
+                    .app-crash pre {
+                        max-width: 640px;
+                        max-height: 160px;
+                        overflow: auto;
+                        padding: 12px 16px;
+                        border-radius: 8px;
+                        background: var(--bg, #15141a);
+                        border: 1px solid var(--line, #2b2a33);
+                        color: var(--text-3, #8a8699);
+                        font-size: 12px;
+                        text-align: left;
+                    }
+                    .app-crash button {
+                        height: 30px;
+                        padding: 0 14px;
+                        border-radius: 6px;
+                        background: var(--primary, #eceaf2);
+                        color: var(--on-primary, #15141a);
+                        font-weight: 500;
+                    }
+                `}</style>
+            </div>
+        )
     }
 }

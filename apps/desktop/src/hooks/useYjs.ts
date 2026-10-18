@@ -1,4 +1,4 @@
-﻿/*
+/*
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
@@ -308,6 +308,8 @@ export function useYDoc(spaceId: string | null) {
             // Track sync state
             const persistence = persistences.get(spaceId)
             if (persistence) {
+                // Later subscribers miss the one-time event, so read the current state too.
+                if (persistence.synced && isMountedRef.current) setSynced(true)
                 persistence.on('synced', () => {
                     if (isMountedRef.current) setSynced(true)
                 })

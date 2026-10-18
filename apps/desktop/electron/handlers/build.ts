@@ -1,681 +1,129 @@
-﻿/*
+/*
  * SPDX-License-Identifier: AGPL-3.0-only
+ *
+ * Runs build tasks and streams their output and problems to the Build panel.
  */
-import { ipcMain, BrowserWindow } from 'electron';
-import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
-import * as fs from 'fs';
-import * as path from 'path';
-import {
-  Task,
-  TasksConfiguration,
-  TaskExecution,
-  Problem,
-  ProblemMatcher,
-} from '../../src/types/tasks';
+import { ipcMain, BrowserWindow } from 'electron'
+import { spawn, type ChildProcess } from 'child_process'
+import * as path from 'path'
+import type { Task, TaskExecution } from '../../src/types/tasks'
+import { getAllTasks, parseProblems, resolveMatcher, substituteVariables } from './build-tasks'
+import { killProcessTree, wrapWindowsCommand } from './code-exec/binaries'
+import { sendToWindow } from '../utils/window'
 
 interface RunningTask {
-  process: ChildProcessWithoutNullStreams;
-  execution: TaskExecution;
+    process: ChildProcess
+    execution: TaskExecution
 }
 
-class BuildTaskManager {
-  private runningTasks: Map<string, RunningTask> = new Map();
-  private taskIdCounter = 0;
+const runningTasks = new Map<string, RunningTask>()
+let taskCounter = 0
 
-  /**
-   * Load tasks.json from workspace
-   */
-  async loadTasksConfiguration(workspacePath: string): Promise<TasksConfiguration | null> {
-    const tasksJsonPath = path.join(workspacePath, '.vscode', 'tasks.json');
+/** Stops every running build task. */
+export async function stopAllBuilds(): Promise<number> {
+    const tasks = [...runningTasks.values()]
+    runningTasks.clear()
+    await Promise.all(tasks.map(t => killProcessTree(t.process)))
+    return tasks.length
+}
 
-    if (!fs.existsSync(tasksJsonPath)) {
-      return null;
-    }
+// Quotes an argument for the shell that runs 'shell' tasks, as VS Code does.
+function shellQuote(arg: string): string {
+    if (/^[\w@%+=:,./-]+$/.test(arg)) return arg
+    return process.platform === 'win32' ? `"${arg.replace(/"/g, '""')}"` : `'${arg.replace(/'/g, `'\\''`)}'`
+}
 
-    try {
-      const content = fs.readFileSync(tasksJsonPath, 'utf-8');
-      // Remove comments (simple approach, doesn't handle all cases)
-      const jsonContent = content.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
-      const config: TasksConfiguration = JSON.parse(jsonContent);
-      return config;
-    } catch (error) {
-      console.error('Failed to load tasks.json:', error);
-      return null;
-    }
-  }
+function executeTask(task: Task, workspacePath: string, getWindow: () => BrowserWindow | null): string {
+    const taskId = `task-${++taskCounter}`
+    const execution: TaskExecution = { taskId, taskLabel: task.label, startTime: Date.now(), problems: [] }
+    const send = (channel: string, payload: unknown) => sendToWindow(getWindow(), channel, payload)
+    const sub = (value: string) => substituteVariables(value, workspacePath)
 
-  /**
-   * Auto-detect tasks from common build files
-   */
-  async autoDetectTasks(workspacePath: string): Promise<Task[]> {
-    const detectedTasks: Task[] = [];
-
-    // Detect npm/yarn scripts
-    const packageJsonPath = path.join(workspacePath, 'package.json');
-    if (fs.existsSync(packageJsonPath)) {
-      try {
-        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
-        if (packageJson.scripts) {
-          for (const [scriptName, scriptCommand] of Object.entries(packageJson.scripts)) {
-            detectedTasks.push({
-              label: `npm: ${scriptName}`,
-              type: 'npm',
-              command: scriptName,
-              detail: scriptCommand as string,
-              group: this.inferTaskGroup(scriptName),
-              problemMatcher: this.inferProblemMatcher(scriptName),
-            });
-          }
-        }
-      } catch (error) {
-        console.error('Failed to parse package.json:', error);
-      }
-    }
-
-    // Detect Cargo (Rust)
-    const cargoTomlPath = path.join(workspacePath, 'Cargo.toml');
-    if (fs.existsSync(cargoTomlPath)) {
-      detectedTasks.push(
-        {
-          label: 'cargo: build',
-          type: 'shell',
-          command: 'cargo',
-          args: ['build'],
-          group: { kind: 'build', isDefault: true },
-          problemMatcher: '$rustc',
-        },
-        {
-          label: 'cargo: test',
-          type: 'shell',
-          command: 'cargo',
-          args: ['test'],
-          group: 'test',
-          problemMatcher: '$rustc',
-        },
-        {
-          label: 'cargo: run',
-          type: 'shell',
-          command: 'cargo',
-          args: ['run'],
-        }
-      );
-    }
-
-    // Detect Go
-    const goModPath = path.join(workspacePath, 'go.mod');
-    if (fs.existsSync(goModPath)) {
-      detectedTasks.push(
-        {
-          label: 'go: build',
-          type: 'shell',
-          command: 'go',
-          args: ['build', '-v', './...'],
-          group: { kind: 'build', isDefault: true },
-          problemMatcher: '$go',
-        },
-        {
-          label: 'go: test',
-          type: 'shell',
-          command: 'go',
-          args: ['test', '-v', './...'],
-          group: 'test',
-        }
-      );
-    }
-
-    // Detect Maven (Java)
-    const pomXmlPath = path.join(workspacePath, 'pom.xml');
-    if (fs.existsSync(pomXmlPath)) {
-      detectedTasks.push(
-        {
-          label: 'maven: clean install',
-          type: 'shell',
-          command: 'mvn',
-          args: ['clean', 'install'],
-          group: { kind: 'build', isDefault: true },
-        },
-        {
-          label: 'maven: test',
-          type: 'shell',
-          command: 'mvn',
-          args: ['test'],
-          group: 'test',
-        }
-      );
-    }
-
-    // Detect Gradle (Java/Kotlin)
-    const gradleFiles = ['build.gradle', 'build.gradle.kts'];
-    const hasGradle = gradleFiles.some((file) =>
-      fs.existsSync(path.join(workspacePath, file))
-    );
-    if (hasGradle) {
-      const gradleCmd = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
-      detectedTasks.push(
-        {
-          label: 'gradle: build',
-          type: 'shell',
-          command: gradleCmd,
-          args: ['build'],
-          group: { kind: 'build', isDefault: true },
-        },
-        {
-          label: 'gradle: test',
-          type: 'shell',
-          command: gradleCmd,
-          args: ['test'],
-          group: 'test',
-        }
-      );
-    }
-
-    // Detect Make
-    const makefilePath = path.join(workspacePath, 'Makefile');
-    if (fs.existsSync(makefilePath)) {
-      detectedTasks.push(
-        {
-          label: 'make: build',
-          type: 'shell',
-          command: 'make',
-          group: { kind: 'build', isDefault: true },
-          problemMatcher: '$gcc',
-        },
-        {
-          label: 'make: clean',
-          type: 'shell',
-          command: 'make',
-          args: ['clean'],
-          group: 'clean',
-        }
-      );
-    }
-
-    // Detect CMake
-    const cmakePath = path.join(workspacePath, 'CMakeLists.txt');
-    if (fs.existsSync(cmakePath)) {
-      detectedTasks.push(
-        {
-          label: 'cmake: configure',
-          type: 'shell',
-          command: 'cmake',
-          args: ['-B', 'build', '-S', '.'],
-        },
-        {
-          label: 'cmake: build',
-          type: 'shell',
-          command: 'cmake',
-          args: ['--build', 'build'],
-          group: { kind: 'build', isDefault: true },
-          problemMatcher: '$gcc',
-        }
-      );
-    }
-
-    return detectedTasks;
-  }
-
-  /**
-   * Get all tasks (auto-detected + configured)
-   */
-  async getAllTasks(workspacePath: string): Promise<Task[]> {
-    const autoDetected = await this.autoDetectTasks(workspacePath);
-    const config = await this.loadTasksConfiguration(workspacePath);
-
-    if (config && config.tasks) {
-      // Merge, with configured tasks taking precedence
-      const configuredLabels = new Set(config.tasks.map((t) => t.label));
-      const filteredAutoDetected = autoDetected.filter(
-        (t) => !configuredLabels.has(t.label)
-      );
-      return [...config.tasks, ...filteredAutoDetected];
-    }
-
-    return autoDetected;
-  }
-
-  /**
-   * Execute a task
-   */
-  async executeTask(
-    task: Task,
-    workspacePath: string,
-    window: BrowserWindow
-  ): Promise<string> {
-    const taskId = `task-${++this.taskIdCounter}`;
-
-    const execution: TaskExecution = {
-      taskId,
-      taskLabel: task.label,
-      startTime: Date.now(),
-      problems: [],
-    };
-
-    // Resolve command and args
-    let command = task.command;
-    let args = task.args || [];
-    let shell = true;
-
+    let command = sub(task.command)
+    let args = (task.args ?? []).map(sub)
+    // 'process' tasks run the program directly; 'shell' tasks go through the shell.
+    let useShell = task.type !== 'process'
     if (task.type === 'npm') {
-      command = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-      args = ['run', task.command, ...args];
-      shell = false;
+        ;({ command, args } = wrapWindowsCommand(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', task.command, ...args]))
+        useShell = false
     }
 
-    // Resolve working directory
-    const cwd = task.options?.cwd
-      ? path.resolve(workspacePath, task.options.cwd)
-      : workspacePath;
+    const cwd = task.options?.cwd ? path.resolve(workspacePath, sub(task.options.cwd)) : workspacePath
+    const env = { ...process.env, ...task.options?.env, FORCE_COLOR: '1' }
 
-    // Resolve environment variables
-    const env = {
-      ...process.env,
-      ...task.options?.env,
-    };
+    send('build:output', { taskId, type: 'start', data: `\x1b[1m> ${task.label}\x1b[0m\n` })
 
-    // Send start message
-    window.webContents.send('build:output', {
-      taskId,
-      type: 'start',
-      data: `\x1b[1m> Executing task: ${task.label}\x1b[0m\n`,
-    });
+    // A shell task is one command line: the command as written plus quoted arguments.
+    const child = useShell
+        ? spawn([command, ...args.map(shellQuote)].join(' '), { cwd, env, shell: true, windowsHide: true })
+        : spawn(command, args, { cwd, env, shell: false, windowsHide: true })
+    execution.processId = child.pid
+    runningTasks.set(taskId, { process: child, execution })
 
-    // Spawn process
-    const childProcess = spawn(command, args, {
-      cwd,
-      env,
-      shell,
-      windowsHide: true,
-    });
-
-    execution.processId = childProcess.pid;
-
-    // Store running task
-    this.runningTasks.set(taskId, {
-      process: childProcess,
-      execution,
-    });
-
-    // Create problem matcher
-    const problemMatcher = this.createProblemMatcher(task.problemMatcher);
-
-    // Handle stdout
-    childProcess.stdout.on('data', (data: Buffer) => {
-      const output = data.toString();
-      window.webContents.send('build:output', {
-        taskId,
-        type: 'stdout',
-        data: output,
-      });
-
-      // Parse problems
-      if (problemMatcher) {
-        const problems = this.parseProblems(output, problemMatcher, workspacePath);
-        execution.problems.push(...problems);
-        if (problems.length > 0) {
-          window.webContents.send('build:problems', {
-            taskId,
-            problems: execution.problems,
-          });
-        }
-      }
-    });
-
-    // Handle stderr
-    childProcess.stderr.on('data', (data: Buffer) => {
-      const output = data.toString();
-      window.webContents.send('build:output', {
-        taskId,
-        type: 'stderr',
-        data: output,
-      });
-
-      // Parse problems from stderr too
-      if (problemMatcher) {
-        const problems = this.parseProblems(output, problemMatcher, workspacePath);
-        execution.problems.push(...problems);
-        if (problems.length > 0) {
-          window.webContents.send('build:problems', {
-            taskId,
-            problems: execution.problems,
-          });
-        }
-      }
-    });
-
-    // Handle process exit
-    childProcess.on('close', (code) => {
-      execution.endTime = Date.now();
-      execution.exitCode = code ?? undefined;
-
-      const duration = ((execution.endTime - execution.startTime) / 1000).toFixed(2);
-      const status = code === 0 ? '\x1b[32mâœ“\x1b[0m' : '\x1b[31mâœ—\x1b[0m';
-
-      window.webContents.send('build:output', {
-        taskId,
-        type: 'end',
-        data: `\n${status} Task "${task.label}" ${code === 0 ? 'completed successfully' : `failed with exit code ${code}`
-          } (${duration}s)\n`,
-      });
-
-      window.webContents.send('build:end', {
-        taskId,
-        exitCode: code,
-        problems: execution.problems,
-      });
-
-      this.runningTasks.delete(taskId);
-    });
-
-    childProcess.on('error', (error) => {
-      window.webContents.send('build:output', {
-        taskId,
-        type: 'error',
-        data: `\x1b[31mError: ${error.message}\x1b[0m\n`,
-      });
-
-      window.webContents.send('build:end', {
-        taskId,
-        exitCode: 1,
-        problems: execution.problems,
-      });
-
-      this.runningTasks.delete(taskId);
-    });
-
-    return taskId;
-  }
-
-  /**
-   * Kill a running task
-   */
-  killTask(taskId: string): boolean {
-    const runningTask = this.runningTasks.get(taskId);
-    if (!runningTask) {
-      return false;
-    }
-
-    try {
-      if (process.platform === 'win32') {
-        // On Windows, use taskkill to kill the entire process tree
-        spawn('taskkill', ['/pid', runningTask.process.pid!.toString(), '/f', '/t']);
-      } else {
-        // On Unix, kill the process group
-        process.kill(-runningTask.process.pid!, 'SIGTERM');
-      }
-      this.runningTasks.delete(taskId);
-      return true;
-    } catch (error) {
-      console.error('Failed to kill task:', error);
-      return false;
-    }
-  }
-
-  /**
-   * Create problem matcher from configuration
-   */
-  private createProblemMatcher(
-    matcher: string | string[] | ProblemMatcher | ProblemMatcher[] | undefined
-  ): ProblemMatcher | null {
-    if (!matcher) return null;
-
-    // Handle built-in problem matchers
-    if (typeof matcher === 'string') {
-      return this.getBuiltInProblemMatcher(matcher);
-    }
-
-    // Handle array of matchers (use first one for simplicity)
-    if (Array.isArray(matcher)) {
-      if (matcher.length === 0) return null;
-      const first = matcher[0];
-      if (typeof first === 'string') {
-        return this.getBuiltInProblemMatcher(first);
-      }
-      return first;
-    }
-
-    return matcher;
-  }
-
-  /**
-   * Get built-in problem matchers
-   */
-  private getBuiltInProblemMatcher(name: string): ProblemMatcher | null {
-    const matchers: Record<string, ProblemMatcher> = {
-      '$tsc': {
-        owner: 'typescript',
-        pattern: {
-          regexp: '^([^\\s].*?)\\((\\d+),(\\d+)\\):\\s+(error|warning|info)\\s+(TS\\d+)\\s*:\\s*(.*)$',
-          file: 1,
-          line: 2,
-          column: 3,
-          severity: 4,
-          code: 5,
-          message: 6,
-        },
-      },
-      '$eslint-compact': {
-        owner: 'eslint',
-        pattern: {
-          regexp: '^(.+?):\\s+line\\s+(\\d+),\\s+col\\s+(\\d+),\\s+(Error|Warning)\\s+-\\s+(.+?)\\s+\\((.+?)\\)$',
-          file: 1,
-          line: 2,
-          column: 3,
-          severity: 4,
-          message: 5,
-          code: 6,
-        },
-      },
-      '$rustc': {
-        owner: 'rustc',
-        pattern: {
-          regexp: '^(error|warning|help|note)(?:\\[(.+?)\\])?:\\s+(.+)$',
-          severity: 1,
-          code: 2,
-          message: 3,
-        },
-      },
-      '$cargo': {
-        owner: 'cargo',
-        pattern: {
-          regexp: '^\\s*(error|warning):\\s+(.+)$',
-          severity: 1,
-          message: 2,
-        },
-      },
-      '$gcc': {
-        owner: 'gcc',
-        pattern: {
-          regexp: '^(.+?):(\\d+):(\\d+):\\s+(error|warning|note):\\s+(.+)$',
-          file: 1,
-          line: 2,
-          column: 3,
-          severity: 4,
-          message: 5,
-        },
-      },
-      '$go': {
-        owner: 'go',
-        pattern: {
-          regexp: '^(.+?):(\\d+):(\\d+)?:?\\s+(.+)$',
-          file: 1,
-          line: 2,
-          column: 3,
-          message: 4,
-        },
-      },
-    };
-
-    return matchers[name] || null;
-  }
-
-  /**
-   * Parse problems from output using problem matcher
-   */
-  private parseProblems(
-    output: string,
-    matcher: ProblemMatcher,
-    workspacePath: string
-  ): Problem[] {
-    const problems: Problem[] = [];
-    const patterns = Array.isArray(matcher.pattern) 
-        ? matcher.pattern 
-        : (matcher.pattern ? [matcher.pattern] : []);
-
-    if (patterns.length === 0) {
-      return problems;
-    }
-
-    const lines = output.split('\n');
-    
-    // State for multi-line matching
-    let currentPatternIndex = 0;
-    let captured: any = {};
-
-    for (const line of lines) {
-        const pattern = patterns[currentPatternIndex];
-        // Handle potential undefined pattern safety
-        if (!pattern) {
-            currentPatternIndex = 0;
-            captured = {};
-            continue;
-        }
-
-        try {
-            const regex = new RegExp(pattern.regexp);
-            const match = regex.exec(line);
-
-            if (match) {
-                // Capture groups based on pattern configuration
-                if (pattern.file) captured.file = match[pattern.file];
-                if (pattern.line) captured.line = parseInt(match[pattern.line], 10);
-                if (pattern.column) captured.column = parseInt(match[pattern.column], 10);
-                if (pattern.message) captured.message = match[pattern.message];
-                if (pattern.severity) captured.severity = this.parseSeverity(match[pattern.severity]);
-                if (pattern.code) captured.code = match[pattern.code];
-                
-                // Advance state
-                currentPatternIndex++;
-                
-                // Check if sequence is complete
-                if (currentPatternIndex >= patterns.length) {
-                    // Validate and create problem
-                    if (captured.file && captured.message) {
-                         const problem: Problem = {
-                            file: captured.file,
-                            line: captured.line || 1,
-                            column: captured.column || 1,
-                            severity: captured.severity || 'error',
-                            message: captured.message,
-                            code: captured.code,
-                            source: matcher.owner
-                         };
-                         
-                         // Resolve path
-                         if (!path.isAbsolute(problem.file)) {
-                            problem.file = path.join(workspacePath, problem.file);
-                         }
-                         
-                         problems.push(problem);
-                    }
-                    
-                    // Reset state
-                    currentPatternIndex = 0;
-                    captured = {};
-                }
-            } else {
-                // Mismatch: Reset state
-                if (currentPatternIndex > 0) {
-                    currentPatternIndex = 0;
-                    captured = {};
-                    // Optional: Re-try this line against first pattern (omitted for stability)
-                }
-            }
-        } catch (err) {
-            console.error('Regex parsing error:', err);
-            currentPatternIndex = 0;
-            captured = {};
+    const matcher = resolveMatcher(task.problemMatcher)
+    let pending = ''
+    const onData = (type: 'stdout' | 'stderr') => (data: Buffer) => {
+        const text = data.toString()
+        send('build:output', { taskId, type, data: text })
+        if (!matcher) return
+        // Only parse whole lines; keep the trailing partial line for the next chunk.
+        const lines = (pending + text).split(/\r?\n/)
+        pending = lines.pop() ?? ''
+        const found = parseProblems(lines.join('\n'), matcher, workspacePath)
+        if (found.length) {
+            execution.problems.push(...found)
+            send('build:problems', { taskId, problems: execution.problems })
         }
     }
+    child.stdout?.on('data', onData('stdout'))
+    child.stderr?.on('data', onData('stderr'))
 
-    return problems;
-  }
+    let finished = false
+    const finish = (code: number | null, error?: string) => {
+        if (finished) return
+        finished = true
+        runningTasks.delete(taskId)
+        execution.endTime = Date.now()
+        execution.exitCode = code ?? undefined
+        const seconds = ((execution.endTime - execution.startTime) / 1000).toFixed(1)
+        const summary = error
+            ? `\x1b[31m✗ ${error}\x1b[0m`
+            : code === 0 ? `\x1b[32m✓ ${task.label} finished\x1b[0m` : `\x1b[31m✗ ${task.label} failed${code === null ? ' (stopped)' : ` with exit code ${code}`}\x1b[0m`
+        send('build:output', { taskId, type: error ? 'error' : 'end', data: `\n${summary} in ${seconds}s\n` })
+        send('build:end', { taskId, exitCode: code ?? 1, problems: execution.problems })
+    }
+    child.on('error', err => finish(1, (err as NodeJS.ErrnoException).code === 'ENOENT' ? `${command} isn't installed or isn't on PATH` : err.message))
+    child.on('close', code => finish(code))
 
-  /**
-   * Parse severity from string
-   */
-  private parseSeverity(severity: string): 'error' | 'warning' | 'info' {
-    const lower = severity.toLowerCase();
-    if (lower.includes('error')) return 'error';
-    if (lower.includes('warning')) return 'warning';
-    return 'info';
-  }
-
-  /**
-   * Infer task group from task name
-   */
-  private inferTaskGroup(taskName: string): string | undefined {
-    const lower = taskName.toLowerCase();
-    if (lower.includes('build') || lower === 'compile') return 'build';
-    if (lower.includes('test')) return 'test';
-    if (lower.includes('clean')) return 'clean';
-    return undefined;
-  }
-
-  /**
-   * Infer problem matcher from task name
-   */
-  private inferProblemMatcher(taskName: string): string | undefined {
-    const lower = taskName.toLowerCase();
-    if (lower.includes('tsc') || lower.includes('typescript')) return '$tsc';
-    if (lower.includes('eslint')) return '$eslint-compact';
-    if (lower.includes('build') && lower.includes('rust')) return '$rustc';
-    return undefined;
-  }
+    return taskId
 }
-
-// Singleton instance
-const buildTaskManager = new BuildTaskManager();
 
 export function setupBuildHandlers(
-  ipc: typeof ipcMain,
-  getMainWindow: () => BrowserWindow | null,
-  _getWorkspacePath: () => string | null
+    ipc: typeof ipcMain,
+    getMainWindow: () => BrowserWindow | null,
+    _getWorkspacePath: () => string | null
 ) {
-  // Get all tasks
-  ipc.handle('build:getTasks', async (_, workspacePath: string) => {
-    try {
-      const tasks = await buildTaskManager.getAllTasks(workspacePath);
-      return { success: true, tasks };
-    } catch (error: any) {
-      console.error('Failed to get tasks:', error);
-      return { success: false, error: error.message };
-    }
-  });
+    ipc.handle('build:getTasks', async (_, workspacePath: string) => {
+        try {
+            return { success: true, tasks: getAllTasks(workspacePath) }
+        } catch (error: any) {
+            return { success: false, error: error.message }
+        }
+    })
 
-  // Execute a task
-  ipc.handle('build:executeTask', async (_, task: Task, workspacePath: string) => {
-    try {
-      const mainWindow = getMainWindow();
-      if (!mainWindow) {
-        return { success: false, error: 'Main window not available' };
-      }
+    ipc.handle('build:executeTask', async (_, task: Task, workspacePath: string) => {
+        try {
+            if (!task?.command) return { success: false, error: 'This task has no command to run' }
+            return { success: true, taskId: executeTask(task, workspacePath, getMainWindow) }
+        } catch (error: any) {
+            return { success: false, error: error.message }
+        }
+    })
 
-      const taskId = await buildTaskManager.executeTask(task, workspacePath, mainWindow);
-      return { success: true, taskId };
-    } catch (error: any) {
-      console.error('Failed to execute task:', error);
-      return { success: false, error: error.message };
-    }
-  });
-
-  // Kill a task
-  ipc.handle('build:killTask', async (_, taskId: string) => {
-    try {
-      const success = buildTaskManager.killTask(taskId);
-      return { success };
-    } catch (error: any) {
-      console.error('Failed to kill task:', error);
-      return { success: false, error: error.message };
-    }
-  });
+    ipc.handle('build:killTask', async (_, taskId: string) => {
+        const running = runningTasks.get(taskId)
+        if (!running) return { success: false, error: 'The task is not running' }
+        await killProcessTree(running.process)
+        return { success: true }
+    })
 }

@@ -4,6 +4,7 @@
 
 import { ipcMain } from 'electron'
 import type { BrowserWindow as BrowserWindowType } from 'electron'
+import treeKill from 'tree-kill'
 import { TerminalService } from '../terminal/terminalService'
 
 let terminalService: TerminalService | null = null
@@ -315,25 +316,17 @@ function setupEventForwarding(service: TerminalService, getMainWindow: () => Bro
 }
 
 /**
- * Kill all active terminal sessions
+ * Kills every terminal and everything started inside it.
  * @returns Number of terminals killed
  */
-export function killAllTerminals(): number {
-    if (!terminalService) {
-        return 0
-    }
-
-    const terminals = terminalService.getAllTerminals()
-    let killedCount = 0
-
-    for (const terminal of terminals) {
-        try {
-            terminalService.killTerminal(terminal.id)
-            killedCount++
-        } catch (e) {
-            console.error(`Failed to kill terminal ${terminal.id}:`, e)
-        }
-    }
-
-    return killedCount
+export async function killAllTerminals(): Promise<number> {
+    if (!terminalService) return 0
+    const terminals = terminalService.getAllTerminals().filter(t => t.status !== 'stopped')
+    await Promise.all(terminals.map(terminal => new Promise<void>(resolve => {
+        const pid = terminal.pid
+        treeKill(pid, 'SIGKILL', () => {
+            terminalService?.killTerminal(terminal.id).catch(() => undefined).finally(resolve)
+        })
+    })))
+    return terminals.length
 }

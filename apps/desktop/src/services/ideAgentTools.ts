@@ -584,7 +584,8 @@ const runFileTool: Tool = {
             const cwd = context.workspacePath
             activeExecId = execId
 
-            const result = await globalThis.window.electronAPI?.code.execute({ id: execId, code: content, language, cwd })
+            // Run the file in place so its imports resolve.
+            const result = await globalThis.window.electronAPI?.code.execute({ id: execId, filePath: validatedPath, code: content, language, cwd })
 
             if (activeExecId === execId) activeExecId = null
 

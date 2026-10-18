@@ -4,61 +4,75 @@ Thank you for your interest in contributing to Kalynt! We welcome contributions 
 
 ## Repository Structure
 
-Kalynt is a monorepo managed by NPM Workspaces.
+Kalynt is a monorepo managed by npm workspaces.
 
 ```text
 kalynt/
 ├── apps/
-│   └── desktop/              # The main Electron application
-│       ├── electron/         # Main process services & IPC
-│       │   └── services/     # Hardware, Runtime, Performance Acceleration
-│       └── src/              # Renderer (React UI, services, stores)
-│           ├── components/   # UI components (ide/, collaboration/, extensions/)
-│           ├── services/     # 28 renderer-side services
-│           └── stores/       # 6 Zustand stores
+│   ├── desktop/              # The Electron application
+│   │   ├── electron/         # Main process: IPC handlers, services, terminal, extensions, preload
+│   │   ├── src/              # Renderer: React components, stores, services, styles
+│   │   └── scripts/          # Build hooks (electron-builder afterPack)
+│   └── mobile/               # Android companion app (built separately)
 ├── packages/
 │   ├── crdt/                 # Shared CRDT logic (Yjs wrappers)
-│   ├── networking/           # P2P Networking layer
+│   ├── networking/           # P2P networking layer
 │   ├── shared/               # Common types and utilities
 │   └── native-macos/         # Swift native helper (FSEvents, CoreML, memory)
 └── ...
 ```
+
+[ARCHITECTURE.md](./ARCHITECTURE.md) explains how the pieces fit together.
 
 ## Getting Started
 
 1.  **Prerequisites**:
     *   Node.js >= 22.0.0
     *   Python 3.10+ (for native module builds)
-    *   C++ Build Tools
-    *   Swift 5.9+ (for macOS native helper, optional)
+    *   C++ build tools
+    *   Swift 5.9+ (for the macOS native helper, optional)
 
 2.  **Setup**:
     ```bash
-    git clone https://github.com/Hermes-Lekkas/Kalynt.git
+    git clone https://github.com/trisle-app/Kalynt.git
     cd Kalynt
     npm install
     ```
 
-3.  **Run Development Environment**:
+3.  **Run the app in development**:
     ```bash
-    npm run dev
+    npm run electron:dev
     ```
-    This command starts the Vite dev server and launches Electron.
+    This starts the Vite dev server and launches Electron. `npm run dev:web` runs the interface alone in a browser, with the desktop APIs stubbed out.
+
+4.  **Check your changes** before opening a pull request:
+    ```bash
+    cd apps/desktop
+    npx tsc --noEmit -p tsconfig.json        # renderer
+    npx tsc --noEmit -p tsconfig.node.json   # main process
+    npx vite build                           # production build
+    ```
+
+## Conventions
+
+*   **Keep files under 500 lines.** Split by responsibility (see `components/ide/` or `electron/handlers/debug/` for examples).
+*   **UI** uses the primitives in `src/components/ui` and the CSS variables in `src/styles/tokens.css`; don't hard-code colours. Every view must work in both the light and dark themes.
+*   **Write interface text in plain language**, in sentence case, and say what happens ("Stage file", not "Submit").
+*   **Main process:** never spawn a shell. Pass commands as argument lists, and send every path that comes from the renderer through `validatePath` (`electron/utils/pathValidator.ts`).
+*   **Cloud model IDs** live only in `PROVIDER_MODELS` (`src/services/aiService.ts`).
 
 ## What You Can Contribute To
 
-We accept Pull Requests (PRs) :
+We accept pull requests for:
 
-*   **UI/UX**: React components, CSS styling, Themes (`apps/desktop/src/components`)
-*   **Utilities**: Helper functions, formatters (`apps/desktop/src/utils`)
-*   **Language Support**: Adding support for new languages in the execution engine.
-*   **Networking**: Improvements to P2P reliability in `packages/networking`.
-*   **Performance**: Memory optimization, lazy loading, build acceleration (`electron/services/Performance_Acceleration`).
-*   **Security**: Path sanitization, CSP improvements, audit logging.
-*   **Native (macOS)**: Swift native helper improvements (`packages/native-macos`).
-*   **Documentation**: Improving guides and tutorials.
-
-
+*   **UI/UX**: components, styling and themes (`apps/desktop/src/components`)
+*   **Language support**: new languages for Run, Build and Debug (`electron/handlers/code-exec`, `electron/handlers/debug`)
+*   **Networking**: P2P reliability (`packages/networking`, `src/services/p2pService.ts`)
+*   **Performance**: memory and startup time (`electron/services/Performance_Acceleration`)
+*   **Security**: path handling, CSP, process isolation
+*   **Tests**: Kalynt has no unit-test suite yet, and tests are very welcome
+*   **Native (macOS)**: the Swift helper (`packages/native-macos`)
+*   **Documentation**: guides and tutorials
 
 ## Submission Guidelines
 

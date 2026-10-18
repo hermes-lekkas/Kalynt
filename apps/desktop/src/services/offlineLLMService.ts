@@ -6,6 +6,32 @@ import { OfflineModel, getModelById } from '../types/offlineModels'
 import { useModelStore } from '../stores/modelStore'
 import { hardwareService } from './hardwareService'
 import { getModelSizeCategory } from './ideAgentTools'
+import type { AIMEConfig } from '../types/aime'
+import { DEFAULT_AIME_CONFIG } from '../types/aime'
+
+function readAIMEConfig(): AIMEConfig {
+    try {
+        const stored = localStorage.getItem('aime-config')
+        return stored ? { ...DEFAULT_AIME_CONFIG, ...JSON.parse(stored) } : DEFAULT_AIME_CONFIG
+    } catch {
+        return DEFAULT_AIME_CONFIG
+    }
+}
+
+/** Layers to offload for a strategy; "auto" sizes against free VRAM. */
+async function resolveGpuLayers(aime: AIMEConfig, modelId: string): Promise<number> {
+    if (aime.offloadingStrategy === 'cpu-only') return 0
+    if (aime.offloadingStrategy === 'gpu-only') return 99
+    if (aime.offloadingStrategy === 'custom') return aime.gpuLayers
+    try {
+        const model = getModelById(modelId)
+        const recommended = await hardwareService.getRecommendedGPULayers((model?.sizeBytes ?? 4_000_000_000) / 1024 / 1024)
+        if (recommended <= 0) return 0
+        return aime.offloadingStrategy === 'balanced' ? Math.max(1, Math.round(recommended / 2)) : recommended
+    } catch {
+        return 0
+    }
+}
 
 export interface ChatMessage {
     role: 'system' | 'user' | 'assistant'
@@ -144,6 +170,31 @@ class OfflineLLMService {
     private isModelLoaded = false
     private currentModelId: string | null = null
     private currentRequestId: string | null = null
+    private watchingLLMEvents = false
+    /** Latest performance-mode verdict on draft-model speculative decoding. */
+    private speculativeAllowed = true
+    /** Context the engine actually allocated; prompts are trimmed to this. */
+    private actualContextSize: number | null = null
+
+    /** Keeps this service's state in step with main-process unloads (MemoryGuard). */
+    private watchLLMEvents(): void {
+        if (this.watchingLLMEvents) return
+        const api = (globalThis.window as any).electronAPI
+        if (!api?.onLLMEvent) return
+        this.watchingLLMEvents = true
+        api.onLLMEvent((event: { type: string; reason?: string; contextSize?: number }) => {
+            if (event.type === 'llm:unloaded') {
+                console.warn('[OfflineLLM] Model unloaded by the AIME MemoryGuard:', event.reason)
+                this.isModelLoaded = false
+                this.currentModelId = null
+                this.currentRequestId = null
+                this.actualContextSize = null
+                useModelStore.getState().setLoadedModel(null)
+            } else if (event.type === 'llm:loaded' && event.contextSize) {
+                this.actualContextSize = event.contextSize
+            }
+        })
+    }
 
     async loadModel(modelId: string): Promise<boolean> {
         const model = getModelById(modelId)
@@ -195,6 +246,7 @@ class OfflineLLMService {
         console.log('[OfflineLLM] Loading model:', model.name)
 
         try {
+            this.watchLLMEvents()
 
             if (!globalThis.window.electronAPI?.loadModel) {
                 const errorMsg = 'Offline AI is not available in this environment. Please run in the desktop app.'
@@ -218,28 +270,40 @@ class OfflineLLMService {
                 console.warn('[OfflineLLM] Failed to read custom context settings:', e)
             }
 
-            let aimeConfig: any = undefined
+            const aime = readAIMEConfig()
+            // The AIME context cap bounds whatever the model or per-model setting asked for.
+            contextLength = Math.max(512, Math.min(contextLength, aime.maxContextTokens))
+
+            // Fold in the app-wide performance mode: power saver caps threads,
+            // trims batches and rules out the draft model; values the user
+            // deliberately set in the AIME panel win where they differ.
+            let flashAttention = aime.flashAttention
+            let batchSize = aime.batchSize
+            let threads = aime.threads
             try {
-                const storedAIME = localStorage.getItem('aime-config')
-                if (storedAIME) {
-                    aimeConfig = JSON.parse(storedAIME)
-                    console.log('[OfflineLLM] Using AIME configuration:', aimeConfig)
+                const perf = await (globalThis.window.electronAPI as any)?.getPerformanceInferenceConfig?.()
+                if (perf) {
+                    this.speculativeAllowed = perf.useSpeculativeDecoding !== false
+                    flashAttention = flashAttention && perf.flashAttention !== false
+                    if (threads === 0 && perf.threads > 0) threads = perf.threads
+                    else if (threads > 0 && perf.threads > 0) threads = Math.min(threads, perf.threads)
+                    if (aime.batchSize === 512 && perf.batchSize > 0) batchSize = perf.batchSize
                 }
-            } catch (e) {
-                console.warn('[OfflineLLM] Failed to read AIME configuration:', e)
+            } catch {
+                // Performance service unavailable; AIME settings stand on their own.
             }
 
-            // Hardware Auto-Detection: Recommend GPU layers if not explicitly set
-            if (!aimeConfig || aimeConfig.gpuLayers === undefined) {
-                try {
-                    const recommendedLayers = await hardwareService.getRecommendedGPULayers(model.sizeBytes / 1024 / 1024)
-                    if (recommendedLayers > 0) {
-                        console.log('[OfflineLLM] Auto-detected hardware: recommending', recommendedLayers, 'GPU layers')
-                        aimeConfig = { ...aimeConfig, gpuLayers: recommendedLayers }
-                    }
-                } catch (e) {
-                    console.warn('[OfflineLLM] Hardware auto-detection failed:', e)
-                }
+            const gpuLayers = await resolveGpuLayers(aime, modelId)
+            const aimeConfig = {
+                gpuLayers,
+                useMemoryMapping: aime.useMemoryMapping,
+                flashAttention,
+                autoContextCap: aime.autoContextCap,
+                reservedMB: aime.reservedRAM,
+                emergencyUnload: aime.emergencyUnload,
+                idleUnloadMinutes: aime.idleUnloadMinutes,
+                ...(batchSize > 0 ? { batchSize } : {}),
+                ...(threads > 0 ? { threads } : {})
             }
 
             const electronAPI = globalThis.window.electronAPI as any
@@ -254,23 +318,40 @@ class OfflineLLMService {
             if (!result.success) {
                 throw new Error(result.error || 'Failed to load model')
             }
+            if (result.contextSize) this.actualContextSize = result.contextSize
 
             this.isModelLoaded = true
             this.currentModelId = modelId
             store.setLoadedModel(modelId)
             store.setLoading(false)
 
-            // Automatic Speculative Decoding: Load draft model for large models
+            // Automatic Speculative Decoding: a draft model from the same family
+            // (same tokenizer) speeds up medium/large models — but only when the
+            // performance mode allows it and the machine clearly has room for both.
             const modelTier = getModelSizeCategory(modelId)
-            if (modelTier === 'large' || modelTier === 'medium') {
+            if (this.speculativeAllowed && (modelTier === 'large' || modelTier === 'medium')) {
+                const family = /^[a-z]+/.exec(modelId.toLowerCase())?.[0] ?? ''
                 const downloadedModels = store.downloadedModels
                 const draftCandidate = Object.keys(downloadedModels).find(id =>
-                    (id.includes('1.5b') || id.includes('1b') || id.includes('tiny')) && id !== modelId
+                    (id.includes('1.5b') || id.includes('1b') || id.includes('0.5b') || id.includes('tiny'))
+                    && id !== modelId
+                    && (/^[a-z]+/.exec(id.toLowerCase())?.[0] ?? '') === family
                 )
 
                 if (draftCandidate) {
-                    console.log('[OfflineLLM] Auto-speculation: Loading draft model', draftCandidate)
-                    void this.loadDraftModel(draftCandidate)
+                    try {
+                        const ram = await hardwareService.getRAMInfo()
+                        const draftModel = getModelById(draftCandidate)
+                        const neededMB = model.sizeBytes / 1e6 + (draftModel?.sizeBytes ?? 0) / 1e6
+                        if (ram.availableRAM > neededMB + 1024) {
+                            console.log('[OfflineLLM] Auto-speculation: Loading draft model', draftCandidate)
+                            void this.loadDraftModel(draftCandidate)
+                        } else {
+                            console.log('[OfflineLLM] Skipping draft model: not enough free memory')
+                        }
+                    } catch {
+                        console.warn('[OfflineLLM] Could not check memory for draft model; skipping')
+                    }
                 }
             }
 
@@ -342,16 +423,20 @@ class OfflineLLMService {
                 let fullText = ''
                 let completed = false
 
-                // Timeout mechanism
-                const timeoutMs = opts.timeoutMs || 60000
-                const timeoutId = setTimeout(() => {
-                    if (!completed) {
-                        completed = true
-                        this.currentRequestId = null
-                        console.warn('[OfflineLLM] Generation timeout, returning partial result')
-                        resolve(cleanResponse(fullText))
-                    }
-                }, timeoutMs)
+                // An explicit timeoutMs resolves with the partial text; without one a
+                // generation runs to its end (or to user abort) — slow models are not
+                // cut off mid-answer.
+                const timeoutMs = opts.timeoutMs || 0
+                const timeoutId = timeoutMs > 0
+                    ? setTimeout(() => {
+                        if (!completed) {
+                            completed = true
+                            this.currentRequestId = null
+                            console.warn('[OfflineLLM] Generation timeout, returning partial result')
+                            resolve(cleanResponse(fullText))
+                        }
+                    }, timeoutMs)
+                    : null
 
                 const requestId = streamFn(
                     {
@@ -367,7 +452,7 @@ class OfflineLLMService {
                         onToken(token)
                     },
                     (error) => {
-                        clearTimeout(timeoutId)
+                        if (timeoutId) clearTimeout(timeoutId)
                         if (completed) return
                         completed = true
                         this.currentRequestId = null
@@ -433,7 +518,7 @@ class OfflineLLMService {
     // Health check for loaded model
     async checkModelHealth(): Promise<boolean> {
         if (!this.isModelLoaded) return false
-        
+
         try {
             const result = await this.generate([
                 { role: 'user', content: 'Hello' }
@@ -444,66 +529,6 @@ class OfflineLLMService {
             await this.unloadModel()
             return false
         }
-    }
-
-    // Load model with fallback mechanism
-    async loadModelWithFallback(modelId: string, maxRetries: number = 1): Promise<boolean> {
-        let attempt = 0
-        
-        while (attempt <= maxRetries) {
-            try {
-                console.log(`[OfflineLLM] Loading model attempt ${attempt + 1}/${maxRetries + 1}: ${modelId}`)
-                const success = await this.loadModel(modelId)
-                if (success) {
-                    const healthCheck = await this.checkModelHealth()
-                    if (healthCheck) {
-                        console.log('[OfflineLLM] Model loaded and healthy:', modelId)
-                        return true
-                    } else {
-                        console.warn('[OfflineLLM] Model loaded but failed health check:', modelId)
-                        await this.unloadModel()
-                    }
-                }
-            } catch (error) {
-                console.error(`[OfflineLLM] Load attempt ${attempt + 1} failed for ${modelId}:`, error)
-            }
-            
-            attempt++
-            if (attempt <= maxRetries) {
-                console.log(`[OfflineLLM] Retrying in ${1000 * Math.pow(2, attempt)}ms...`)
-                await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, attempt)))
-            }
-        }
-        
-        // Try fallback models
-        return await this.tryFallbackModels(modelId)
-    }
-
-    private async tryFallbackModels(originalModelId: string): Promise<boolean> {
-        const fallbackModels = ['llama2-7b-chat', 'mistral-7b'] // Common small models
-        const store = useModelStore.getState()
-        
-        for (const fallbackId of fallbackModels) {
-            if (fallbackId === originalModelId) continue
-            
-            if (store.downloadedModels[fallbackId]) {
-                try {
-                    console.log(`[OfflineLLM] Trying fallback model: ${fallbackId}`)
-                    const success = await this.loadModel(fallbackId)
-                    if (success) {
-                        const healthCheck = await this.checkModelHealth()
-                        if (healthCheck) {
-                            console.log('[OfflineLLM] Fallback model loaded successfully:', fallbackId)
-                            return true
-                        }
-                    }
-                } catch (error) {
-                    console.error(`[OfflineLLM] Fallback model ${fallbackId} failed:`, error)
-                }
-            }
-        }
-        
-        return false
     }
 
     // Generate with retry mechanism
@@ -543,8 +568,9 @@ class OfflineLLMService {
     }
 
     /**
-     * Get the context window for the currently loaded model.
-     * Takes into account user-defined overrides.
+     * Get the context window for the currently loaded model: the configured
+     * size, bounded by what the engine actually allocated (it may have shrunk
+     * the context to fit free memory).
      */
     getContextWindow(): number {
         if (!this.currentModelId) return 4096
@@ -565,6 +591,8 @@ class OfflineLLMService {
             console.warn('[OfflineLLM] Failed to read custom context settings:', e)
         }
 
+        // Keep ~512 tokens of headroom for the answer itself.
+        if (this.actualContextSize) contextLength = Math.min(contextLength, Math.max(512, this.actualContextSize - 512))
         return contextLength
     }
 

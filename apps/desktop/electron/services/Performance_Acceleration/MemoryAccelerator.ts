@@ -28,12 +28,6 @@ export class MemoryAccelerator {
     }
 
     private init() {
-        // Monitor for low memory conditions on macOS via periodic checks
-        if (process.platform === 'darwin') {
-            // Electron does not expose a 'memory-pressure' event on app.
-            // Instead, we proactively check memory in startMonitoring().
-        }
-
         // Listen to OS memory pressure warnings
         app.on('child-process-gone', (event, details) => {
             if (details.reason === 'oom') {
@@ -102,22 +96,10 @@ export class MemoryAccelerator {
     }
 
     /**
-     * Handles memory pressure events from the OS.
+     * Notifies renderers to pause non-essential background tasks (file
+     * indexing, heavy AI pre-loading). Called when memory runs critically low.
      */
-    private handleMemoryPressure(level: 'critical' | 'normal' | 'warning') {
-        if (level === 'critical' || level === 'warning') {
-            this.requestGarbageCollection()
-
-            // In critical situations, we might want to kill background workers
-            if (level === 'critical') {
-                this.suspendBackgroundTasks()
-            }
-        }
-    }
-
-    private suspendBackgroundTasks() {
-        // Logic to notify services to pause non-essential background tasks
-        // (e.g., file indexing, heavy AI pre-loading)
+    public suspendBackgroundTasks() {
         const windows = BrowserWindow.getAllWindows()
         for (const win of windows) {
             if (!win.isDestroyed()) {

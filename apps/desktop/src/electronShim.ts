@@ -23,12 +23,12 @@ const terminalShim = {
     broadcast: noopAsync,
     getCommandHistory: noopAsync,
     getCurrentCommand: noopAsync,
-    onData: noop,
-    onExit: noop,
-    onSpawned: noop,
-    onRestored: noop,
-    onCommandFinished: noop,
-    onDecorationsAvailable: noop,
+    onData: noopReturn,
+    onExit: noopReturn,
+    onSpawned: noopReturn,
+    onRestored: noopReturn,
+    onCommandFinished: noopReturn,
+    onDecorationsAvailable: noopReturn,
     ...createEventAPI(),
 }
 
@@ -41,11 +41,11 @@ const runtimeShim = {
     stopDebug: noopAsync,
     sendDebugRequest: noopAsync,
     getDebugSessions: noopAsync,
-    onLanguageServerStarted: noop,
-    onLanguageServerStopped: noop,
-    onDebugSessionStarted: noop,
-    onDebugSessionStopped: noop,
-    onDebugSessionError: noop,
+    onLanguageServerStarted: noopReturn,
+    onLanguageServerStopped: noopReturn,
+    onDebugSessionStarted: noopReturn,
+    onDebugSessionStopped: noopReturn,
+    onDebugSessionError: noopReturn,
     ...createEventAPI(),
 }
 
@@ -55,10 +55,10 @@ const tasksShim = {
     killTask: noopAsync,
     getExecutions: noopAsync,
     getExecution: noopAsync,
-    onTaskOutput: noop,
-    onTaskCompleted: noop,
-    onTaskError: noop,
-    onTaskCancelled: noop,
+    onTaskOutput: noopReturn,
+    onTaskCompleted: noopReturn,
+    onTaskError: noopReturn,
+    onTaskCancelled: noopReturn,
     ...createEventAPI(),
 }
 
@@ -75,9 +75,9 @@ const sessionsShim = {
     importSession: noopAsync,
     getStats: noopAsync,
     clearOldSessions: noopAsync,
-    onSessionCreated: noop,
-    onSessionUpdated: noop,
-    onSessionDeleted: noop,
+    onSessionCreated: noopReturn,
+    onSessionUpdated: noopReturn,
+    onSessionDeleted: noopReturn,
     ...createEventAPI(),
 }
 
@@ -105,8 +105,8 @@ const codeShim = {
     execute: noopAsync,
     kill: noopAsync,
     runCommand: noopAsync,
-    onOutput: noop,
-    onExit: noop,
+    onOutput: noopReturn,
+    onExit: noopReturn,
     removeListeners: noop,
     clearCache: noopAsync,
 }
@@ -120,9 +120,9 @@ const runtimeMgmtShim = {
     check: noopAsync,
     downloadAndInstall: noopAsync,
     uninstall: noopAsync,
-    onDownloadProgress: noop,
-    onStatus: noop,
-    onLog: noop,
+    onDownloadProgress: noopReturn,
+    onStatus: noopReturn,
+    onLog: noopReturn,
     removeListeners: noop,
 }
 
@@ -137,14 +137,14 @@ const updateShim = {
     checkForUpdates: () => Promise.resolve({ success: true, updateAvailable: false }),
     downloadUpdate: noopAsync,
     installUpdate: noopAsync,
-    getVersion: () => Promise.resolve({ success: true, version: '1.0.5-beta-web' }),
-    onUpdateChecking: noop,
-    onUpdateAvailable: noop,
-    onUpdateNotAvailable: noop,
-    onUpdateDownloaded: noop,
-    onDownloadProgress: noop,
-    onUpdateError: noop,
-    onError: noop,
+    getVersion: () => Promise.resolve({ success: true, version: '2.0.0-web' }),
+    onUpdateChecking: noopReturn,
+    onUpdateAvailable: noopReturn,
+    onUpdateNotAvailable: noopReturn,
+    onUpdateDownloaded: noopReturn,
+    onDownloadProgress: noopReturn,
+    onUpdateError: noopReturn,
+    onError: noopReturn,
     removeListeners: noop,
 }
 
@@ -164,7 +164,7 @@ const gitShim = {
     init: noopAsync,
     stash: noopAsync,
     stashPop: noopAsync,
-    onProgress: noop,
+    onProgress: noopReturn,
     removeListeners: noop,
 }
 
@@ -177,16 +177,16 @@ const depsShim = {
     update: noopAsync,
     list: noopAsync,
     init: noopAsync,
-    onOutput: noop,
-    onComplete: noop,
+    onOutput: noopReturn,
+    onComplete: noopReturn,
     removeListeners: noop,
 }
 
 export const electronAPIShim = {
     platform: 'browser' as const,
     getAppPath: () => Promise.resolve('/'),
-    getVersion: () => Promise.resolve('1.0.5-beta-web'),
-    getAppVersion: () => Promise.resolve({ success: true, version: '1.0.5-beta-web' }),
+    getVersion: () => Promise.resolve('2.0.0-web'),
+    getAppVersion: () => Promise.resolve({ success: true, version: '2.0.0-web' }),
     getModelsDirectory: () => Promise.resolve('/models'),
     getHardwareInfo: () => Promise.resolve({ cpu: 'Web Browser', ram: 0, gpu: 'N/A' }),
     getRealTimeStats: () => Promise.resolve({ cpuUsage: 0, memUsage: 0 }),
@@ -211,10 +211,10 @@ export const electronAPIShim = {
     maximizeWindow: noop,
     closeWindow: noop,
 
-    on: noop,
+    on: noopReturn,
     ipcRenderer: {
         invoke: noopAsync,
-        on: noop,
+        on: noopReturn,
         removeAllListeners: noop,
     },
 
@@ -238,9 +238,47 @@ export const electronAPIShim = {
     deps: depsShim,
 }
 
+// Any API the shim does not model explicitly resolves to a harmless "not available"
+// result (or a no-op unsubscribe for `on*` listeners) instead of crashing the renderer.
+const WEB_RESULT = { success: false, error: 'Not available in web mode' }
+const isListener = (name: string) => name === 'on' || /^on[A-Z]/.test(name)
+
+function fallback(path: string): any {
+    const name = path.split('.').pop() || ''
+    const fn = (..._args: any[]) => {
+        if (isListener(name)) return () => {}
+        if (/^remove/.test(name)) return undefined
+        return Promise.resolve(WEB_RESULT)
+    }
+    return new Proxy(fn, {
+        get: (_target, prop) => {
+            if (typeof prop === 'symbol' || prop === 'then' || prop === 'toJSON') return undefined
+            return fallback(`${path}.${prop}`)
+        }
+    })
+}
+
+function withFallback<T extends object>(target: T, path: string): T {
+    return new Proxy(target, {
+        get(obj, prop, receiver) {
+            if (typeof prop === 'symbol') return Reflect.get(obj, prop, receiver)
+            if (prop in obj) {
+                const value = Reflect.get(obj, prop, receiver)
+                return value && typeof value === 'object' && !Array.isArray(value)
+                    ? withFallback(value, `${path}.${prop}`)
+                    : value
+            }
+            if (prop === 'then' || prop === 'toJSON') return undefined
+            return fallback(`${path}.${prop}`)
+        }
+    })
+}
+
+const webAPI = withFallback(electronAPIShim, 'electronAPI')
+
 if (typeof window !== 'undefined' && !(window as any).electronAPI) {
-    (window as any).electronAPI = electronAPIShim
+    (window as any).electronAPI = webAPI
 }
 if (typeof globalThis !== 'undefined' && !(globalThis as any).electronAPI) {
-    (globalThis as any).electronAPI = electronAPIShim
+    (globalThis as any).electronAPI = webAPI
 }

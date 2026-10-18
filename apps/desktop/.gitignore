@@ -62,3 +62,7 @@ secrets/
 # Debug builds
 debug-build/
 
+
+# Emitted by `tsc -b` from vite.config.ts; Vite would load the .js before the .ts
+vite.config.js
+vite.config.d.ts

@@ -25,12 +25,13 @@ class BinaryManager {
     }
 
     private ensureDir() {
-        if (!fs.existsSync(this.binDir)) {
-            try {
-                fs.mkdirSync(this.binDir, { recursive: true })
-            } catch (e) {
-                console.error('[BinaryManager] Failed to create bin dir:', e)
-            }
+        if (fs.existsSync(this.binDir)) return
+        try {
+            fs.mkdirSync(this.binDir, { recursive: true })
+        } catch {
+            // Read-only installs (AppImage mounts, packaged Resources) simply
+            // ship no downloadable binaries; getBinaryPath keeps working.
+            console.log('[BinaryManager] No writable bin dir; bundled binaries only')
         }
     }
 

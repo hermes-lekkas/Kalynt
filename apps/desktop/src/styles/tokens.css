@@ -1,0 +1,188 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ *
+ * Kalynt design tokens.
+ * Graphite surfaces carry no meaning; colour is reserved for meaning:
+ *   violet → magenta  = the agent (and the brand mark)
+ *   peer hues         = people in the workspace
+ *   status hues       = state (success, warning, danger, info)
+ */
+
+:root,
+:root[data-theme='dark'] {
+    color-scheme: dark;
+
+    /* Surfaces — graphite with the faint violet cast of the mark */
+    --bg: #15141a;            /* editor, terminal, canvas */
+    --surface: #1a1920;       /* titlebar, side panels, status bar */
+    --raised: #222129;        /* inputs, menus, popovers */
+    --hover: #2a2932;
+    --active: #312f3b;
+    --line: #2b2a33;          /* hairlines between regions */
+    --line-strong: #3b3946;   /* control borders */
+    --scrim: rgba(8, 7, 12, 0.62);
+
+    /* Text */
+    --text: #eceaf2;
+    --text-2: #b0adbd;
+    --text-3: #8a8699;
+    --text-4: #5e5b6b;
+
+    /* Neutral primary (buttons that commit an action) */
+    --primary: #eceaf2;
+    --primary-hover: #ffffff;
+    --on-primary: #15141a;
+
+    /* Brand / agent */
+    --violet: #8b6cff;
+    --magenta: #e5489c;
+    --agent: #a48dff;                 /* agent text, icons, links */
+    --agent-solid: #7352f5;           /* agent fills with white text */
+    --agent-soft: rgba(139, 108, 255, 0.14);
+    --agent-line: rgba(139, 108, 255, 0.38);
+    --brand-gradient: linear-gradient(90deg, #8b6cff 0%, #b85ad0 55%, #e5489c 100%);
+    --focus: #a48dff;
+
+    /* Status */
+    --success: #4cc38a;
+    --success-soft: rgba(76, 195, 138, 0.14);
+    --warning: #e9b44c;
+    --warning-soft: rgba(233, 180, 76, 0.14);
+    --danger: #f0616d;
+    --danger-soft: rgba(240, 97, 109, 0.14);
+    --info: #6fa8f5;
+    --info-soft: rgba(111, 168, 245, 0.14);
+
+    /* Git / diff */
+    --diff-add: rgba(76, 195, 138, 0.14);
+    --diff-remove: rgba(240, 97, 109, 0.14);
+
+    /* Peers — assigned per user, never decorative */
+    --peer-1: #3cc6b5;
+    --peer-2: #f0b44c;
+    --peer-3: #5ab0f0;
+    --peer-4: #9bd35a;
+    --peer-5: #f07a8c;
+    --peer-6: #f0955a;
+    --peer-7: #c792ea;
+
+    --shadow-pop: 0 10px 28px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--line-strong);
+    --shadow-dialog: 0 24px 64px rgba(0, 0, 0, 0.6), 0 0 0 1px var(--line-strong);
+}
+
+:root[data-theme='light'] {
+    color-scheme: light;
+
+    --bg: #ffffff;
+    --surface: #f6f5f9;
+    --raised: #ffffff;
+    --hover: #eeedf3;
+    --active: #e5e3ee;
+    --line: #e3e1ea;
+    --line-strong: #cbc8d6;
+    --scrim: rgba(28, 27, 35, 0.36);
+
+    --text: #1c1b23;
+    --text-2: #4a4759;
+    --text-3: #6b6880;
+    --text-4: #a3a0b3;
+
+    --primary: #1c1b23;
+    --primary-hover: #000000;
+    --on-primary: #ffffff;
+
+    --violet: #6a4be8;
+    --magenta: #c42f7f;
+    --agent: #5b3dd9;
+    --agent-solid: #5b3dd9;
+    --agent-soft: rgba(106, 75, 232, 0.1);
+    --agent-line: rgba(106, 75, 232, 0.35);
+    --brand-gradient: linear-gradient(90deg, #6a4be8 0%, #9a3fb8 55%, #c42f7f 100%);
+    --focus: #6a4be8;
+
+    --success: #1f8f5c;
+    --success-soft: rgba(31, 143, 92, 0.1);
+    --warning: #a86a00;
+    --warning-soft: rgba(168, 106, 0, 0.1);
+    --danger: #c9303e;
+    --danger-soft: rgba(201, 48, 62, 0.1);
+    --info: #2563c9;
+    --info-soft: rgba(37, 99, 201, 0.1);
+
+    --diff-add: rgba(31, 143, 92, 0.12);
+    --diff-remove: rgba(201, 48, 62, 0.12);
+
+    --peer-1: #0f9686;
+    --peer-2: #b77d0f;
+    --peer-3: #2a7fc4;
+    --peer-4: #5c9a1c;
+    --peer-5: #c8445a;
+    --peer-6: #c3601f;
+    --peer-7: #9152c4;
+
+    --shadow-pop: 0 10px 28px rgba(28, 20, 60, 0.14), 0 0 0 1px var(--line-strong);
+    --shadow-dialog: 0 24px 64px rgba(28, 20, 60, 0.2), 0 0 0 1px var(--line-strong);
+}
+
+:root {
+    /* Type — Instrument Sans for interface, JetBrains Mono for machine text */
+    --font-ui: 'Instrument Sans Variable', 'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    --font-code: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+    --fs-xs: 11px;
+    --fs-sm: 12px;
+    --fs-md: 13px;     /* interface base */
+    --fs-lg: 15px;
+    --fs-xl: 18px;
+    --fs-2xl: 24px;
+    --fs-3xl: 32px;
+
+    --lh-tight: 1.25;
+    --lh-base: 1.45;
+    --lh-prose: 1.6;
+
+    --fw-regular: 400;
+    --fw-medium: 500;
+    --fw-semibold: 600;
+
+    /* Space */
+    --sp-1: 2px;
+    --sp-2: 4px;
+    --sp-3: 6px;
+    --sp-4: 8px;
+    --sp-5: 12px;
+    --sp-6: 16px;
+    --sp-7: 20px;
+    --sp-8: 24px;
+    --sp-9: 32px;
+    --sp-10: 48px;
+
+    /* Radius — grows with the size of the surface */
+    --r-1: 4px;    /* badges, small controls */
+    --r-2: 6px;    /* buttons, inputs, rows */
+    --r-3: 8px;    /* menus, popovers */
+    --r-4: 12px;   /* dialogs */
+    --r-pill: 999px;
+
+    /* Sizes */
+    --titlebar-h: 40px;
+    --statusbar-h: 24px;
+    --activitybar-w: 44px;
+    --control-h: 30px;
+    --control-h-sm: 24px;
+    --row-h: 26px;
+
+    /* Motion — only in answer to an action */
+    --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+    --dur-1: 90ms;
+    --dur-2: 160ms;
+    --dur-3: 260ms;
+
+    /* Layers */
+    --z-panel: 10;
+    --z-titlebar: 50;
+    --z-popover: 1000;
+    --z-dialog: 2000;
+    --z-toast: 3000;
+    --z-splash: 4000;
+}

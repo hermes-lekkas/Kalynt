@@ -7,54 +7,12 @@
 import { fork, ChildProcess } from 'child_process'
 import * as path from 'path'
 import * as fs from 'fs'
-import * as os from 'os'
 import { ipcMain, app, BrowserWindow } from 'electron'
+import { downloadVsix, unpackVsix } from './extensionInstaller'
+import { scanExtensionDir, mergeContributions } from './extensionRegistry'
+import type { ExtensionMetadata, ExtensionContribution } from './extensionRegistry'
 
-// Extension metadata
-export interface ExtensionMetadata {
-  id: string
-  name: string
-  displayName: string
-  version: string
-  description: string
-  publisher: string
-  main?: string
-  contributes: unknown
-  activationEvents: string[]
-  extensionPath: string
-  isBuiltin: boolean
-  isActive: boolean
-}
-
-// Extension contribution
-export interface ExtensionContribution {
-  commands?: Array<{
-    command: string
-    title: string
-    category?: string
-  }>
-  menus?: Record<string, Array<{
-    command: string
-    when?: string
-    group?: string
-  }>>
-  keybindings?: Array<{
-    command: string
-    key: string
-    when?: string
-  }>
-  views?: Record<string, Array<{
-    id: string
-    name: string
-    when?: string
-  }>>
-  configuration?: Record<string, unknown>
-  themes?: Array<{
-    label: string
-    uiTheme: string
-    path: string
-  }>
-}
+export type { ExtensionMetadata, ExtensionContribution } from './extensionRegistry'
 
 interface ExtensionHostMessage {
   type: string
@@ -345,57 +303,8 @@ class ExtensionHostManager {
   // Public API
 
   async scanExtensions(): Promise<ExtensionMetadata[]> {
-    const extensions: ExtensionMetadata[] = []
-
-    try {
-      const entries = fs.readdirSync(this.extensionsDir)
-      
-      for (const entry of entries) {
-        const extensionPath = path.join(this.extensionsDir, entry)
-        const stat = fs.statSync(extensionPath)
-
-        if (!stat.isDirectory()) continue
-
-        const packageJsonPath = path.join(extensionPath, 'package.json')
-        if (!fs.existsSync(packageJsonPath)) continue
-
-        try {
-          const rawData = fs.readFileSync(packageJsonPath, 'utf-8')
-          // CRITICAL-002 FIX: Validate manifest is an object
-          const manifest = JSON.parse(rawData)
-          if (typeof manifest !== 'object' || manifest === null || Array.isArray(manifest)) {
-            console.warn(`[ExtensionHost] Invalid manifest in ${entry}: not an object`)
-            continue
-          }
-          
-          if (!manifest.engines?.vscode) continue
-
-          const metadata: ExtensionMetadata = {
-            id: `${manifest.publisher}.${manifest.name}`,
-            name: manifest.name,
-            displayName: manifest.displayName || manifest.name,
-            version: manifest.version,
-            description: manifest.description || '',
-            publisher: manifest.publisher || 'unknown',
-            main: manifest.main || 'index.js',
-            contributes: manifest.contributes || {},
-            activationEvents: manifest.activationEvents || [],
-            extensionPath,
-            isBuiltin: false,
-            isActive: false
-          }
-
-          this.extensions.set(metadata.id, metadata)
-          extensions.push(metadata)
-        } catch (error) {
-          console.error(`[ExtensionHost] Failed to load extension ${entry}:`, error)
-        }
-      }
-    } catch (error) {
-      console.error('[ExtensionHost] Failed to scan extensions:', error)
-    }
-
-    return extensions
+    this.extensions = scanExtensionDir(this.extensionsDir)
+    return this.getExtensions()
   }
 
   async loadExtension(id: string): Promise<void> {
@@ -471,92 +380,12 @@ class ExtensionHostManager {
   }
 
   async installExtension(vsixPath: string): Promise<ExtensionMetadata> {
-    // Check if file exists
-    if (!fs.existsSync(vsixPath)) {
-      throw new Error(`VSIX file not found: ${vsixPath}`)
-    }
-
-    // Check file size
-    const stats = fs.statSync(vsixPath)
-    if (stats.size < 100) {
-      throw new Error(`VSIX file is too small (${stats.size} bytes). The file may be corrupted or the download failed.`)
-    }
-
-    console.log(`[ExtensionHost] Installing extension from ${vsixPath} (${stats.size} bytes)`)
-
-    // Extract VSIX file
-    let extract
-    try {
-      extract = await import('extract-zip')
-    } catch (e) {
-      throw new Error(`Failed to load extract-zip module: ${e}`)
-    }
-
-    // Use a temporary directory for extraction
-    const tempDir = path.join(os.tmpdir(), `kalynt-ext-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`)
-    fs.mkdirSync(tempDir, { recursive: true })
-
-    let extensionId: string
-
-    try {
-      await extract.default(vsixPath, { dir: tempDir })
-
-      // The extension files are inside 'extension' folder in VSIX
-      const sourceExtensionDir = path.join(tempDir, 'extension')
-      if (!fs.existsSync(sourceExtensionDir)) {
-        throw new Error('Invalid VSIX: missing "extension" folder')
-      }
-
-      // Read package.json to get the correct ID
-      const packageJsonPath = path.join(sourceExtensionDir, 'package.json')
-      if (!fs.existsSync(packageJsonPath)) {
-        throw new Error('Invalid VSIX: missing package.json')
-      }
-
-      const manifest = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'))
-      if (!manifest.name || !manifest.publisher) {
-        throw new Error('Invalid VSIX: manifest missing name or publisher')
-      }
-
-      extensionId = `${manifest.publisher}.${manifest.name}`
-      const targetDir = path.join(this.extensionsDir, extensionId)
-
-      // Remove existing extension if it exists
-      if (fs.existsSync(targetDir)) {
-        console.log(`[ExtensionHost] Removing existing extension at ${targetDir}`)
-        // Deactivate first if active
-        if (this.extensions.has(extensionId) && this.extensions.get(extensionId)?.isActive) {
-          await this.deactivateExtension(extensionId)
-        }
-        fs.rmSync(targetDir, { recursive: true, force: true })
-      }
-
-      // Move files from temp/extension to targetDir
-      // We use fs.cpSync and fs.rmSync because renameSync fails across different drives/partitions
-      fs.cpSync(sourceExtensionDir, targetDir, { recursive: true })
-      
-    } catch (e: any) {
-      throw new Error(`Failed to install extension: ${e.message}`)
-    } finally {
-      // Clean up temp directory
-      if (fs.existsSync(tempDir)) {
-        try {
-          fs.rmSync(tempDir, { recursive: true, force: true })
-        } catch (cleanupError) {
-          console.warn('[ExtensionHost] Failed to clean up temp dir:', cleanupError)
-        }
-      }
-    }
-
-    // Reload extension list
+    const extensionId = await unpackVsix(vsixPath, this.extensionsDir, async id => {
+      if (this.extensions.get(id)?.isActive) await this.deactivateExtension(id)
+    })
     await this.scanExtensions()
-    
-    // Find the installed extension by ID
     const extension = this.extensions.get(extensionId)
-    if (!extension) {
-      throw new Error(`Failed to verify installation of extension ${extensionId}`)
-    }
-
+    if (!extension) throw new Error(`Failed to verify installation of extension ${extensionId}`)
     return extension
   }
 
@@ -594,147 +423,12 @@ class ExtensionHostManager {
   }
 
   getContributions(): ExtensionContribution {
-    const contributions: ExtensionContribution = {
-      commands: [],
-      menus: {},
-      keybindings: [],
-      views: {},
-      configuration: {},
-      themes: []
-    }
-
-    const allExtensions = Array.from(this.extensions.values())
-    for (const extension of allExtensions) {
-      const contributes = extension.contributes as ExtensionContribution | undefined
-      if (!contributes) continue
-
-      if (contributes.commands) {
-        contributions.commands!.push(...contributes.commands.map(cmd => ({
-          ...cmd,
-          extensionId: extension.id
-        })))
-      }
-
-      if (contributes.menus) {
-        for (const [menu, items] of Object.entries(contributes.menus)) {
-          if (!contributions.menus![menu]) {
-            contributions.menus![menu] = []
-          }
-          contributions.menus![menu].push(...items)
-        }
-      }
-
-      if (contributes.keybindings) {
-        contributions.keybindings!.push(...contributes.keybindings)
-      }
-
-      if (contributes.views) {
-        for (const [container, views] of Object.entries(contributes.views)) {
-          if (!contributions.views![container]) {
-            contributions.views![container] = []
-          }
-          contributions.views![container].push(...views)
-        }
-      }
-
-      // Collect themes
-      if (contributes.themes) {
-        contributions.themes!.push(...contributes.themes.map(theme => ({
-          ...theme,
-          extensionId: extension.id,
-          extensionPath: extension.extensionPath
-        })))
-      }
-    }
-
-    return contributions
+    return mergeContributions(this.getExtensions())
   }
 
-  // Download extension from URL (bypasses CORS by downloading in main process)
+  // Downloads in the main process (no CORS); only from Open VSX into the temp folder.
   async downloadFromUrl(url: string, targetPath: string): Promise<void> {
-    console.log(`[ExtensionHost] Starting download from ${url}`)
-    
-    return new Promise((resolve, reject) => {
-      const https = require('https')
-      const http = require('http')
-      
-      const download = (downloadUrl: string, redirectCount: number = 0) => {
-        if (redirectCount > 5) {
-          reject(new Error('Too many redirects'))
-          return
-        }
-        
-        console.log(`[ExtensionHost] Downloading from: ${downloadUrl}`)
-        const protocol = downloadUrl.startsWith('https:') ? https : http
-        
-        const request = protocol.get(downloadUrl, (response: any) => {
-          console.log(`[ExtensionHost] Response status: ${response.statusCode}`)
-          
-          // Handle redirects
-          if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-            console.log('[ExtensionHost] Following redirect to:', response.headers.location)
-            
-            // Check if redirect is to /error (extension not found)
-            if (response.headers.location === '/error' || response.headers.location.includes('/error')) {
-              reject(new Error('Extension not found on Open VSX. The extension may not exist or may have been removed.'))
-              return
-            }
-            
-            // Handle relative redirects
-            let redirectUrl = response.headers.location
-            if (redirectUrl.startsWith('/')) {
-              const urlObj = new URL(downloadUrl)
-              redirectUrl = `${urlObj.protocol}//${urlObj.host}${redirectUrl}`
-            }
-            
-            download(redirectUrl, redirectCount + 1)
-            return
-          }
-          
-          if (response.statusCode !== 200) {
-            reject(new Error(`Download failed: HTTP ${response.statusCode}`))
-            return
-          }
-          
-          // Ensure directory exists
-          const dir = path.dirname(targetPath)
-          if (!fs.existsSync(dir)) {
-            fs.mkdirSync(dir, { recursive: true })
-          }
-          
-          const fileStream = fs.createWriteStream(targetPath)
-          let downloadedBytes = 0
-          
-          response.pipe(fileStream)
-          
-          response.on('data', (chunk: Buffer) => {
-            downloadedBytes += chunk.length
-          })
-          
-          fileStream.on('finish', () => {
-            fileStream.close()
-            console.log(`[ExtensionHost] Downloaded ${downloadedBytes} bytes to ${targetPath}`)
-            resolve()
-          })
-          
-          fileStream.on('error', (err: Error) => {
-            fs.unlinkSync(targetPath)
-            reject(err)
-          })
-        })
-        
-        request.on('error', (err: Error) => {
-          reject(err)
-        })
-        
-        request.setTimeout(30000, () => {
-          request.destroy()
-          reject(new Error('Download timeout'))
-        })
-      }
-      
-      download(url)
-    })
+    await downloadVsix(url, targetPath)
   }
 
   // IPC Handlers

@@ -22,8 +22,8 @@ A simple test extension to demonstrate VS Code extension API compatibility in Ka
 
 3. Install in Kalynt:
    - Open Kalynt
-   - Go to Extensions view (Ctrl+Shift+X)
-   - Click "Install from VSIX"
+   - Open **Extensions and runtimes** (Ctrl+Shift+X) and choose the **VS Code extensions** tab
+   - Click **Install from file**
    - Select the generated `.vsix` file
 
 ## Usage

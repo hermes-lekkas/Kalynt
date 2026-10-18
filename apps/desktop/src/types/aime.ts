@@ -2,58 +2,65 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-export type KVCacheQuantization = 'none' | 'fp16' | 'q8' | 'q4'
-
 export type OffloadingStrategy = 'auto' | 'gpu-only' | 'cpu-only' | 'balanced' | 'custom'
 
 export interface HardwareInfo {
-    
+
     cpuCores: number
     cpuThreads: number
     cpuModel: string
 
-    totalRAM: number        
-    availableRAM: number    
-    usedRAM: number         
+    totalRAM: number
+    availableRAM: number
+    usedRAM: number
 
     hasGPU: boolean
     gpuName?: string
-    totalVRAM?: number      
-    availableVRAM?: number  
+    totalVRAM?: number
+    availableVRAM?: number
 
-    totalDiskSpace: number      
-    availableDiskSpace: number  
+    totalDiskSpace: number
+    availableDiskSpace: number
 }
 
 export interface AIMEConfig {
-    
-    kvCacheQuantization: KVCacheQuantization
+    /** Use the flash-attention kernel: a bit faster and a bit less memory. */
+    flashAttention: boolean
 
     offloadingStrategy: OffloadingStrategy
-    gpuLayers: number           
+    /** Layers on the GPU when the strategy is "custom". */
+    gpuLayers: number
 
-    autoContextCap: boolean     
-    maxContextTokens: number    
-    useMemoryMapping: boolean   
+    /** Shrink the context to what fits in free memory when the model loads. */
+    autoContextCap: boolean
+    /** Upper bound on the context, in tokens. */
+    maxContextTokens: number
+    useMemoryMapping: boolean
 
-    batchSize: number           
-    threads: number             
+    batchSize: number
+    /** 0 lets the engine use every performance core. */
+    threads: number
 
-    reservedRAM: number         
-    emergencyUnload: boolean    
+    /** Memory to keep free for the system; the MemoryGuard unloads the model below it. */
+    reservedRAM: number
+    /** Unload the model when free memory drops under `reservedRAM`. */
+    emergencyUnload: boolean
+    /** Unload the model after this many idle minutes; 0 keeps it loaded. */
+    idleUnloadMinutes: number
 }
 
 export const DEFAULT_AIME_CONFIG: AIMEConfig = {
-    kvCacheQuantization: 'q8',
+    flashAttention: true,
     offloadingStrategy: 'auto',
     gpuLayers: 0,
     autoContextCap: true,
     maxContextTokens: 8192,
     useMemoryMapping: true,
     batchSize: 512,
-    threads: 4,
-    reservedRAM: 2048,  
-    emergencyUnload: true
+    threads: 0,
+    reservedRAM: 512,
+    emergencyUnload: true,
+    idleUnloadMinutes: 0
 }
 
 export interface AIMEPreset {
@@ -65,179 +72,156 @@ export interface AIMEPreset {
 export const AIME_PRESETS: AIMEPreset[] = [
     {
         name: 'Maximum Quality',
-        description: 'Best quality, highest RAM usage. For systems with 16GB+ RAM.',
+        description: 'No caps: the full model context and no automatic unloading. For systems with 16GB+ RAM.',
         config: {
-            kvCacheQuantization: 'none',
+            flashAttention: true,
             offloadingStrategy: 'gpu-only',
             gpuLayers: 999,
             autoContextCap: false,
-            maxContextTokens: 128000,
+            maxContextTokens: 32768,
             useMemoryMapping: false,
             batchSize: 512,
-            threads: 8,
+            threads: 0,
             reservedRAM: 2048,
-            emergencyUnload: false
+            emergencyUnload: false,
+            idleUnloadMinutes: 0
         }
     },
     {
         name: 'Balanced',
         description: 'Good balance of quality and efficiency. For systems with 8-12GB RAM.',
         config: {
-            kvCacheQuantization: 'q8',
+            flashAttention: true,
             offloadingStrategy: 'balanced',
             gpuLayers: 16,
             autoContextCap: true,
-            maxContextTokens: 16384,
+            maxContextTokens: 8192,
             useMemoryMapping: true,
             batchSize: 512,
-            threads: 6,
-            reservedRAM: 2048,
-            emergencyUnload: true
+            threads: 0,
+            reservedRAM: 1024,
+            emergencyUnload: true,
+            idleUnloadMinutes: 15
         }
     },
     {
         name: 'Maximum Efficiency',
         description: 'Lowest RAM usage, good for limited systems. For 4-6GB RAM.',
         config: {
-            kvCacheQuantization: 'q4',
+            flashAttention: true,
             offloadingStrategy: 'cpu-only',
             gpuLayers: 0,
             autoContextCap: true,
             maxContextTokens: 4096,
             useMemoryMapping: true,
             batchSize: 256,
-            threads: 4,
-            reservedRAM: 1024,
-            emergencyUnload: true
+            threads: 0,
+            reservedRAM: 768,
+            emergencyUnload: true,
+            idleUnloadMinutes: 5
         }
     },
     {
         name: 'Small Model Speed',
         description: 'Optimized for fast responses with small models (<7B). Prioritizes speed over context.',
         config: {
-            kvCacheQuantization: 'q4',
+            flashAttention: true,
             offloadingStrategy: 'cpu-only',
             gpuLayers: 0,
             autoContextCap: true,
-            maxContextTokens: 2048,    // Small context for fast processing
+            maxContextTokens: 2048,
             useMemoryMapping: true,
-            batchSize: 128,            // Smaller batches = faster first token
-            threads: 4,                // Optimal for most CPUs
+            batchSize: 128,
+            threads: 0,
             reservedRAM: 512,
-            emergencyUnload: true
+            emergencyUnload: true,
+            idleUnloadMinutes: 10
         }
     },
     {
         name: 'GPU Accelerated',
         description: 'Maximum speed with GPU acceleration. Requires CUDA/Metal compatible GPU.',
         config: {
-            kvCacheQuantization: 'q8',
+            flashAttention: true,
             offloadingStrategy: 'gpu-only',
-            gpuLayers: 999,            // Offload all layers to GPU
+            gpuLayers: 999,
             autoContextCap: true,
             maxContextTokens: 8192,
-            useMemoryMapping: false,   // Disable mmap for GPU
+            useMemoryMapping: false,
             batchSize: 512,
-            threads: 4,
+            threads: 0,
             reservedRAM: 1024,
-            emergencyUnload: true
+            emergencyUnload: true,
+            idleUnloadMinutes: 15
         }
     }
 ]
 
+/**
+ * Estimates the RAM a model needs, in MB: the weights plus the KV cache the
+ * context will allocate (about 12 KB per token per GB of model file, measured
+ * on Qwen-class GQA models) plus compute buffers.
+ */
 export function calculateAIMERAMUsage(
     modelSizeMB: number,
     contextTokens: number,
-    kvQuantization: KVCacheQuantization
+    flashAttention: boolean
 ): number {
-    
-    let total = modelSizeMB
-
-    const kvCachePerToken = (modelSizeMB / 8000) * 0.5 / 1000
-    let kvCache = contextTokens * kvCachePerToken
-
-    const kvMultipliers: Record<KVCacheQuantization, number> = {
-        'none': 1,   
-        'fp16': 1,   
-        'q8': 0.5,     
-        'q4': 0.25     
-    }
-
-    kvCache *= kvMultipliers[kvQuantization]
-    total += kvCache
-
-    return Math.ceil(total)
+    const weights = modelSizeMB
+    const kvPerTokenMB = modelSizeMB / 80_000
+    const kvCache = contextTokens * kvPerTokenMB * (flashAttention ? 0.9 : 1)
+    const compute = modelSizeMB * 0.08
+    return Math.ceil(weights + kvCache + compute)
 }
 
 export function recommendAIMESettings(hardware: HardwareInfo): AIMEConfig {
     const availRAM = hardware.availableRAM
     const hasGPU = hardware.hasGPU
-    const cpuThreads = hardware.cpuThreads
 
     if (availRAM < 6144) {
         return {
-            kvCacheQuantization: 'q4',
+            flashAttention: true,
             offloadingStrategy: 'cpu-only',
             gpuLayers: 0,
             autoContextCap: true,
             maxContextTokens: 2048,
             useMemoryMapping: true,
             batchSize: 256,
-            threads: Math.min(4, cpuThreads),
-            reservedRAM: 1024,
-            emergencyUnload: true
+            threads: 0,
+            reservedRAM: 512,
+            emergencyUnload: true,
+            idleUnloadMinutes: 5
         }
     }
 
     if (availRAM < 12288) {
         return {
-            kvCacheQuantization: 'q8',
+            flashAttention: true,
             offloadingStrategy: hasGPU ? 'balanced' : 'cpu-only',
             gpuLayers: hasGPU ? 16 : 0,
             autoContextCap: true,
             maxContextTokens: 8192,
             useMemoryMapping: true,
             batchSize: 512,
-            threads: Math.min(6, cpuThreads),
-            reservedRAM: 2048,
-            emergencyUnload: true
+            threads: 0,
+            reservedRAM: 1024,
+            emergencyUnload: true,
+            idleUnloadMinutes: 15
         }
     }
 
     return {
-        kvCacheQuantization: 'q8',
+        flashAttention: true,
         offloadingStrategy: hasGPU ? 'auto' : 'cpu-only',
         gpuLayers: hasGPU ? 32 : 0,
-        autoContextCap: false,
-        maxContextTokens: 32768,
+        autoContextCap: true,
+        maxContextTokens: 16384,
         useMemoryMapping: true,
         batchSize: 512,
-        threads: Math.min(8, cpuThreads),
+        threads: 0,
         reservedRAM: 2048,
-        emergencyUnload: false
-    }
-}
-
-/**
- * Get optimized AIME settings for small models (<7B parameters)
- * Prioritizes speed and responsiveness over context length
- */
-export function getSmallModelAIMESettings(hardware: HardwareInfo): AIMEConfig {
-    const hasGPU = hardware.hasGPU
-    const cpuThreads = hardware.cpuThreads
-
-    // For small models, prioritize speed
-    return {
-        kvCacheQuantization: 'q4',          // Maximum compression for speed
-        offloadingStrategy: hasGPU ? 'gpu-only' : 'cpu-only',
-        gpuLayers: hasGPU ? 999 : 0,        // Full GPU offload if available
-        autoContextCap: true,
-        maxContextTokens: 2048,             // Small context = fast responses
-        useMemoryMapping: !hasGPU,          // Mmap only for CPU
-        batchSize: 128,                     // Smaller batch = faster first token
-        threads: Math.min(4, cpuThreads),   // Don't over-parallelize small models
-        reservedRAM: 512,
-        emergencyUnload: true
+        emergencyUnload: true,
+        idleUnloadMinutes: 0
     }
 }
 
@@ -261,70 +245,6 @@ export function detectModelSizeCategory(modelId: string): ModelSizeCategory {
     // Medium: 8B-24B parameters
     if (/8b|13b|14b|24b/.test(lower)) return 'medium'
 
-    // Large: 32B+ parameters
+    // Large: 32B+
     return 'large'
-}
-
-/**
- * Get AIME settings optimized for specific model size
- */
-export function getAIMESettingsForModel(
-    modelId: string,
-    hardware: HardwareInfo
-): AIMEConfig {
-    const category = detectModelSizeCategory(modelId)
-    const hasGPU = hardware.hasGPU
-    const cpuThreads = hardware.cpuThreads
-
-    switch (category) {
-        case 'tiny':
-            // Tiny models: maximum speed, minimal context
-            return {
-                kvCacheQuantization: 'q4',
-                offloadingStrategy: hasGPU ? 'gpu-only' : 'cpu-only',
-                gpuLayers: hasGPU ? 999 : 0,
-                autoContextCap: true,
-                maxContextTokens: 2048,
-                useMemoryMapping: !hasGPU,
-                batchSize: 64,              // Very small batches for instant responses
-                threads: Math.min(2, cpuThreads),
-                reservedRAM: 256,
-                emergencyUnload: true
-            }
-
-        case 'small':
-            // Small models: fast with reasonable context
-            return {
-                kvCacheQuantization: 'q4',
-                offloadingStrategy: hasGPU ? 'gpu-only' : 'cpu-only',
-                gpuLayers: hasGPU ? 999 : 0,
-                autoContextCap: true,
-                maxContextTokens: 4096,
-                useMemoryMapping: !hasGPU,
-                batchSize: 128,
-                threads: Math.min(4, cpuThreads),
-                reservedRAM: 512,
-                emergencyUnload: true
-            }
-
-        case 'medium':
-            // Medium models: balanced speed and capability
-            return {
-                kvCacheQuantization: 'q8',
-                offloadingStrategy: hasGPU ? 'balanced' : 'cpu-only',
-                gpuLayers: hasGPU ? 24 : 0,
-                autoContextCap: true,
-                maxContextTokens: 8192,
-                useMemoryMapping: true,
-                batchSize: 256,
-                threads: Math.min(6, cpuThreads),
-                reservedRAM: 1024,
-                emergencyUnload: true
-            }
-
-        case 'large':
-        default:
-            // Large models: use hardware recommendations
-            return recommendAIMESettings(hardware)
-    }
 }

@@ -179,9 +179,9 @@ export interface ElectronAPI {
   getHardwareInfo: () => Promise<any>
   getRealTimeStats: () => Promise<any>
   fileExists: (path: string) => Promise<boolean>
-  deleteModel: (path: string) => Promise<boolean>
+  deleteModel: (path: string) => Promise<{ success: boolean; error?: string }>
   downloadModel: (options: any) => Promise<any>
-  cancelDownload: (modelId: string) => Promise<boolean>
+  cancelDownload: (modelId: string) => Promise<{ success: boolean; error?: string }>
   pauseDownload: (modelId: string) => Promise<boolean>
   resumeDownload: (modelId: string) => Promise<boolean>
   onDownloadProgress: (callback: (progress: {
@@ -209,7 +209,7 @@ export interface ElectronAPI {
   minimizeWindow: () => Promise<void>
   maximizeWindow: () => Promise<void>
   closeWindow: () => Promise<void>
-  nukeProcesses: (level: any) => Promise<void>
+  nukeProcesses: (level: any) => Promise<{ success: boolean; message?: string }>
   build: any
   debug: any
   safeStorage: any
@@ -266,7 +266,7 @@ export interface ElectronAPI {
   // IPC Renderer
   ipcRenderer: {
     invoke: (channel: string, ...args: any[]) => Promise<any>
-    on: (channel: string, callback: (event: any, ...args: any[]) => void) => void
+    on: (channel: string, callback: (event: any, ...args: any[]) => void) => () => void
     removeAllListeners: (channel: string) => void
   }
 }

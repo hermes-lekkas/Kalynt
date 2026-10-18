@@ -1,0 +1,116 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
+.palette-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-dialog);
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    padding-top: calc(var(--titlebar-h) + 48px);
+    background: color-mix(in srgb, var(--scrim) 55%, transparent);
+    animation: k-fade-in var(--dur-1) var(--ease);
+}
+
+.palette {
+    width: min(640px, calc(100vw - 32px));
+    max-height: min(560px, calc(100vh - 160px));
+    display: flex;
+    flex-direction: column;
+    background: var(--raised);
+    border-radius: var(--r-4);
+    box-shadow: var(--shadow-dialog);
+    overflow: hidden;
+    animation: k-pop-in var(--dur-2) var(--ease);
+}
+
+.palette__input {
+    height: 48px;
+    padding: 0 var(--sp-7);
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    background: transparent;
+    font-size: var(--fs-lg);
+    outline: none;
+}
+
+.palette__input::placeholder {
+    color: var(--text-3);
+}
+
+.palette__list {
+    list-style: none;
+    margin: 0;
+    padding: var(--sp-3);
+    overflow-y: auto;
+    flex: 1;
+    min-height: 0;
+}
+
+.palette__item {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-4);
+    min-height: 34px;
+    padding: 0 var(--sp-5);
+    border-radius: var(--r-2);
+    cursor: pointer;
+    color: var(--text-2);
+}
+
+.palette__item.is-active {
+    background: var(--active);
+    color: var(--text);
+}
+
+.palette__icon {
+    display: inline-flex;
+    color: var(--text-3);
+}
+
+.palette__item.is-active .palette__icon {
+    color: var(--text-2);
+}
+
+.palette__title {
+    flex-shrink: 0;
+    max-width: 60%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
+}
+
+.palette__detail {
+    flex: 1;
+    min-width: 0;
+    font-size: var(--fs-sm);
+    color: var(--text-3);
+}
+
+.palette__item .k-kbd {
+    margin-left: auto;
+}
+
+.palette__empty {
+    padding: var(--sp-7);
+    text-align: center;
+    color: var(--text-3);
+}
+
+.palette__footer {
+    display: flex;
+    gap: var(--sp-6);
+    padding: var(--sp-3) var(--sp-6);
+    border-top: 1px solid var(--line);
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+}
+
+.palette__footer span {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+}

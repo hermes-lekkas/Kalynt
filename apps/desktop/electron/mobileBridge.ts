@@ -3,7 +3,7 @@
  */
 /**
  * Mobile Bridge Server
- * 
+ *
  * Handles WebSocket connections from the Android companion app.
  * Provides endpoints for pairing, command execution, and GitHub proxy.
  * Runs alongside the y-webrtc signaling server on a different port.
@@ -16,10 +16,23 @@ const { WebSocketServer } = require('ws')
 const http = require('http')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const https = require('https')
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const crypto = require('crypto')
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { dialog } = require('electron')
+
+import {
+    handlePairingRequest,
+    generatePairingQR,
+    hasValidToken,
+    clearPairingState
+} from './mobilePairing'
+import type { DeviceInfo } from './mobilePairing'
+import {
+    executeAgentCommand,
+    proxyGitHubRequest,
+    setGitHubToken,
+    isGitHubConfigured
+} from './mobileGithubProxy'
+import type { AgentCommand } from './mobileGithubProxy'
+
+export { generatePairingQR }
 
 // Mobile message types (must match Android)
 interface MobileMessage {
@@ -36,42 +49,14 @@ interface MobileClient {
     lastPing: number
 }
 
-interface DeviceInfo {
-    deviceId: string
-    deviceName: string
-    osVersion: string
-    appVersion: string
-}
-
-interface PendingPairing {
-    tempToken: string
-    desktopPublicKey: string
-    desktopPrivateKey: string
-    timestamp: number
-    ip: string
-}
-
-interface AgentCommand {
-    agentId: string
-    command: string
-    params: Record<string, any>
-}
-
 // WebSocket ready states
 const WS_READY_STATE_OPEN = 1
 
-// Token storage (in-memory, cleared on app restart)
-const validTokens = new Set<string>()
 const clientSessions = new Map<string, MobileClient>()
-const pendingPairings = new Map<string, PendingPairing>()
 
 // Configuration
 const PING_TIMEOUT = 30000
-const PAIRING_TIMEOUT = 300000 // 5 minutes
 const MAX_MESSAGE_SIZE = 1024 * 1024 // 1MB
-
-// GitHub token (set by user in settings)
-let githubToken: string | null = null
 
 export interface MobileBridgeHandle {
     port: number
@@ -81,34 +66,6 @@ export interface MobileBridgeHandle {
     setGitHubToken: (token: string) => void
     sendNotification: (deviceId: string, notification: any) => boolean
     getConnectedDevices: () => DeviceInfo[]
-}
-
-/**
- * Generate a secure random token
- */
-function generateToken(length: number = 32): string {
-    return crypto.randomBytes(length).toString('base64url')
-}
-
-/**
- * Generate ECDH key pair for pairing
- */
-function generateKeyPair(): { publicKey: string; privateKey: string } {
-    const ecdh = crypto.createECDH('secp256r1')
-    ecdh.generateKeys()
-    return {
-        publicKey: ecdh.getPublicKey('base64'),
-        privateKey: ecdh.getPrivateKey('base64')
-    }
-}
-
-/**
- * Derive session key from ECDH
- */
-function deriveSessionKey(privateKey: string, clientPublicKey: string): Buffer {
-    const ecdh = crypto.createECDH('secp256r1')
-    ecdh.setPrivateKey(Buffer.from(privateKey, 'base64'))
-    return ecdh.computeSecret(clientPublicKey, 'base64')
 }
 
 /**
@@ -146,11 +103,10 @@ export function startMobileBridge(port: number = 8443): Promise<MobileBridgeHand
 
         // Handle WebSocket connections
         wss.on('connection', (socket: any, req: any) => {
-            const clientId = generateToken(16)
+            const clientId = require('crypto').randomBytes(16).toString('base64url')
             console.log(`[MobileBridge] New connection: ${clientId}`)
 
             let authenticated = false
-            let clientInfo: DeviceInfo | null = null
             let pongReceived = true
 
             // Set up ping interval
@@ -187,9 +143,8 @@ export function startMobileBridge(port: number = 8443): Promise<MobileBridgeHand
                         return
                     }
 
-                    handleMobileMessage(socket, message, clientId, (info) => {
+                    handleMobileMessage(socket, message, clientId, () => {
                         authenticated = true
-                        clientInfo = info
                     })
 
                 } catch (err) {
@@ -240,10 +195,10 @@ export function startMobileBridge(port: number = 8443): Promise<MobileBridgeHand
                     server.close()
                     wss.close()
                     clientSessions.clear()
-                    pendingPairings.clear()
+                    clearPairingState()
                 },
                 setGitHubToken: (token: string) => {
-                    githubToken = token
+                    setGitHubToken(token)
                 },
                 sendNotification: (deviceId: string, notification: any): boolean => {
                     for (const [, client] of clientSessions) {
@@ -277,116 +232,18 @@ export function startMobileBridge(port: number = 8443): Promise<MobileBridgeHand
 }
 
 /**
- * Handle pairing HTTP requests
- */
-function handlePairingRequest(req: any, res: any) {
-    // CORS headers
-    res.setHeader('Access-Control-Allow-Origin', '*')
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
-
-    if (req.method === 'OPTIONS') {
-        res.writeHead(200)
-        res.end()
-        return
-    }
-
-    if (req.method !== 'POST' || req.url !== '/pair') {
-        res.writeHead(404)
-        res.end(JSON.stringify({ error: 'Not found' }))
-        return
-    }
-
-    let body = ''
-    req.on('data', (chunk: any) => body += chunk)
-    req.on('end', async () => {
-        try {
-            const request = JSON.parse(body)
-            const { tempToken, devicePublicKey, deviceInfo } = request
-
-            // Validate request
-            if (!tempToken || !devicePublicKey || !deviceInfo) {
-                res.writeHead(400)
-                res.end(JSON.stringify({ error: 'Missing required fields' }))
-                return
-            }
-
-            // Find pending pairing
-            const pairing = pendingPairings.get(tempToken)
-            if (!pairing) {
-                res.writeHead(401)
-                res.end(JSON.stringify({ error: 'Invalid or expired pairing token' }))
-                return
-            }
-
-            // Check timeout
-            if (Date.now() - pairing.timestamp > PAIRING_TIMEOUT) {
-                pendingPairings.delete(tempToken)
-                res.writeHead(401)
-                res.end(JSON.stringify({ error: 'Pairing expired' }))
-                return
-            }
-
-            // Show confirmation dialog to user
-            const result = await dialog.showMessageBox({
-                type: 'question',
-                buttons: ['Approve', 'Reject'],
-                defaultId: 0,
-                title: 'Mobile Device Pairing',
-                message: `Allow "${deviceInfo.deviceName}" to connect?`,
-                detail: `Device: ${deviceInfo.deviceId}\nOS: ${deviceInfo.osVersion}\nApp: ${deviceInfo.appVersion}`
-            })
-
-            if (result.response !== 0) {
-                pendingPairings.delete(tempToken)
-                res.writeHead(403)
-                res.end(JSON.stringify({ error: 'Pairing rejected by user' }))
-                return
-            }
-
-            // Generate tokens
-            const accessToken = generateToken()
-            const refreshToken = generateToken()
-
-            // Derive session key
-            const sessionKey = deriveSessionKey(pairing.desktopPrivateKey, devicePublicKey)
-
-            // Store tokens
-            validTokens.add(accessToken)
-            validTokens.add(refreshToken)
-
-            // Clean up pairing
-            pendingPairings.delete(tempToken)
-
-            res.writeHead(200)
-            res.end(JSON.stringify({
-                success: true,
-                accessToken,
-                refreshToken,
-                sessionKey: sessionKey.toString('base64')
-            }))
-
-        } catch (err) {
-            console.error('[MobileBridge] Pairing error:', err)
-            res.writeHead(500)
-            res.end(JSON.stringify({ error: 'Internal server error' }))
-        }
-    })
-}
-
-/**
  * Handle messages from mobile clients
  */
 async function handleMobileMessage(
     socket: any,
     message: MobileMessage,
     clientId: string,
-    onAuthenticated: (info: DeviceInfo) => void
+    onAuthenticated: () => void
 ) {
     switch (message.type) {
         case 'authenticate': {
             const { token } = message
-            if (!token || !validTokens.has(token)) {
+            if (!token || !hasValidToken(token)) {
                 sendError(socket, 'Invalid token', 'AUTH_FAILED')
                 return
             }
@@ -396,7 +253,7 @@ async function handleMobileMessage(
                 type: 'desktop_info',
                 ip: getLocalIp(),
                 port: 8443,
-                version: '1.0.5',
+                version: require('electron').app.getVersion(),
                 deviceName: require('os').hostname()
             })
 
@@ -419,7 +276,7 @@ async function handleMobileMessage(
                 lastPing: Date.now()
             })
 
-            onAuthenticated(deviceInfo)
+            onAuthenticated()
 
             send(socket, {
                 type: 'authenticated',
@@ -435,7 +292,7 @@ async function handleMobileMessage(
 
             try {
                 // Forward to agent manager (will be implemented in main process)
-                const result = await executeAgentCommand({ agentId, command, params })
+                const result = await executeAgentCommand({ agentId, command, params } as AgentCommand)
 
                 send(socket, {
                     type: 'command_response',
@@ -457,7 +314,7 @@ async function handleMobileMessage(
         case 'github_request': {
             const { requestId, endpoint, method, body } = message
 
-            if (!githubToken) {
+            if (!isGitHubConfigured()) {
                 sendError(socket, 'GitHub not authenticated', 'GITHUB_NOT_AUTH')
                 return
             }
@@ -493,78 +350,6 @@ async function handleMobileMessage(
 }
 
 /**
- * Execute agent command (placeholder - connects to actual agent system)
- */
-async function executeAgentCommand(command: AgentCommand): Promise<any> {
-    // TODO: Connect to actual agent manager in main process
-    // This is a placeholder that will be replaced with IPC call
-    return new Promise((resolve) => {
-        // Simulate command execution
-        setTimeout(() => {
-            resolve({
-                success: true,
-                message: `Command "${command.command}" executed on agent "${command.agentId}"`,
-                timestamp: Date.now()
-            })
-        }, 1000)
-    })
-}
-
-/**
- * Proxy GitHub API request
- */
-async function proxyGitHubRequest(
-    endpoint: string,
-    method: string = 'GET',
-    body?: any
-): Promise<any> {
-    if (!githubToken) {
-        throw new Error('GitHub token not configured')
-    }
-
-    // Use native https to avoid dependency issues
-    return new Promise((resolve, reject) => {
-        const options = {
-            hostname: 'api.github.com',
-            path: endpoint,
-            method: method,
-            headers: {
-                'Authorization': `token ${githubToken}`,
-                'User-Agent': 'Kalynt-Mobile-Bridge/1.0',
-                'Accept': 'application/vnd.github.v3+json',
-                'Content-Type': 'application/json'
-            }
-        }
-
-        const req = https.request(options, (res: any) => {
-            let data = ''
-            res.on('data', (chunk: any) => data += chunk)
-            res.on('end', () => {
-                try {
-                    const json = JSON.parse(data)
-                    if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-                        resolve(json)
-                    } else {
-                        reject({ status: res.statusCode, message: json.message || 'GitHub API error' })
-                    }
-                } catch {
-                    resolve(data)
-                }
-            })
-        })
-
-        req.on('error', (err: Error) => {
-            reject({ status: 500, message: err.message })
-        })
-
-        if (body) {
-            req.write(JSON.stringify(body))
-        }
-        req.end()
-    })
-}
-
-/**
  * Get TLS options (self-signed cert for development)
  */
 function getTlsOptions(): any {
@@ -579,7 +364,7 @@ function getTlsOptions(): any {
 /**
  * Get local IP address
  */
-function getLocalIp(): string {
+export function getLocalIp(): string {
     const interfaces = require('os').networkInterfaces()
     for (const name of Object.keys(interfaces)) {
         for (const iface of interfaces[name]) {
@@ -589,37 +374,4 @@ function getLocalIp(): string {
         }
     }
     return 'localhost'
-}
-
-/**
- * Generate QR code data for pairing
- */
-export function generatePairingQR(ip: string): { qrData: string; cancel: () => void } {
-    const tempToken = generateToken(16)
-    const keyPair = generateKeyPair()
-
-    const pairing: PendingPairing = {
-        tempToken,
-        desktopPublicKey: keyPair.publicKey,
-        desktopPrivateKey: keyPair.privateKey,
-        timestamp: Date.now(),
-        ip
-    }
-
-    pendingPairings.set(tempToken, pairing)
-
-    const qrData = JSON.stringify({
-        desktopIp: ip,
-        desktopPort: 8443,
-        tempToken,
-        desktopPublicKey: keyPair.publicKey,
-        timestamp: Date.now()
-    })
-
-    return {
-        qrData,
-        cancel: () => {
-            pendingPairings.delete(tempToken)
-        }
-    }
 }

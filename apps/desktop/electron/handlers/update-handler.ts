@@ -2,7 +2,9 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 import { autoUpdater } from 'electron-updater'
+import { app } from 'electron'
 import type { IpcMain, BrowserWindow } from 'electron'
+import { sendToWindow } from '../utils/window'
 
 /**
  * Secure Auto-Update Handler for Kalynt
@@ -32,17 +34,41 @@ interface UpdateProgress {
 
 let updateCheckInProgress = false
 let downloadInProgress = false
+let installing = false
+/** Kept so every later check uses it; configuring without a token would drop it. */
+let configuredToken: string | undefined
+
+/** True once "Install and restart" was chosen; quitting must not be delayed then. */
+export const isInstallingUpdate = () => installing
+
+/** Release notes come as HTML text or as a list of per-version notes. */
+function notesText(notes: unknown): string | undefined {
+    if (typeof notes === 'string') return notes
+    if (Array.isArray(notes)) {
+        return notes.map(n => (n && typeof n === 'object' ? `${(n as { version?: string }).version ?? ''}\n${(n as { note?: string }).note ?? ''}` : String(n))).join('\n\n').trim() || undefined
+    }
+    return undefined
+}
+
+const describe = (info: { version: string; releaseNotes?: unknown; releaseDate?: string; releaseName?: string | null }) => ({
+    version: info.version,
+    releaseNotes: notesText(info.releaseNotes),
+    releaseDate: info.releaseDate,
+    releaseName: info.releaseName ?? undefined
+})
 
 /**
  * Configure auto-updater with security settings
  */
-function configureAutoUpdater(githubToken?: string) {
+function configureAutoUpdater(githubToken: string | undefined = configuredToken) {
+    configuredToken = githubToken
     // Enable logging
     autoUpdater.logger = updateLogger as any
 
     // Security: Only allow HTTPS
     // Allow update checks in development mode for testing
-    autoUpdater.forceDevUpdateConfig = process.env.NODE_ENV !== 'production'
+    // Unpackaged (development) builds check too, using the feed set below.
+    autoUpdater.forceDevUpdateConfig = !app.isPackaged
 
     // Auto-download is disabled - user must explicitly approve
     autoUpdater.autoDownload = false
@@ -75,7 +101,10 @@ function configureAutoUpdater(githubToken?: string) {
     
     // Explicitly set the channel again on the updater instance
     autoUpdater.channel = channel
-    
+    // Setting a channel turns on allowDowngrade, which would offer older
+    // releases (e.g. 1.0.5-beta to a 2.0.0 install) as "updates".
+    autoUpdater.allowDowngrade = false
+
     console.log(`[Update] Configured for ${owner}/${repo}`)
     console.log(`[Update] Channel: ${autoUpdater.channel}, AllowPrerelease: ${autoUpdater.allowPrerelease}, Current Version: ${version}`)
 }
@@ -102,7 +131,7 @@ export function registerUpdateHandlers(
         try {
             if (!token || token.trim() === '') {
                 console.log('[Update] No token provided, using public access only')
-                configureAutoUpdater()
+                configureAutoUpdater(undefined)
                 return { success: true, message: 'Using public access for updates' }
             }
 
@@ -167,18 +196,14 @@ export function registerUpdateHandlers(
                 }
             }
 
-            const updateInfo: UpdateInfo = {
-                version: result.updateInfo.version,
-                releaseNotes: result.updateInfo.releaseNotes as string | undefined,
-                releaseDate: result.updateInfo.releaseDate,
-                releaseName: result.updateInfo.releaseName ?? undefined
-            }
+            const updateInfo: UpdateInfo = describe(result.updateInfo) as UpdateInfo
 
-            console.log('[Update] Update check completed:', updateInfo)
+            console.log('[Update] Update check completed:', updateInfo.version, 'available:', result.isUpdateAvailable)
 
             return {
                 success: true,
-                updateAvailable: result.updateInfo.version !== autoUpdater.currentVersion.version,
+                // electron-updater compares versions properly (an older release is not an update).
+                updateAvailable: result.isUpdateAvailable,
                 updateInfo,
                 currentVersion: autoUpdater.currentVersion.version
             }
@@ -245,6 +270,7 @@ export function registerUpdateHandlers(
         try {
             console.log('[Update] Installing update and restarting...')
 
+            installing = true
             setImmediate(() => {
                 autoUpdater.quitAndInstall(false, true)
             })
@@ -287,84 +313,32 @@ export function registerUpdateHandlers(
  * Set up auto-updater event listeners and forward to renderer
  */
 function setupAutoUpdaterEvents(getMainWindow: () => BrowserWindow | null) {
-    // Update is available
-    autoUpdater.on('update-available', (info) => {
+    const send = (channel: string, payload?: unknown) => sendToWindow(getMainWindow(), channel, payload)
+
+    autoUpdater.on('checking-for-update', () => send('update:checking'))
+    autoUpdater.on('update-available', info => {
         console.log('[Update] Update available:', info.version)
-        const mainWindow = getMainWindow()
-        if (mainWindow) {
-            mainWindow.webContents.send('update:available', {
-                version: info.version,
-                releaseNotes: info.releaseNotes,
-                releaseDate: info.releaseDate,
-                releaseName: info.releaseName
-            })
-        }
+        send('update:available', describe(info))
     })
-
-    // No update available
-    autoUpdater.on('update-not-available', (info) => {
-        console.log('[Update] No update available, current version:', info.version)
+    autoUpdater.on('update-not-available', info => {
         updateCheckInProgress = false
-        const mainWindow = getMainWindow()
-        if (mainWindow) {
-            mainWindow.webContents.send('update:not-available', {
-                version: info.version
-            })
-        }
+        send('update:not-available', { version: info.version })
     })
-
-    // Download progress
-    autoUpdater.on('download-progress', (progressObj) => {
-        const progress: UpdateProgress = {
-            bytesPerSecond: progressObj.bytesPerSecond,
-            percent: progressObj.percent,
-            transferred: progressObj.transferred,
-            total: progressObj.total
-        }
-
-        console.log(`[Update] Download progress: ${progress.percent.toFixed(2)}%`)
-        const mainWindow = getMainWindow()
-        if (mainWindow) {
-            mainWindow.webContents.send('update:download-progress', progress)
-        }
+    autoUpdater.on('download-progress', p => {
+        const progress: UpdateProgress = { bytesPerSecond: p.bytesPerSecond, percent: p.percent, transferred: p.transferred, total: p.total }
+        send('update:download-progress', progress)
     })
-
-    // Update downloaded
-    autoUpdater.on('update-downloaded', (info) => {
+    autoUpdater.on('update-downloaded', info => {
         console.log('[Update] Update downloaded:', info.version)
         downloadInProgress = false
-        const mainWindow = getMainWindow()
-        if (mainWindow) {
-            mainWindow.webContents.send('update:downloaded', {
-                version: info.version,
-                releaseNotes: info.releaseNotes,
-                releaseDate: info.releaseDate,
-                releaseName: info.releaseName
-            })
-        }
+        send('update:downloaded', describe(info))
     })
-
-    // Error occurred
-    autoUpdater.on('error', (error) => {
+    autoUpdater.on('error', error => {
         console.error('[Update] Error:', error)
         updateCheckInProgress = false
         downloadInProgress = false
-        const mainWindow = getMainWindow()
-        if (mainWindow) {
-            mainWindow.webContents.send('update:error', {
-                message: error.message,
-                stack: error.stack
-            })
-        }
-    })
-
-    // Checking for updates
-    autoUpdater.on('checking-for-update', () => {
-        console.log('[Update] Checking for updates...')
-        const mainWindow = getMainWindow()
-        if (mainWindow) {
-            mainWindow.webContents.send('update:checking')
-        }
+        installing = false
+        send('update:error', { message: error.message })
     })
 }
 

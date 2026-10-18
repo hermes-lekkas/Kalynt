@@ -1,0 +1,223 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ * Reset, document defaults and a handful of global utilities.
+ */
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+* {
+    margin: 0;
+}
+
+html,
+body,
+#root {
+    height: 100%;
+}
+
+html {
+    font-family: var(--font-ui);
+    font-size: var(--fs-md);
+    line-height: var(--lh-base);
+    color: var(--text);
+    background: var(--bg);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: 'ss01', 'cv11';
+}
+
+body {
+    overflow: hidden;
+    background: var(--surface);
+    user-select: none;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    font-size: inherit;
+    font-weight: var(--fw-semibold);
+    line-height: var(--lh-tight);
+}
+
+p {
+    text-wrap: pretty;
+}
+
+button,
+input,
+select,
+textarea {
+    font: inherit;
+    color: inherit;
+    letter-spacing: inherit;
+}
+
+button {
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+}
+
+button:disabled {
+    cursor: not-allowed;
+}
+
+input,
+textarea,
+select {
+    user-select: text;
+}
+
+a {
+    color: var(--text);
+    text-decoration: underline;
+    text-decoration-color: var(--line-strong);
+    text-underline-offset: 2px;
+}
+
+a:hover {
+    text-decoration-color: currentColor;
+}
+
+img,
+svg {
+    display: block;
+    flex-shrink: 0;
+}
+
+code,
+kbd,
+pre,
+samp {
+    font-family: var(--font-code);
+    font-size: 0.95em;
+}
+
+pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+::selection {
+    background: var(--agent-soft);
+}
+
+:focus {
+    outline: none;
+}
+
+:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
+}
+
+/* Scrollbars: thin, quiet, visible on hover */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-strong) transparent;
+}
+
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--line-strong);
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background-color: var(--text-4);
+}
+
+::-webkit-scrollbar-corner {
+    background: transparent;
+}
+
+[hidden] {
+    display: none !important;
+}
+
+/* Electron window dragging */
+.drag-region {
+    -webkit-app-region: drag;
+}
+
+.no-drag {
+    -webkit-app-region: no-drag;
+}
+
+/* Utilities */
+.mono {
+    font-family: var(--font-code);
+}
+
+.truncate {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+.selectable {
+    user-select: text;
+}
+
+.spin {
+    animation: k-spin 0.9s linear infinite;
+}
+
+@keyframes k-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@keyframes k-fade-in {
+    from {
+        opacity: 0;
+    }
+}
+
+@keyframes k-pop-in {
+    from {
+        opacity: 0;
+        transform: translateY(-4px) scale(0.985);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 1ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 1ms !important;
+    }
+
+    .spin {
+        animation: k-spin 1.6s linear infinite !important;
+    }
+}

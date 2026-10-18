@@ -38,12 +38,24 @@ function loadKeys(userDataPath: string): EncryptedKeys {
     return {}
 }
 
+// Written to a temporary file and renamed, so a crash mid-write can't
+// corrupt every stored key. Readable by the owner only. Throws on failure.
 function saveKeys(userDataPath: string, keys: EncryptedKeys): void {
+    const filePath = getKeysFilePath(userDataPath)
+    const tempPath = `${filePath}.${process.pid}.tmp`
+    fs.writeFileSync(tempPath, JSON.stringify(keys, null, 2), { encoding: 'utf-8', mode: 0o600 })
+    fs.renameSync(tempPath, filePath)
+}
+
+/** Decrypts one stored secret for use inside the main process, or null. */
+export function readSecret(userDataPath: string, key: string): string | null {
     try {
-        const filePath = getKeysFilePath(userDataPath)
-        fs.writeFileSync(filePath, JSON.stringify(keys, null, 2), 'utf-8')
+        const encryptedBase64 = loadKeys(userDataPath)[key]
+        if (!encryptedBase64 || !safeStorage.isEncryptionAvailable()) return null
+        return safeStorage.decryptString(Buffer.from(encryptedBase64, 'base64'))
     } catch (error) {
-        console.error('[SafeStorage] Failed to save keys:', error)
+        console.error(`[SafeStorage] Couldn't read ${key}:`, error)
+        return null
     }
 }
 
@@ -61,6 +73,9 @@ export function registerSafeStorageHandlers(
     // Base64 encoding is NOT encryption and provides no security
     ipcMain.handle('safeStorage:set', async (_event, options: { key: string; value: string }) => {
         try {
+            if (!options?.key || typeof options.value !== 'string') {
+                return { success: false, error: 'A key and a text value are required' }
+            }
             if (!safeStorage.isEncryptionAvailable()) {
                 // SECURITY: Do not fall back to insecure storage
                 console.error('[SafeStorage] Encryption not available - refusing to store credentials insecurely')

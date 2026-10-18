@@ -1,4 +1,4 @@
-﻿/*
+/*
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 import { create } from 'zustand'
@@ -85,6 +85,7 @@ interface AppState {
     setCurrentSpace: (space: Space | null) => void
     createSpace: (name: string, spaceId?: string, category?: WorkspaceCategoryId) => Space
     deleteSpace: (id: string) => void
+    renameSpace: (id: string, name: string) => void
     setConnectedPeers: (peers: Peer[]) => void
     toggleSidebarCollapsed: () => void
     setStartupStatus: (status: string) => void // [NEW]
@@ -120,7 +121,7 @@ export const useAppStore = create<AppState>()(
             connectedPeers: [],
             sidebarCollapsed: false,
             _hasHydrated: false,
-            startupStatus: 'Initializing Agent Core...', // Default start message
+            startupStatus: 'Starting Kalynt',
             showSettings: false,
             settingsTab: null,
             theme: 'dark',
@@ -139,12 +140,12 @@ export const useAppStore = create<AppState>()(
             },
 
             initialize: async () => {
-                set({ startupStatus: 'Connecting to Secure Local Interface...' })
+                set({ startupStatus: 'Starting Kalynt' })
 
                 // Get version from Electron if available
                 if (globalThis.electronAPI) {
                     try {
-                        set({ startupStatus: 'Verifying Environment Integrity...' })
+                        set({ startupStatus: 'Reading app version' })
                         const version = await globalThis.electronAPI.getVersion()
                         set({ version })
                     } catch (error) {
@@ -152,13 +153,9 @@ export const useAppStore = create<AppState>()(
                     }
 
                     // Load API keys from secure storage
-                    set({ startupStatus: 'Decryption Secure Storage...' })
+                    set({ startupStatus: 'Unlocking saved API keys' })
                     await get().loadAPIKeys()
                 }
-
-                set({ startupStatus: 'Starting Kalynt Environment...' })
-                // Artificial delay to let the user see the animation and read the status
-                await new Promise(resolve => setTimeout(resolve, 2000));
 
                 set({ isInitialized: true, startupStatus: 'Ready' })
             },
@@ -195,6 +192,14 @@ export const useAppStore = create<AppState>()(
                 set({
                     spaces: spaces.filter(s => s.id !== id),
                     currentSpace: currentSpace?.id === id ? null : currentSpace
+                })
+            },
+
+            renameSpace: (id, name) => {
+                const { spaces, currentSpace } = get()
+                set({
+                    spaces: spaces.map(s => s.id === id ? { ...s, name } : s),
+                    currentSpace: currentSpace?.id === id ? { ...currentSpace, name } : currentSpace
                 })
             },
 

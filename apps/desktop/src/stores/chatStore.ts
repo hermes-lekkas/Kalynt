@@ -3,7 +3,7 @@
  */
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
-import { ChatMessage } from '../components/UnifiedAgentPanel'
+import type { ChatMessage } from '../types/chat'
 
 export interface ChatSession {
     id: string
@@ -11,6 +11,8 @@ export interface ChatSession {
     lastModified: number
     messages: ChatMessage[]
     mode: 'agent' | 'collaboration'
+    /** Workspace the conversation belongs to. Older sessions have none and show everywhere. */
+    spaceId?: string
 }
 
 interface ChatStore {
@@ -18,7 +20,7 @@ interface ChatStore {
     currentSessionId: string | null
     
     // Actions
-    createSession: (title?: string) => string
+    createSession: (title?: string, spaceId?: string) => string
     updateSession: (id: string, updates: Partial<ChatSession>) => void
     deleteSession: (id: string) => void
     setCurrentSession: (id: string | null) => void
@@ -32,14 +34,15 @@ export const useChatStore = create<ChatStore>()(
             sessions: [],
             currentSessionId: null,
 
-            createSession: (title = 'New Chat') => {
+            createSession: (title = 'New Chat', spaceId) => {
                 const id = crypto.randomUUID()
                 const newSession: ChatSession = {
                     id,
                     title,
                     lastModified: Date.now(),
                     messages: [],
-                    mode: 'agent'
+                    mode: 'agent',
+                    spaceId
                 }
                 set((state) => ({ 
                     sessions: [newSession, ...state.sessions],

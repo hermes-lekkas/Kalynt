@@ -106,19 +106,19 @@ for (const provider of providers) {
     assert(Array.isArray(models), `PROVIDER_MODELS[${provider}] is an array`)
     assert(models.length > 0, `PROVIDER_MODELS[${provider}] has at least one model`)
 
-    // Verify no non-existent model names remain
-    const invalidPatterns = ['gpt-5', 'codex-v6', 'claude-4', 'gemini-3']
-    for (const pattern of invalidPatterns) {
-        const hasInvalid = models.some((m: string) => m.includes(pattern))
-        assert(!hasInvalid, `PROVIDER_MODELS[${provider}] does not contain "${pattern}" pattern`)
+    // Verify no retired model IDs remain (the provider returns 404 for them)
+    const retired = ['o1', 'o3-mini', 'claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest', 'claude-3-opus-latest',
+        'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash']
+    for (const id of retired) {
+        assert(!models.includes(id), `PROVIDER_MODELS[${provider}] does not contain retired "${id}"`)
     }
 }
 
-// Verify specific valid models are present
+// Verify specific current models are present
 assert(PROVIDER_MODELS.openai.includes('gpt-4o'), 'OpenAI includes gpt-4o')
 assert(PROVIDER_MODELS.openai.includes('gpt-4o-mini'), 'OpenAI includes gpt-4o-mini')
-assert(PROVIDER_MODELS.anthropic.includes('claude-3-5-sonnet-latest'), 'Anthropic includes claude-3-5-sonnet-latest')
-assert(PROVIDER_MODELS.google.includes('gemini-1.5-flash'), 'Google includes gemini-1.5-flash')
+assert(PROVIDER_MODELS.anthropic.includes('claude-sonnet-5-5'), 'Anthropic includes claude-sonnet-5-5')
+assert(PROVIDER_MODELS.google.includes('gemini-2.5-flash'), 'Google includes gemini-2.5-flash')
 
 // ============================================================
 // 4. Validate AgentLoopConfig.model is used  

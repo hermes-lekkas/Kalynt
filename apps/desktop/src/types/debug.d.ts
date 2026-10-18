@@ -8,6 +8,7 @@
 
 export type DebugType =
   | 'node'
+  | 'pwa-node'
   | 'node-terminal'
   | 'python'
   | 'debugpy'
@@ -17,6 +18,7 @@ export type DebugType =
   | 'go'
   | 'delve'
   | 'rust-lldb'
+  | 'codelldb'
   | 'coreclr'
   | 'java'
   | 'php'
@@ -48,6 +50,7 @@ export interface DebugConfiguration {
 
   // Python specific
   pythonPath?: string;
+  python?: string;
   module?: string;
   django?: boolean;
   jinja?: boolean;

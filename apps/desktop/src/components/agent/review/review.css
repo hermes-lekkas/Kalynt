@@ -1,0 +1,167 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
+.review {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    padding: var(--sp-3) 0 var(--sp-6);
+}
+
+.review--running {
+    justify-content: center;
+    gap: var(--sp-5);
+    padding: var(--sp-8) var(--sp-7);
+}
+
+.review__title {
+    font-weight: var(--fw-semibold);
+}
+
+.review__file {
+    color: var(--text-3);
+    font-size: var(--fs-xs);
+}
+
+.review--running .k-btn {
+    align-self: flex-start;
+}
+
+.review__summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-4);
+    padding: 0 var(--sp-5) var(--sp-4);
+}
+
+.review__muted {
+    color: var(--text-3);
+}
+
+.review__filters {
+    padding: 0 var(--sp-5) var(--sp-4);
+    overflow-x: auto;
+}
+
+.review__list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    border-top: 1px solid var(--line);
+}
+
+.review-issue {
+    padding: var(--sp-4) var(--sp-5);
+    border-bottom: 1px solid var(--line);
+    border-left: 2px solid transparent;
+}
+
+.review-issue--critical,
+.review-issue--high {
+    border-left-color: var(--danger);
+}
+
+.review-issue--medium {
+    border-left-color: var(--warning);
+}
+
+.review-issue__head {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-3);
+    width: 100%;
+    text-align: left;
+    color: var(--text);
+    line-height: var(--lh-base);
+}
+
+.review-issue__chev {
+    margin-top: 3px;
+    color: var(--text-3);
+    transition: transform var(--dur-1) var(--ease);
+}
+
+.review-issue__chev.is-open {
+    transform: rotate(90deg);
+}
+
+.review-issue__meta {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-4);
+    margin: var(--sp-3) 0 0 21px;
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+    min-width: 0;
+}
+
+.review-issue__file {
+    min-width: 0;
+    color: var(--text-2);
+}
+
+.review-issue__file:hover {
+    color: var(--text);
+    text-decoration: underline;
+}
+
+.review-issue__body {
+    margin: var(--sp-4) 0 0 21px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+}
+
+.review-issue__label {
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semibold);
+    color: var(--text-3);
+}
+
+.review-issue__suggestion {
+    color: var(--text-2);
+    line-height: var(--lh-prose);
+}
+
+.review-issue__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+}
+
+.review-issue__note {
+    font-size: var(--fs-sm);
+    color: var(--success);
+}
+
+.review-issue__note.is-error {
+    color: var(--danger);
+}
+
+.review__errors {
+    padding: var(--sp-5);
+    font-size: var(--fs-sm);
+    color: var(--text-3);
+}
+
+.review__errors-head {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    color: var(--text-2);
+}
+
+.review__errors-head svg.is-open {
+    transform: rotate(90deg);
+}
+
+.review__errors ul {
+    margin: var(--sp-3) 0 0;
+    padding-left: var(--sp-6);
+    display: grid;
+    gap: var(--sp-2);
+}
