@@ -20,7 +20,9 @@ env:
 
 jobs:
   build-windows:
-    runs-on: windows-latest
+    # windows-latest now ships Visual Studio 2026, which node-gyp 11 can't detect
+    # (it knows 2019 and 2022), so native modules fail to rebuild there.
+    runs-on: windows-2022
     steps:
       - name: Checkout
         uses: actions/checkout@v4
