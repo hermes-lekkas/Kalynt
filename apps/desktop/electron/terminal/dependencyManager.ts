@@ -392,6 +392,7 @@ export class DependencyManager extends EventEmitter {
                 cwd,
                 shell: false,
                 windowsHide: true,
+                windowsVerbatimArguments: wrapped.windowsVerbatimArguments,
                 env: {
                     ...process.env,
                     PATH: getEnhancedPATH()

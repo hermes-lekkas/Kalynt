@@ -43,8 +43,9 @@ function executeTask(task: Task, workspacePath: string, getWindow: () => Browser
     let args = (task.args ?? []).map(sub)
     // 'process' tasks run the program directly; 'shell' tasks go through the shell.
     let useShell = task.type !== 'process'
+    let windowsVerbatimArguments: boolean | undefined
     if (task.type === 'npm') {
-        ;({ command, args } = wrapWindowsCommand(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', task.command, ...args]))
+        ;({ command, args, windowsVerbatimArguments } = wrapWindowsCommand(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', task.command, ...args]))
         useShell = false
     }
 
@@ -56,7 +57,7 @@ function executeTask(task: Task, workspacePath: string, getWindow: () => Browser
     // A shell task is one command line: the command as written plus quoted arguments.
     const child = useShell
         ? spawn([command, ...args.map(shellQuote)].join(' '), { cwd, env, shell: true, windowsHide: true })
-        : spawn(command, args, { cwd, env, shell: false, windowsHide: true })
+        : spawn(command, args, { cwd, env, shell: false, windowsHide: true, windowsVerbatimArguments })
     execution.processId = child.pid
     runningTasks.set(taskId, { process: child, execution })
 

@@ -92,7 +92,7 @@ export function registerCodeExecutionHandlers(
             const result: StepResult = { code: null, signal: null, stdout: '', stderr: '', timedOut: false }
             let proc: ChildProcess
             try {
-                proc = spawn(s.command, s.args, { cwd, env, shell: false, windowsHide: true })
+                proc = spawn(s.command, s.args, { cwd, env, shell: false, windowsHide: true, windowsVerbatimArguments: s.windowsVerbatimArguments })
             } catch (err) {
                 resolve({ ...result, error: (err as Error).message })
                 return
@@ -219,7 +219,7 @@ export function registerCodeExecutionHandlers(
         const runId = id || `cmd-${Date.now()}`
         const r = await new Promise<StepResult>(resolve => {
             const wrapped = wrapWindowsCommand(executable, args)
-            const proc = spawn(wrapped.command, wrapped.args, { cwd: safeCwd, shell: false, windowsHide: true, env: safeEnv({ NO_UPDATE_NOTIFIER: '1' }) })
+            const proc = spawn(wrapped.command, wrapped.args, { cwd: safeCwd, shell: false, windowsHide: true, windowsVerbatimArguments: wrapped.windowsVerbatimArguments, env: safeEnv({ NO_UPDATE_NOTIFIER: '1' }) })
             runningProcesses.set(runId, proc)
             let output = ''
             proc.stdin?.on('error', () => undefined)

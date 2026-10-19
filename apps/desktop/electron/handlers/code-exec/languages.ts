@@ -11,6 +11,8 @@ const isWindows = process.platform === 'win32'
 export interface Step {
     command: string
     args: string[]
+    /** Set when the arguments are already escaped for cmd.exe. */
+    windowsVerbatimArguments?: boolean
 }
 
 export interface RunPlan {

@@ -10,6 +10,7 @@ import { spawn, execFileSync, type ChildProcess } from 'node:child_process'
 import treeKill from 'tree-kill'
 import { binaryManager } from '../../services/binary-manager'
 import { managedBinDirs, managedEnv, withManagedPath } from '../../services/runtimes/manifest'
+import { cmdCommandLine } from './cmd-escape'
 
 const isWindows = process.platform === 'win32'
 
@@ -132,11 +133,15 @@ export async function findBinary(name: string, workspacePath?: string | null): P
     return remember(null)
 }
 
-/** Windows runs .cmd/.bat files through cmd.exe when spawning without a shell. */
-export function wrapWindowsCommand(command: string, args: string[]): { command: string; args: string[] } {
+/**
+ * Windows runs .cmd/.bat files through cmd.exe when spawning without a shell.
+ * The arguments are escaped for cmd.exe, so pass windowsVerbatimArguments on to spawn.
+ */
+export function wrapWindowsCommand(command: string, args: string[]): { command: string; args: string[]; windowsVerbatimArguments?: boolean } {
     if (isWindows && /\.(cmd|bat)$/i.test(command)) {
         const comspec = process.env.COMSPEC && /cmd(\.exe)?$/i.test(process.env.COMSPEC) ? process.env.COMSPEC : 'cmd.exe'
-        return { command: comspec, args: ['/d', '/s', '/c', command, ...args] }
+        const line = cmdCommandLine(path.normalize(command), args)
+        return { command: comspec, args: ['/d', '/s', '/c', `"${line}"`], windowsVerbatimArguments: true }
     }
     return { command, args }
 }
