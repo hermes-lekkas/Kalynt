@@ -48,7 +48,7 @@ The whole renderer was rebuilt from scratch on a small design system, replacing 
 
 ### Security and reliability
 
-- No backend code path spawns a shell any more; package manager and run commands are argument lists.
+- Run and package-manager commands no longer go through a shell; they are argument lists. Build tasks that `tasks.json` declares as `shell` tasks still run in a shell, as in VS Code.
 - One path validator, with symlink resolution, guards every file operation (four diverging copies were merged).
 - Git: tokens are passed per command and old tokens stored in `.git/config` by earlier versions are removed; clone rejects option-like and `file://` URLs.
 - Secure storage writes are atomic and owner-only.

@@ -99,7 +99,7 @@ See the [changelog](./CHANGELOG.md) for the full list.
 *   **API keys** are kept in the operating system's keychain through Electron's `safeStorage` and used only by the main process.
 *   **Sandboxed renderer** (`contextIsolation`, `sandbox`, no `nodeIntegration`) and a strict Content Security Policy.
 *   **Every file operation** is checked against the workspace folder, with symlinks resolved.
-*   **No shell is spawned** for run, build or package commands; arguments are passed as lists. The agent's commands do use your shell, and only run after your approval unless you choose *Full auto*.
+*   **No shell is spawned** for run or package commands; arguments are passed as lists. Build tasks declared as `shell` in `tasks.json` and the agent's commands do use a shell, and the agent's only run after your approval unless you choose *Full auto*.
 *   **Agent web access** stays on the public internet; reading a page on your machine or local network needs your approval.
 
 See [SECURITY.md](./SECURITY.md) for details and how to report a vulnerability.
