@@ -45,13 +45,14 @@ Kalynt is built on a "Trust No One" (Zero Trust) architecture. We assume that ne
 
 ### 4. Secrets
 *   **API keys** (Anthropic, OpenAI, Google, DeepSeek, Moonshot, Z.ai) and the GitHub token are **never** stored in plain text. Electron's `safeStorage` encrypts them with the OS keychain (Windows DPAPI, macOS Keychain, Linux Secret Service), and the file is written atomically with owner-only permissions.
+*   **Room passwords** for encrypted workspaces are kept in the same secure storage; local storage only records whether encryption is on. Passwords saved in plain text by earlier versions are moved there on first start.
 *   **Git** credentials are passed per command and never written to `.git/config`. Tokens that earlier versions stored there are removed.
 *   **Cloud requests** go directly from your machine to the provider; Kalynt has no server in between. They are made by the main process, which is the only part of the app that reads provider keys; the interface keeps no copy once a key is saved.
 
 ### 5. Process Isolation and Command Execution
 *   **Renderer sandbox:** `sandbox: true`, `contextIsolation: true`, `nodeIntegration: false`. The renderer reaches the system only through the preload API.
 *   **Content Security Policy:** applied to every response. Scripts, styles and fonts load only from the app itself (`default-src 'self'`, `object-src 'none'`, `base-uri 'self'`); fonts are bundled, so no third-party style or font origins are allowed. `script-src` still permits `unsafe-eval` and `unsafe-inline` because the Monaco editor needs them.
-*   **No shell:** Run and package-manager commands, and Build tasks of type `process`, are spawned with argument lists, so file names and arguments can't inject shell syntax. Build tasks of type `shell` in `tasks.json` run in a shell as written, like VS Code, and the agent's commands use your shell (see above).
+*   **No shell:** Run and package-manager commands, and Build tasks of type `process`, are spawned with argument lists, so file names and arguments can't inject shell syntax. On Windows, `.cmd`/`.bat` programs must run through `cmd.exe`, so their arguments are escaped for it the way cross-spawn does. Build tasks of type `shell` in `tasks.json` run in a shell as written, like VS Code, and the agent's commands use your shell (see above).
 *   **"Stop all processes"** stops only processes Kalynt started.
 *   **Extensions** run in a separate process with a restricted environment, are downloaded only from Open VSX, and their archives can't write outside their folder.
 *   **Native helper (macOS)** runs as a child process and communicates only through JSON-RPC over stdin/stdout.
@@ -81,6 +82,8 @@ We will acknowledge receipt within 48 hours and strive to provide a patch within
 
 *   **Shell execution removed** from Run and package managers. Build uses a shell only for tasks declared as `shell` tasks, and the new agent runs commands through your shell by design, behind the approval rules above.
 *   **Provider keys moved out of the interface:** a main-process AI gateway makes every cloud request, and the renderer only learns which providers have a key.
+*   **Room passwords moved to secure storage** (they were in plain text in local storage), with a one-time migration.
+*   **Windows `cmd.exe` escaping** for `.cmd`/`.bat` launches, which previously passed metacharacters such as `&` through.
 *   **Agent network guard:** web fetches resolve hosts and check every redirect, so a public link can't bounce the agent to a local or private address without approval.
 *   **Process cleanup scoped:** "Stop all processes" previously killed processes by port, which could hit unrelated programs. It now stops only processes Kalynt started.
 *   **Git token handling:** tokens are no longer stored in `.git/config`, and existing ones are removed; clone rejects option-like and `file://` URLs.

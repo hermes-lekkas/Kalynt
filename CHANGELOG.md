@@ -49,6 +49,8 @@ The whole renderer was rebuilt from scratch on a small design system, replacing 
 ### Security and reliability
 
 - Run and package-manager commands no longer go through a shell; they are argument lists. Build tasks that `tasks.json` declares as `shell` tasks still run in a shell, as in VS Code.
+- On Windows, `.cmd` and `.bat` programs (npm, npx and other shims) get their arguments escaped for `cmd.exe`, so a file name such as `a&calc.ts` can't start another program.
+- Workspace room passwords are kept in the OS keychain (`safeStorage`) instead of plain text in local storage. Passwords saved by earlier versions are moved on first start.
 - One path validator, with symlink resolution, guards every file operation (four diverging copies were merged).
 - Git: tokens are passed per command and old tokens stored in `.git/config` by earlier versions are removed; clone rejects option-like and `file://` URLs.
 - Secure storage writes are atomic and owner-only.
