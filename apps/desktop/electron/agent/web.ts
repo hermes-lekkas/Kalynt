@@ -7,7 +7,7 @@
  * Search needs no API key: DuckDuckGo's lite page, with Bing as a fallback.
  */
 import type { IpcMain } from 'electron'
-import { htmlToText, decodeEntities } from './htmlToText'
+import { htmlToText, decodeEntities, stripTags as removeTags } from './htmlToText'
 import { assertPublicUrl } from './netGuard'
 
 const USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36 Kalynt'
@@ -69,7 +69,7 @@ export interface SearchResult {
     snippet: string
 }
 
-const stripTags = (html: string) => decodeEntities(html.replace(/<[^>]+>/g, '')).replace(/\s+/g, ' ').trim()
+const stripTags = (html: string) => decodeEntities(removeTags(html)).replace(/\s+/g, ' ').trim()
 
 /** DuckDuckGo lite: result links carry the target in a `uddg` parameter. */
 function parseDuckDuckGo(html: string): SearchResult[] {
