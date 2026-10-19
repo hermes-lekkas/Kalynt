@@ -2,6 +2,83 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v2.0.0] - 2026-10-19
+
+Kalynt 2.0 is a ground-up rebuild of the interface and a reliability pass over every backend service. It is the first stable release.
+
+### A new interface
+
+The whole renderer was rebuilt from scratch on a small design system, replacing the previous UI.
+
+- **Home and workspaces.** A home screen to create a workspace, open a folder, clone a repository or join a session, plus recent workspaces. Each workspace now remembers its own folder, open tabs and last state (previously one folder was shared by every workspace).
+- **Code view.** Explorer (virtualised tree, drag to move), workspace search with replace preview, source control (stage, commit, branches, diff view), Monaco editor with split view and breadcrumbs, a bottom panel with Terminal, Output, Build and Debug, and the agent panel. Every region fails independently, so one crash no longer takes down the window.
+- **Tasks, History and Shared files** are full-page views: a shared task board, the real git log grouped by day with search and author filters, and peer-to-peer file sharing.
+- **Command palette** (`Ctrl+P` for files, `Ctrl+Shift+P` for commands, `#` for workspaces), keyboard shortcuts for every view, and a single dialog for extensions and language runtimes.
+- **Settings** reorganised into General, Models and keys, Security, Members, Network, Performance, Advanced and About.
+- **Light and dark themes** that also cover Monaco and the terminal; Instrument Sans and JetBrains Mono are bundled, so nothing loads from Google Fonts.
+- **New app icon** to match the new interface.
+- Every UI file is under 500 lines; the old 139 KB agent panel and similar monoliths are gone.
+
+### Agent and AI
+
+- **Six cloud providers.** DeepSeek, Kimi (Moonshot AI) and GLM (Z.ai) join Anthropic, OpenAI and Google, each with its own key in Settings → Models and keys.
+- **Current models only.** Claude Opus 5.5, Fable 5.1, Sonnet 5.5 and Haiku 5.5; GPT-6.1 Sol, GPT-6 Astra and GPT-6 Luna; Gemini 4 Argon, 3.8 Flash and 3.5 Flash-Lite; DeepSeek V4 Pro and V4.1 Flash; Kimi K3; GLM-5.3. The previous IDs (GPT-4o, Gemini 2.5, Claude 4) are gone. Kalynt also reads each provider's live model list with your key, so new models appear without an update and retired ones drop out; a saved choice of a retired model moves to the current default.
+- **An AI gateway in the main process.** Every cloud request goes through it, so API keys are used only by the main process; once a key is saved, the interface keeps no copy and only knows which providers have one. Each protocol has a dedicated adapter: the official Anthropic SDK (adaptive thinking, effort, prompt caching, server-side fallbacks), OpenAI's Responses API (stateless, with encrypted reasoning passed back), Gemini (thought signatures), and the OpenAI-compatible APIs of DeepSeek, Kimi and GLM (their thinking modes, with reasoning passed back as they require). Rate limits and overloads are retried before anything has streamed, and errors say what to do.
+- **A rebuilt agent.** The agent loop and its tools were rewritten:
+  - Native tool calling on every cloud provider, and a text tool protocol for local models that also understands the `<tool_call>` and JSON forms local models tend to use.
+  - Tools to read, list, find (glob) and search (grep) files; edit by exact replacement (the agent must read a file before changing it); write, delete and move; run commands in your shell, in the foreground or in the background with output checks and stop; web search and page reading; a plan; semantic search over AIME's index; diagnostics; git status and diff. Independent reads run in parallel.
+  - Edits to Python, JavaScript, JSON and shell files are syntax-checked as they're made, and `get_diagnostics` runs the project's own TypeScript compiler, `go vet` or `cargo check`.
+  - Three approval modes: *Ask before changes*, *Auto-edit* and *Full auto*. Commands that look destructive or need elevated rights always ask. Approve once, allow similar commands for the chat, or decline with a note the agent sees.
+  - **Undo** restores every file a run changed, created or deleted.
+  - Live streaming of text, reasoning and tool calls; diffs and command output in the conversation; a plan checklist; *Stop* that kills running commands; *Continue* after 60 steps; automatic summarizing of long conversations; adjustable effort (Low to Max).
+  - Conversations are saved per workspace by the main process and survive restarts. Conversations from 1.x are imported once.
+- **Code review, task steps and inline completions** work with every provider, and use the model you picked for the agent when it has a key.
+- **API keys are checked against the provider's model list,** which costs nothing and does not depend on any model still being served.
+- **Local models (AIME).** The engine was rewritten on node-llama-cpp's current API: streaming, cancel, JSON-schema output, a queue so two requests don't fail with "no sequences left", speculative decoding with a draft model, and plain-language errors (damaged file, not enough memory, unsupported quantization).
+- **MemoryGuard** unloads a local model before the machine starts swapping, and optionally after a period of inactivity. New *Local model memory* settings cover the context window, GPU offload, batch size, threads and reserved RAM, and power modes feed into inference tuning.
+- **Model downloads** can pause and resume, survive servers that ignore `Range` requests, and clean up partial files when cancelled.
+
+### Running, building and debugging
+
+- **Run** supports 25 languages and runs the real file from the workspace. Arguments are parsed like a shell would, without ever invoking one.
+- **Build** only runs real build tasks (it previously fell back to the first task, which could be a dev server), and `tasks.json` with comments and trailing commas parses.
+- **The debugger was rewritten** (from 2,020 lines to five focused modules) with a corrected Debug Adapter Protocol handshake: Python (debugpy), Node.js (js-debug), C/C++ (GDB) and Go (Delve, with an install hint when it's missing). Breakpoints set before launch are honoured.
+- **Language runtimes:** a catalogue of 34 runtimes with detection, install and uninstall.
+- **"Stop all processes"** and quitting the app now stop only processes Kalynt started (including everything running inside its terminals). Previously, processes were killed by port, which could hit unrelated programs.
+
+### Security and reliability
+
+- Run and package-manager commands no longer go through a shell; they are argument lists. Build tasks that `tasks.json` declares as `shell` tasks still run in a shell, as in VS Code.
+- One path validator, with symlink resolution, guards every file operation (four diverging copies were merged).
+- Git: tokens are passed per command and old tokens stored in `.git/config` by earlier versions are removed; clone rejects option-like and `file://` URLs.
+- Secure storage writes are atomic and owner-only.
+- Extensions download only from Open VSX, VSIX archives cannot write outside their folder, and the extension host runs with a restricted environment.
+- The mobile companion bridge starts only when you pair a phone instead of listening on the network at every launch; the signaling server binds to `127.0.0.1`.
+- Terminal: killing a terminal now reports its exit, and terminals kill their whole process tree.
+- Production builds keep `console.error` and `console.warn`, so failures on users' machines can be diagnosed.
+- Agent web requests stay on the public internet: hosts are resolved and every redirect is checked, and reading a local or private address needs your approval.
+
+### Updates and packaging
+
+- **Packaged builds can load the local AI engine.** Installers shipped node-llama-cpp without the packages it depends on, so local models could not load outside a development build. A build step now copies its full dependency set.
+- The updater no longer offers an older release as an "update" (electron-updater enables downgrades whenever a channel is set).
+- Release notes in either format display correctly in the update dialog.
+- Builds no longer accumulate stale chunks in `dist-electron`, so installers don't ship dead code.
+
+### Removed
+
+- The "26 agentic services" layer (goal stack, intent classification, learning service and others) was removed: none of it was wired into the agent.
+- The previous agent (`agentLoopService`, `ideAgentTools`, tool cache, cycle detection, per-size prompt files, `shadowWorkspaceService`) and the old chat store were replaced by the new agent.
+- Document checkpoints (they snapshotted an unrelated empty document), the autonomous monitor toggle and the inline edit widget.
+- Inline AI completions are now off by default (Settings → General), and the artificial 2-second splash delay is gone.
+
+### Known issues
+
+- Seven renderer files (for example `aimeService.ts` and `p2pService.ts`) are still over 500 lines.
+- The local-model tool protocol was verified with parser tests, not with a real model run.
+- The Android companion can't be paired yet: the desktop bridge exists, but the desktop app has no pairing screen (this was also true in 1.0.5).
+- There is no unit-test suite in the repository yet; 2.0.0 was verified with end-to-end checks against the built app, and the provider adapters against a mock server that speaks each provider's protocol.
+
 ## [v1.0.5-beta] - 2026-02-27
 
 ### Major Architecture Update: Agentic AI System

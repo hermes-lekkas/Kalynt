@@ -94,9 +94,6 @@ const QWEN_TEMPLATE = '<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\
 // Devstral uses Mistral instruction format
 const DEVSTRAL_TEMPLATE = '<s>[INST] {system}\n\n{user} [/INST]'
 
-// Mistral/Mixtral uses standard Mistral format
-const MISTRAL_TEMPLATE = '<s>[INST] {system}\n\n{user} [/INST]'
-
 /**
  * Available offline models - Top 5 Coding Agent Models (2026)
  * Ordered by tier/complexity: smallest to largest
@@ -115,8 +112,8 @@ export const OFFLINE_MODELS: OfflineModel[] = [
         id: 'qwen2.5-coder-0.5b',
         name: 'Qwen2.5-Coder 0.5B',
         description: 'Ultra-lightweight model for speculative decoding. Installs irrelevant of VRAM. Best used as a "Draft Model" to accelerate larger models.',
-        size: '0.6 GB',
-        sizeBytes: 600_000_000,
+        size: '0.7 GB',
+        sizeBytes: 700_000_000,
         ramRequired: '1.5 GB',
         ramRequiredMB: 1536,
         quality: 2,
@@ -142,8 +139,8 @@ export const OFFLINE_MODELS: OfflineModel[] = [
         id: 'qwen2.5-coder-1.5b',
         name: 'Qwen2.5-Coder 1.5B',
         description: 'Fast chat assistant for code discussions. Can read files and answer questions. Note: Cannot edit files or execute code - use larger models for those tasks.',
-        size: '1.7 GB',
-        sizeBytes: 1_700_000_000,
+        size: '1.6 GB',
+        sizeBytes: 1_600_000_000,
         ramRequired: '4 GB',
         ramRequiredMB: 4096,
         quality: 3,
@@ -223,8 +220,8 @@ export const OFFLINE_MODELS: OfflineModel[] = [
         id: 'qwen2.5-coder-7b',
         name: 'Qwen2.5-Coder 7B Q8',
         description: 'Full-featured coding agent. Can read, write, and edit files. Strong tool-calling abilities for agentic coding. Higher quality Q8 quantization. (SWE-bench: 47%)',
-        size: '7.7 GB',
-        sizeBytes: 7_700_000_000,
+        size: '8.1 GB',
+        sizeBytes: 8_100_000_000,
         ramRequired: '12 GB',
         ramRequiredMB: 12288,
         quality: 5,
@@ -304,8 +301,8 @@ export const OFFLINE_MODELS: OfflineModel[] = [
         id: 'qwen2-72b-instruct',
         name: 'Qwen2 72B Instruct',
         description: 'Massive 72B parameter model with exceptional coding capabilities. 128K context window for entire codebase understanding. Full agent capabilities including advanced tool calling. Requires 64GB+ RAM.',
-        size: '45 GB',
-        sizeBytes: 45_000_000_000,
+        size: '47.4 GB',
+        sizeBytes: 47_400_000_000,
         ramRequired: '64 GB',
         ramRequiredMB: 65536,
         quality: 5,
@@ -323,33 +320,6 @@ export const OFFLINE_MODELS: OfflineModel[] = [
             canExecuteCode: true,
             canRunCommands: true,
             maxContextForSpeed: 32768,
-            supportsToolCalling: true
-        }
-    },
-    // 8. The Multi-Tasker - Mixtral-8x22B MoE (Mixture of Experts)
-    {
-        id: 'mixtral-8x22b-instruct',
-        name: 'Mixtral 8x22B MoE',
-        description: 'Sparse mixture-of-experts with 141B total parameters (8 experts x 22B). Efficient inference with 64K context. Excels at multi-tasking and complex reasoning. Requires 96GB+ RAM.',
-        size: '80 GB',
-        sizeBytes: 80_000_000_000,
-        ramRequired: '96 GB',
-        ramRequiredMB: 98304,
-        quality: 5,
-        downloadUrl: 'https://huggingface.co/mistralai/Mixtral-8x22B-Instruct-v0.1-GGUF/resolve/main/mixtral-8x22b-instruct-v0.1-q4_k_m.gguf',
-        filename: 'mixtral-8x22b-instruct-v0.1-q4_k_m.gguf',
-        minTier: 'starter',
-        tierIndex: 8,
-        contextLength: 65536,
-        promptTemplate: MISTRAL_TEMPLATE,
-        role: 'The Multi-Tasker',
-        capabilities: {
-            level: 'full',
-            canReadFiles: true,
-            canWriteFiles: true,
-            canExecuteCode: true,
-            canRunCommands: true,
-            maxContextForSpeed: 16384,
             supportsToolCalling: true
         }
     }

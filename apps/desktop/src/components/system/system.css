@@ -1,0 +1,44 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
+.resource-pop {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-5);
+    padding: var(--sp-6);
+}
+
+.resource-pop__row {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+}
+
+.resource-pop__line {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--sp-5);
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+}
+
+.resource-pop__value {
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+}
+
+.resource-pop__note {
+    color: var(--text-3);
+    font-size: var(--fs-sm);
+}
+
+.resource-pop__link {
+    align-self: flex-start;
+    color: var(--text-2);
+    font-size: var(--fs-sm);
+}
+
+.resource-pop__link:hover {
+    text-decoration: underline;
+}

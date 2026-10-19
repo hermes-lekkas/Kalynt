@@ -1,0 +1,233 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ * Bottom panel: terminal, output streams, recent commands.
+ */
+
+.bottom-panel {
+    position: relative;
+    flex-direction: column;
+    flex-shrink: 0;
+    min-height: 0;
+    /* Always leave the editor some room in short windows. */
+    max-height: calc(100% - 160px);
+    background: var(--bg);
+}
+
+.bottom-panel > .k-resizer--y {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+}
+
+.bottom-panel__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-4);
+    height: 32px;
+    padding: 0 var(--sp-3) 0 var(--sp-5);
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--line);
+}
+
+.bottom-panel__head > .k-tabs {
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.bottom-panel__actions {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+    min-width: 0;
+}
+
+.bottom-panel__actions > .k-icon-btn {
+    flex-shrink: 0;
+}
+
+.bottom-panel__body {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+}
+
+.bottom-panel__view {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Terminal switcher */
+.term-switch {
+    display: flex;
+    min-width: 0;
+    gap: 2px;
+    margin-right: var(--sp-3);
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.term-switch__item {
+    display: flex;
+    align-items: center;
+    border-radius: var(--r-1);
+    color: var(--text-3);
+    font-size: var(--fs-xs);
+}
+
+.term-switch__item button:first-child {
+    padding: 2px var(--sp-1) 2px var(--sp-3);
+    white-space: nowrap;
+}
+
+.term-switch__item:hover,
+.term-switch__item.is-active {
+    background: var(--hover);
+    color: var(--text);
+}
+
+/* Terminal */
+.terminal-pane {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    padding: var(--sp-3) 0 0 var(--sp-5);
+}
+
+/* xterm measures its parent including padding, so the host itself has none. */
+.terminal-pane__host {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.terminal-instance {
+    width: 100%;
+    height: 100%;
+}
+
+.terminal-pane .xterm,
+.output-view .xterm {
+    height: 100%;
+}
+
+.terminal-pane .xterm-viewport,
+.output-view .xterm-viewport {
+    background-color: transparent !important;
+}
+
+.terminal-search {
+    position: absolute;
+    top: var(--sp-3);
+    right: var(--sp-6);
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+    padding: var(--sp-2);
+    border-radius: var(--r-3);
+    background: var(--raised);
+    box-shadow: var(--shadow-pop);
+}
+
+.terminal-search input {
+    width: 200px;
+    height: 24px;
+    padding: 0 var(--sp-4);
+    border-radius: var(--r-1);
+    border: 1px solid var(--line-strong);
+    background: var(--bg);
+    font-size: var(--fs-sm);
+}
+
+.terminal-search input:focus {
+    border-color: var(--focus);
+    outline: none;
+}
+
+.terminal-search input.is-missing {
+    border-color: var(--danger);
+}
+
+/* Output streams */
+.output-view {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    padding: var(--sp-3) 0 0 var(--sp-5);
+}
+
+.output-view__host {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.output-view__empty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--sp-6);
+    color: var(--text-3);
+    font-size: var(--fs-sm);
+    text-align: center;
+    pointer-events: none;
+}
+
+/* Recent commands */
+.recent-cmds {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+    padding: var(--sp-4);
+    max-height: 420px;
+}
+
+.recent-cmds ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    overflow: auto;
+}
+
+.recent-cmds__heading {
+    margin-top: var(--sp-2);
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semibold);
+    color: var(--text-3);
+}
+
+.recent-cmds__empty {
+    color: var(--text-3);
+    font-size: var(--fs-sm);
+}
+
+.recent-cmd {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    border-radius: var(--r-1);
+}
+
+.recent-cmd:hover {
+    background: var(--hover);
+}
+
+.recent-cmd__run {
+    flex: 1;
+    min-width: 0;
+    padding: var(--sp-2) var(--sp-3);
+    text-align: left;
+    font-size: var(--fs-sm);
+    color: var(--text);
+}

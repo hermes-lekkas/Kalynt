@@ -105,8 +105,8 @@ class PerformanceAccelerationService {
         })
 
         // Compute optimizations
-        ipcMain.handle('performance:get-inference-config', (_, hardware: any) => {
-            return this.compute.getInferenceOptimization(hardware)
+        ipcMain.handle('performance:get-inference-config', () => {
+            return this.compute.getInferenceOptimization()
         })
 
         // Monitoring for window creation to apply optimizations

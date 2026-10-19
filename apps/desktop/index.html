@@ -5,16 +5,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' https://cdn.jsdelivr.net blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' wss: https:; img-src 'self' data: blob:;" />
+        content="default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ws://localhost:4444 wss: https:; img-src 'self' data: blob: https:; object-src 'none'; base-uri 'self';" />
     <meta name="description" content="Kalynt - Serverless P2P Team Collaboration Platform" />
     <title>Kalynt</title>
     <link rel="icon" type="image/x-icon" sizes="16x16" href="/Kalynt_16x16.ico">
     <link rel="icon" type="image/x-icon" sizes="32x32" href="/Kalynt_32x32.ico">
     <link rel="icon" type="image/x-icon" sizes="48x48" href="/Kalynt_48x48.ico">
     <link rel="icon" type="image/x-icon" sizes="256x256" href="/Kalynt_256x256.ico">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 </head>
 
 <body>
@@ -22,7 +19,7 @@
         <!-- Minimal Fallback Loader for Instant Feedback -->
         <style>
             body {
-                background: #000;
+                background: #0e0e11;
                 margin: 0;
             }
 
@@ -35,7 +32,7 @@
                 transform: translate(-50%, -50%);
                 border-radius: 50%;
                 border: 2px solid rgba(255, 255, 255, 0.1);
-                border-top-color: #3b82f6;
+                border-top-color: rgba(255, 255, 255, 0.6);
                 animation: init-spin 0.8s linear infinite;
             }
 

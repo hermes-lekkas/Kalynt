@@ -1,4 +1,4 @@
-﻿/*
+/*
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 // Ghost Text / Inline Completion Standalone Function for Monaco Editor
@@ -7,6 +7,8 @@
 type Monaco = any
 
 import { logger } from '../utils/logger'
+import type { AIProvider } from '../services/aiService'
+import { fastModel } from '../types/aiProviders'
 
 // Import aiService dynamically to avoid path issues
 const getAiService = async () => {
@@ -22,7 +24,8 @@ const getAiService = async () => {
 // Standalone function to register ghost text with Monaco instance
 export async function registerGhostTextProvider(
     monaco: Monaco,
-    aiEnabled: boolean = true
+    aiEnabled: boolean = true,
+    provider: AIProvider = 'anthropic'
 ) {
     if (!aiEnabled) return null
 
@@ -78,7 +81,7 @@ export async function registerGhostTextProvider(
                                 role: 'user' as const,
                                 content: `Complete this ${model.getLanguageId()} code:\n${textBeforeCursor}`
                             }
-                        ])
+                        ], provider, { model: fastModel(provider), maxTokens: 256 })
 
                         const completion = response.content?.trim() || ''
                         if (!completion || completion.startsWith('```') || completion.length > 200) {

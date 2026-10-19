@@ -1,0 +1,104 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ * Shared frame for the workspace's main views.
+ */
+
+.workspace {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.workspace__view {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.workspace__loading {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Page frame used by Tasks, History and Shared files */
+.page {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+}
+
+.page__header {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: var(--sp-6);
+    padding: var(--sp-8) var(--sp-9) var(--sp-6);
+    flex-shrink: 0;
+}
+
+.page__titles {
+    min-width: 0;
+}
+
+.page__title {
+    font-size: var(--fs-2xl);
+    font-weight: var(--fw-semibold);
+    letter-spacing: -0.01em;
+}
+
+.page__subtitle {
+    margin-top: var(--sp-2);
+    color: var(--text-2);
+    max-width: 70ch;
+}
+
+.page__actions {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-4);
+    flex-shrink: 0;
+}
+
+.page__toolbar {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-5);
+    padding: 0 var(--sp-9) var(--sp-5);
+    flex-shrink: 0;
+    flex-wrap: wrap;
+}
+
+.page__toolbar > .k-input {
+    width: min(320px, 100%);
+}
+
+.page__toolbar-spacer {
+    flex: 1;
+}
+
+.page__body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 0 var(--sp-9) var(--sp-9);
+}
+
+@media (max-width: 900px) {
+    .page__header,
+    .page__toolbar,
+    .page__body {
+        padding-left: var(--sp-6);
+        padding-right: var(--sp-6);
+    }
+
+    .page__header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+}

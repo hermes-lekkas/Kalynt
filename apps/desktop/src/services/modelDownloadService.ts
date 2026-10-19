@@ -83,6 +83,9 @@ export async function downloadModel(modelId: string): Promise<boolean> {
             if (result.success && result.path) {
                 store.completeDownload(modelId, result.path)
                 return true
+            } else if (result.paused || result.canceled) {
+                // pauseDownload / cancelDownload already updated the store.
+                return false
             } else {
                 store.failDownload(modelId, result.error || 'Download failed')
                 return false
@@ -112,6 +115,8 @@ export function cancelDownload(modelId: string): void {
         controller.abort()
         downloadControllers.delete(modelId)
     }
+    // Stops the transfer in the main process and removes the partial file.
+    window.electronAPI?.cancelDownload?.(modelId)?.catch?.(() => undefined)
     useModelStore.getState().cancelDownload(modelId)
     console.log('[ModelDownload] Cancelled:', modelId)
 }
@@ -163,8 +168,8 @@ export async function deleteModel(modelId: string): Promise<boolean> {
     try {
         // Use Electron IPC if available
         if (window.electronAPI?.deleteModel) {
-            const success = await window.electronAPI.deleteModel(downloaded.path)
-            if (!success) {
+            const result = await window.electronAPI.deleteModel(downloaded.path)
+            if (!result?.success) {
                 console.error('[ModelDownload] Failed to delete file')
                 return false
             }

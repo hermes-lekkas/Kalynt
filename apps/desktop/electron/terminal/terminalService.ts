@@ -3,14 +3,13 @@
  */
 // main-process/terminal.ts
 import * as pty from 'node-pty'
-import { BrowserWindow, app } from 'electron'
+import { BrowserWindow } from 'electron'
 import { EventEmitter } from 'node:events'
-import * as fs from 'node:fs'
-import * as path from 'node:path'
 import { ShellIntegrationService } from './shellIntegration'
 import { LanguageRuntimeGateway } from './languageGateway'
 import { TaskRunnerService } from './taskRunner'
 import { TerminalSessionManager } from './terminalManager'
+import { resolveSpawnTarget, getDefaultShell } from './terminalEnv'
 
 // Enhanced terminal interface
 export interface KalyntTerminal extends pty.IPty {
@@ -34,8 +33,8 @@ export class TerminalService extends EventEmitter {
     private readonly terminals = new Map<string, KalyntTerminal>()
     public shellIntegration: ShellIntegrationService
     public languageGateway: LanguageRuntimeGateway
-    private readonly taskRunner: TaskRunnerService
-    private readonly sessionManager: TerminalSessionManager
+    public readonly taskRunner: TaskRunnerService
+    public readonly sessionManager: TerminalSessionManager
     private readonly terminalHistory = new Map<string, string[]>()
     private readonly maxHistorySize = 1000
     // HIGH-002 FIX: Track cleanup timeouts to prevent race conditions
@@ -50,71 +49,6 @@ export class TerminalService extends EventEmitter {
         this.languageGateway = new LanguageRuntimeGateway()
         this.taskRunner = new TaskRunnerService()
         this.sessionManager = new TerminalSessionManager()
-
-        this.setupLanguageServers()
-    }
-
-    private setupLanguageServers() {
-        // Configure 40+ language servers
-        const _languageConfigs = {
-            python: {
-                lsp: 'pylsp',
-                debug: 'debugpy',
-                run: 'python',
-                extensions: ['.py', '.pyw'],
-                test: 'pytest'
-            },
-            javascript: {
-                lsp: 'typescript-language-server',
-                debug: 'node',
-                run: 'node',
-                extensions: ['.js', '.jsx', '.ts', '.tsx'],
-                test: 'jest'
-            },
-            rust: {
-                lsp: 'rust-analyzer',
-                debug: 'lldb',
-                run: 'cargo run',
-                extensions: ['.rs'],
-                test: 'cargo test'
-            },
-            go: {
-                lsp: 'gopls',
-                debug: 'dlv',
-                run: 'go run',
-                extensions: ['.go'],
-                test: 'go test'
-            },
-            java: {
-                lsp: 'jdtls',
-                debug: 'java-debug',
-                run: 'mvn exec:java',
-                extensions: ['.java'],
-                test: 'mvn test'
-            },
-            cpp: {
-                lsp: 'clangd',
-                debug: 'lldb',
-                run: 'make run',
-                extensions: ['.cpp', '.hpp', '.c', '.h'],
-                test: 'make test'
-            },
-            // Add 35+ more languages...
-            ruby: { lsp: 'solargraph', debug: 'rdbg', run: 'ruby' },
-            php: { lsp: 'intelephense', debug: 'xdebug', run: 'php' },
-            csharp: { lsp: 'omnisharp', debug: 'netcoredbg', run: 'dotnet run' },
-            kotlin: { lsp: 'kotlin-language-server', debug: 'kotlin-debug-adapter' },
-            swift: { lsp: 'sourcekit-lsp', debug: 'lldb' },
-            haskell: { lsp: 'haskell-language-server', debug: 'haskell-debug-adapter' },
-            scala: { lsp: 'metals', debug: 'scala-debug-adapter' },
-            dart: { lsp: 'dart', debug: 'dart-debug-adapter' },
-            elixir: { lsp: 'elixir-ls', debug: 'elixir-debugger' },
-            clojure: { lsp: 'clojure-lsp', debug: 'clojure-debug-adapter' },
-            // ... continue for 40+ languages
-        }
-
-        // Note: Language gateway has internal configurations
-        // Additional language configs can be added here if needed
     }
 
     async spawnTerminal(options: {
@@ -131,9 +65,15 @@ export class TerminalService extends EventEmitter {
         try {
             const mainWindow = this.getMainWindow()
 
-            // Check if terminal already exists
-            if (this.terminals.has(options.id)) {
-                const terminal = this.terminals.get(options.id)!
+            // A running terminal with this id is reattached; a stopped one is replaced.
+            const existing = this.terminals.get(options.id)
+            if (existing && existing.status === 'stopped') {
+                clearTimeout(this.cleanupTimers.get(options.id))
+                this.cleanupTimers.delete(options.id)
+                this.terminals.delete(options.id)
+                this.terminalHistory.delete(options.id)
+            } else if (existing) {
+                const terminal = existing
                 mainWindow?.webContents.send('terminal:restored', {
                     id: options.id,
                     pid: terminal.pid,
@@ -142,149 +82,14 @@ export class TerminalService extends EventEmitter {
                 return { success: true, pid: terminal.pid }
             }
 
-            // Determine shell with proper validation
-            let shell = options.shell?.trim() || ''
-            if (!shell) {
-                shell = this.getDefaultShell()
-            }
-
-            // Final validation - ensure we have a shell
-            if (!shell) {
-                shell = process.platform === 'win32' ? 'cmd.exe' : '/bin/sh'
-            }
-
-            console.log(`[Terminal] Using shell: ${shell}`)
-
-            // Determine working directory
-            const cwd = options.cwd || this.getWorkspacePath() ||
-                process.env.HOME || process.env.USERPROFILE ||
-                process.cwd()
-
-            console.log(`[Terminal] Working directory: ${cwd}`)
-
-            // Merge environment variables
-            // On Windows, Electron may not inherit user PATH fully when launched from shortcuts
-            // We need to explicitly add common install paths
-            let enhancedPath = process.env.PATH || ''
-
-            // PRIORITY: Add bundled bin directory
-            const bundledBinPath = app.isPackaged 
-                ? path.join(process.resourcesPath, 'bin')
-                : path.join(app.getAppPath(), 'bin')
-            
-            const pathSeparator = process.platform === 'win32' ? ';' : ':'
-            if (fs.existsSync(bundledBinPath)) {
-                enhancedPath = `${bundledBinPath}${pathSeparator}${enhancedPath}`
-            }
-
-            if (process.platform === 'win32') {
-                const userProfile = process.env.USERPROFILE || 'C:\\Users\\Default'
-                const programFiles = process.env.ProgramFiles || 'C:\\Program Files'
-                const _programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
-                const localAppData = process.env.LOCALAPPDATA || `${userProfile}\\AppData\\Local`
-                const appData = process.env.APPDATA || `${userProfile}\\AppData\\Roaming`
-
-                // Common paths for user-installed development tools
-                const additionalPaths = [
-                    // Python
-                    `${localAppData}\\Programs\\Python\\Python312`,
-                    `${localAppData}\\Programs\\Python\\Python312\\Scripts`,
-                    `${localAppData}\\Programs\\Python\\Python311`,
-                    `${localAppData}\\Programs\\Python\\Python311\\Scripts`,
-                    `${localAppData}\\Programs\\Python\\Python310`,
-                    `${localAppData}\\Programs\\Python\\Python310\\Scripts`,
-                    `${appData}\\Python\\Python312\\Scripts`,
-                    `${programFiles}\\Python312`,
-                    `${programFiles}\\Python311`,
-                    `${programFiles}\\Python310`,
-
-                    // Rust / Cargo
-                    `${userProfile}\\.cargo\\bin`,
-
-                    // Node.js / npm
-                    `${programFiles}\\nodejs`,
-                    `${appData}\\npm`,
-                    `${localAppData}\\fnm_multishells`,
-
-                    // Java
-                    `${programFiles}\\Java\\jdk-21\\bin`,
-                    `${programFiles}\\Eclipse Adoptium\\jdk-21\\bin`,
-                    `${programFiles}\\Microsoft\\jdk-17\\bin`,
-
-                    // Go
-                    `${userProfile}\\go\\bin`,
-                    `${programFiles}\\Go\\bin`,
-
-                    // Ruby
-                    `${programFiles}\\Ruby32-x64\\bin`,
-                    `${programFiles}\\Ruby31-x64\\bin`,
-
-                    // .NET
-                    `${programFiles}\\dotnet`,
-                    `${userProfile}\\.dotnet\\tools`,
-
-                    // Scoop
-                    `${userProfile}\\scoop\\shims`,
-
-                    // Chocolatey
-                    `${programFiles}\\chocolatey\\bin`,
-
-                    // Git
-                    `${programFiles}\\Git\\cmd`,
-                    `${programFiles}\\Git\\bin`,
-
-                    // Visual Studio Code
-                    `${localAppData}\\Programs\\Microsoft VS Code\\bin`,
-
-                    // Common local bin directories
-                    `${userProfile}\\.local\\bin`,
-                    `${userProfile}\\bin`
-                ]
-
-                // Add paths that exist
-                const _cargoPath = `${userProfile}\\.cargo\\bin`
-                console.log(`[Terminal] Checking Rust/Cargo path: ${_cargoPath}`)
-                console.log(`[Terminal] Cargo path exists: ${fs.existsSync(_cargoPath)}`)
-
-                for (const p of additionalPaths) {
-                    if (fs.existsSync(p) && !enhancedPath.toLowerCase().includes(p.toLowerCase())) {
-                        console.log(`[Terminal] Adding to PATH: ${p}`)
-                        enhancedPath = `${p};${enhancedPath}`
-                    }
-                }
-                console.log(`[Terminal] Final enhanced PATH length: ${enhancedPath.length} chars`)
-            } else if (process.platform === 'darwin') {
-                // macOS: Ensure Homebrew and common dev paths are included
-                const homeDir = process.env.HOME || `/Users/${process.env.USER}`
-                const macPaths = [
-                    '/opt/homebrew/bin',
-                    '/opt/homebrew/sbin',
-                    '/usr/local/bin',
-                    '/usr/local/sbin',
-                    `${homeDir}/.cargo/bin`,
-                    `${homeDir}/.local/bin`,
-                    `${homeDir}/go/bin`,
-                    '/Library/Apple/usr/bin'
-                ]
-
-                for (const p of macPaths) {
-                    if (fs.existsSync(p) && !enhancedPath.includes(p)) {
-                        enhancedPath = `${p}:${enhancedPath}`
-                    }
-                }
-            }
-
-            const env = {
-                ...process.env,
-                ...options.env,
-                PATH: enhancedPath,
-                TERM: 'xterm-256color',
-                COLORTERM: 'truecolor',
-                KALYNT_TERMINAL: '1',
-                KALYNT_TERMINAL_ID: options.id,
-                LANG: process.platform === 'win32' ? 'en_US.UTF-8' : process.env.LANG || 'en_US.UTF-8'
-            }
-            console.log(`[Terminal] Environment PATH includes .cargo: ${env.PATH.includes('.cargo\\bin')}`)
+            // Determine shell, working directory and environment (with PATH enhancement)
+            const { shell, cwd, env } = resolveSpawnTarget({
+                shell: options.shell,
+                cwd: options.cwd,
+                workspacePath: this.getWorkspacePath(),
+                env: options.env,
+                id: options.id
+            })
 
             // Spawn PTY process
             const ptyProcess = pty.spawn(shell, [], {
@@ -489,9 +294,9 @@ export class TerminalService extends EventEmitter {
         if (!terminal) return false
 
         try {
+            // The exit handler tells the renderer and cleans up; removing the entry
+            // here would swallow that exit event.
             terminal.kill(signal as any)
-            this.terminals.delete(id)
-            this.terminalHistory.delete(id)
             return true
         } catch (error) {
             console.error(`[Terminal] Kill error for ${id}:`, error)
@@ -655,57 +460,7 @@ export class TerminalService extends EventEmitter {
     }
 
     public getDefaultShell(): string {
-        const platform = process.platform
-
-        // Windows shell detection
-        if (platform === 'win32') {
-            const windowsShells = [
-                process.env.COMSPEC, // Usually C:\Windows\System32\cmd.exe
-                'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
-                'C:\\Windows\\System32\\cmd.exe',
-                'C:\\Program Files\\PowerShell\\7\\pwsh.exe', // PowerShell 7
-                'pwsh.exe', // PowerShell Core (if in PATH)
-                'powershell.exe', // Windows PowerShell (if in PATH)
-                'cmd.exe' // Fallback
-            ]
-
-            for (const shell of windowsShells) {
-                if (!shell) continue
-
-                // Check if it's a full path that exists
-                if (shell.includes('\\') && fs.existsSync(shell)) {
-                    return shell
-                }
-
-                // If it's just a name (like 'powershell.exe'), return it
-                // node-pty will search in PATH
-                if (!shell.includes('\\')) {
-                    return shell
-                }
-            }
-
-            return 'cmd.exe' // Ultimate fallback for Windows
-        }
-
-        // Unix/Linux/macOS shell detection
-        const shells = [
-            process.env.SHELL,
-            '/bin/zsh',
-            '/bin/bash',
-            '/usr/bin/zsh',
-            '/usr/bin/bash',
-            '/usr/local/bin/zsh',
-            '/usr/local/bin/bash',
-            '/bin/sh'
-        ]
-
-        for (const shell of shells) {
-            if (shell && fs.existsSync(shell)) {
-                return shell
-            }
-        }
-
-        return '/bin/sh'
+        return getDefaultShell()
     }
 
     // Cleanup all terminals

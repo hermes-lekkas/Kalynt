@@ -122,11 +122,11 @@ export default defineConfig({
                                     regex: /^_private_/
                                 }
                             },
+                            // console.error and console.warn stay so failures can be diagnosed.
                             compress: {
-                                drop_console: true,
                                 drop_debugger: true,
                                 passes: 3,
-                                pure_funcs: ['console.log', 'console.info', 'console.debug', 'console.warn']
+                                pure_funcs: ['console.log', 'console.info', 'console.debug']
                             },
                             format: {
                                 comments: false
@@ -143,6 +143,8 @@ export default defineConfig({
                             ],
                             output: {
                                 format: 'cjs',
+                                // Stable names: hashed shared chunks piled up in dist-electron on every build.
+                                chunkFileNames: '[name].js'
                             }
                         }
                     }
@@ -157,8 +159,8 @@ export default defineConfig({
                         terserOptions: isProduction ? {
                             mangle: { toplevel: true },
                             compress: {
-                                drop_console: true,
-                                drop_debugger: true
+                                drop_debugger: true,
+                                pure_funcs: ['console.log', 'console.info', 'console.debug']
                             },
                             format: { comments: false }
                         } : undefined
@@ -197,7 +199,9 @@ export default defineConfig({
             compress: {
                 drop_console: true,
                 drop_debugger: true,
-                passes: 2
+                // A second pass removes the __reExport() call in Monaco's bundled language
+                // contributions, leaving `Emitter` undefined and the editor unable to load.
+                passes: 1
             },
             format: {
                 comments: false

@@ -1,0 +1,214 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ * Code view layout: activity bar, side bar, centre, agent panel, status bar.
+ */
+@import './editor/editor.css';
+@import './terminal/terminal.css';
+
+.ide {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+}
+
+.ide__main {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+}
+
+.ide__side,
+.ide__right {
+    /* Saved widths give way in narrow windows so the editor keeps its room. */
+    flex-shrink: 1;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+}
+
+.ide__side {
+    min-width: 160px;
+}
+
+.ide__right {
+    min-width: 260px;
+}
+
+.ide__center {
+    flex: 1 1 0;
+    min-width: 320px;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+}
+
+.ide__switching {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Activity bar */
+.activity-bar {
+    width: var(--activitybar-w);
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: var(--sp-3) 0;
+    background: var(--surface);
+    border-right: 1px solid var(--line);
+}
+
+.activity-bar__group {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--sp-2);
+}
+
+.activity-bar__btn {
+    width: 34px;
+    height: 34px;
+    color: var(--text-3);
+}
+
+.activity-bar__btn.is-active {
+    background: transparent;
+    color: var(--text);
+}
+
+/* Panel toggles show state by colour only; the edge marker belongs to side-bar views. */
+.activity-bar__group:last-child .activity-bar__btn.is-active {
+    color: var(--text-2);
+}
+
+.activity-bar__group:first-child .activity-bar__btn.is-active::before {
+    content: '';
+    position: absolute;
+    left: -5px;
+    top: 7px;
+    bottom: 7px;
+    width: 2px;
+    border-radius: 2px;
+    background: var(--text);
+}
+
+/* Side bar shared header */
+.side-view {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.side-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-3);
+    height: 36px;
+    padding: 0 var(--sp-3) 0 var(--sp-5);
+    flex-shrink: 0;
+}
+
+.side-head__title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--fs-sm);
+    font-weight: var(--fw-semibold);
+    color: var(--text);
+}
+
+.side-head__actions {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+    opacity: 0.85;
+}
+
+.side-head:hover .side-head__actions,
+.side-head:focus-within .side-head__actions {
+    opacity: 1;
+}
+
+/* Status bar */
+.statusbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: var(--statusbar-h);
+    padding: 0 var(--sp-3);
+    flex-shrink: 0;
+    background: var(--surface);
+    border-top: 1px solid var(--line);
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+    overflow: hidden;
+}
+
+.statusbar__group {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+    min-width: 0;
+}
+
+.statusbar__item {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-3);
+    height: 20px;
+    padding: 0 var(--sp-3);
+    border-radius: var(--r-1);
+    color: var(--text-2);
+    white-space: nowrap;
+    font-size: var(--fs-xs);
+}
+
+button.statusbar__item:hover {
+    background: var(--hover);
+    color: var(--text);
+}
+
+.statusbar__static {
+    color: var(--text-3);
+}
+
+.statusbar__muted {
+    color: var(--text-3);
+}
+
+.statusbar__sync {
+    display: inline-flex;
+    align-items: center;
+    gap: 1px;
+}
+
+.statusbar__item.is-warning {
+    color: var(--warning);
+}
+
+.statusbar__agent svg {
+    color: var(--text-3);
+}
+
+.statusbar__agent.is-busy {
+    color: var(--agent);
+}
+
+.statusbar__agent.is-busy svg {
+    color: var(--agent);
+    animation: k-dot-pulse 1.4s ease-in-out infinite;
+}
+
+.statusbar__agent.is-waiting {
+    background: var(--agent-soft);
+}

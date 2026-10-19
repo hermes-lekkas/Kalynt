@@ -1,71 +1,39 @@
-﻿/*
+/*
  * SPDX-License-Identifier: AGPL-3.0-only
  */
-import * as path from 'node:path';
-import * as fs from 'node:fs';
+import path from 'node:path'
+import fs from 'node:fs'
 
-const FORBIDDEN_PATTERNS = [
-    /\.git/i,
-    /\.env/i,
-    /\.ssh/i,
-    /\.aws/i,
-    /id_rsa/i,
-    /\.npmrc/i,
-];
-
-function getRealPath(normalizedRequested: string): string {
-    try {
-        if (fs.existsSync(normalizedRequested)) {
-            return fs.realpathSync(normalizedRequested);
-        }
-        const parentDir = path.dirname(normalizedRequested);
-        if (fs.existsSync(parentDir)) {
-            const realParent = fs.realpathSync(parentDir);
-            return path.join(realParent, path.basename(normalizedRequested));
-        }
-    } catch {
-        /* Fallback */
-    }
-    return normalizedRequested;
-}
-
-function isForbidden(normalizedPath: string): boolean {
-    if (normalizedPath.endsWith('.gitignore')) return false;
-    return FORBIDDEN_PATTERNS.some(pattern => pattern.test(normalizedPath));
-}
+const isInside = (base: string, target: string) => target === base || target.startsWith(base + path.sep)
 
 /**
- * Validates that the requested path is safe and contained within the workspace.
- * Prevents path traversal attacks and symlink bypasses.
- * 
- * @param workspacePath The absolute path to the workspace root
- * @param requestedPath The path requested by the user/agent
- * @returns The normalized absolute path if safe
+ * Resolves `target` against `base` and throws unless the result stays inside
+ * `base`. Existing paths are also checked through their real path, so a
+ * symlink inside the folder can't point outside it.
  */
-export function validatePath(workspacePath: string, requestedPath: string): string {
-    if (!workspacePath) throw new Error('Workspace path is required');
-    if (!requestedPath) throw new Error('Path is required');
+export function validatePath(base: string, target: string): string {
+    if (!base) throw new Error('No folder to resolve against')
+    const resolvedBase = path.resolve(base)
+    const resolvedTarget = path.resolve(resolvedBase, target)
 
-    const resolved = path.isAbsolute(requestedPath)
-        ? path.resolve(requestedPath)
-        : path.resolve(workspacePath, requestedPath);
-
-    const normW = path.normalize(workspacePath);
-    const normR = path.normalize(resolved);
-
-    if (isForbidden(normR)) {
-        console.warn(`[Security] Forbidden path access: ${requestedPath}`);
-        throw new Error('Access denied: Forbidden pattern');
+    if (!isInside(resolvedBase, resolvedTarget)) {
+        throw new Error('Path traversal detected')
     }
 
-    const realR = getRealPath(normR);
-    const relative = path.relative(normW, realR);
-
-    const isSafe = relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
-    if (!isSafe) {
-        console.warn(`[Security] Path traversal detect: ${requestedPath} -> ${realR} outside ${workspacePath}`);
-        throw new Error('Access denied: Outside workspace');
+    if (fs.existsSync(resolvedTarget)) {
+        let realTarget: string
+        let realBase: string
+        try {
+            realTarget = fs.realpathSync(resolvedTarget)
+            realBase = fs.realpathSync(resolvedBase)
+        } catch (e) {
+            if ((e as NodeJS.ErrnoException).code === 'ENOENT') return resolvedTarget
+            throw new Error('Path validation failed: ' + (e as Error).message)
+        }
+        if (!isInside(realBase, realTarget)) {
+            throw new Error('Path traversal via symlink detected')
+        }
     }
 
-    return normR;
+    return resolvedTarget
 }

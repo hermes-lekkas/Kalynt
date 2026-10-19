@@ -1,39 +1,11 @@
-﻿/*
+/*
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { WorkspaceCategoryId } from '../types/workspaceCategories'
 import { logger } from '../utils/logger'
-
-export interface AIProvider {
-    id: string
-    name: string
-    models: string[]
-    keyPlaceholder: string
-}
-
-// AI Providers - All available in free beta
-export const AI_PROVIDERS: Record<string, AIProvider> = {
-    openai: {
-        id: 'openai',
-        name: 'OpenAI',
-        models: ['GPT-4o mini', 'GPT-4o', 'GPT-4 Turbo', 'DALL-E 3', 'Whisper'],
-        keyPlaceholder: 'sk-...'
-    },
-    anthropic: {
-        id: 'anthropic',
-        name: 'Anthropic',
-        models: ['Claude 4.5 Haiku', 'Claude 4.5 Sonnet', 'Claude 4.5 Opus'],
-        keyPlaceholder: 'sk-ant-...'
-    },
-    google: {
-        id: 'google',
-        name: 'Google AI',
-        models: ['Gemini 3 Flash', 'Gemini 3 Pro'],
-        keyPlaceholder: 'AIza...'
-    }
-}
+import type { ProviderId } from '../types/aiProtocol'
 
 // Free beta configuration - no limits
 export const BETA_CONFIG = {
@@ -53,11 +25,8 @@ export interface Space {
     category: WorkspaceCategoryId
 }
 
-export interface APIKeys {
-    openai?: string
-    anthropic?: string
-    google?: string
-}
+/** Which providers have a key in secure storage. The keys stay in the main process. */
+export type APIKeys = Partial<Record<ProviderId, boolean>>
 
 export interface Peer {
     id: string
@@ -85,6 +54,7 @@ interface AppState {
     setCurrentSpace: (space: Space | null) => void
     createSpace: (name: string, spaceId?: string, category?: WorkspaceCategoryId) => Space
     deleteSpace: (id: string) => void
+    renameSpace: (id: string, name: string) => void
     setConnectedPeers: (peers: Peer[]) => void
     toggleSidebarCollapsed: () => void
     setStartupStatus: (status: string) => void // [NEW]
@@ -96,7 +66,6 @@ interface AppState {
     // API Key actions (now async for safeStorage)
     setAPIKey: (provider: string, key: string) => Promise<void>
     removeAPIKey: (provider: string) => Promise<void>
-    getAPIKey: (provider: string) => string | undefined
     loadAPIKeys: () => Promise<void>
     hasRequiredKeys: () => boolean
     setUserName: (name: string) => void
@@ -120,7 +89,7 @@ export const useAppStore = create<AppState>()(
             connectedPeers: [],
             sidebarCollapsed: false,
             _hasHydrated: false,
-            startupStatus: 'Initializing Agent Core...', // Default start message
+            startupStatus: 'Starting Kalynt',
             showSettings: false,
             settingsTab: null,
             theme: 'dark',
@@ -139,12 +108,12 @@ export const useAppStore = create<AppState>()(
             },
 
             initialize: async () => {
-                set({ startupStatus: 'Connecting to Secure Local Interface...' })
+                set({ startupStatus: 'Starting Kalynt' })
 
                 // Get version from Electron if available
                 if (globalThis.electronAPI) {
                     try {
-                        set({ startupStatus: 'Verifying Environment Integrity...' })
+                        set({ startupStatus: 'Reading app version' })
                         const version = await globalThis.electronAPI.getVersion()
                         set({ version })
                     } catch (error) {
@@ -152,13 +121,9 @@ export const useAppStore = create<AppState>()(
                     }
 
                     // Load API keys from secure storage
-                    set({ startupStatus: 'Decryption Secure Storage...' })
+                    set({ startupStatus: 'Unlocking saved API keys' })
                     await get().loadAPIKeys()
                 }
-
-                set({ startupStatus: 'Starting Kalynt Environment...' })
-                // Artificial delay to let the user see the animation and read the status
-                await new Promise(resolve => setTimeout(resolve, 2000));
 
                 set({ isInitialized: true, startupStatus: 'Ready' })
             },
@@ -198,22 +163,23 @@ export const useAppStore = create<AppState>()(
                 })
             },
 
+            renameSpace: (id, name) => {
+                const { spaces, currentSpace } = get()
+                set({
+                    spaces: spaces.map(s => s.id === id ? { ...s, name } : s),
+                    currentSpace: currentSpace?.id === id ? { ...currentSpace, name } : currentSpace
+                })
+            },
+
             setConnectedPeers: (peers) => set({ connectedPeers: peers }),
 
             toggleSidebarCollapsed: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
 
             // API Key management - now uses secure storage
             setAPIKey: async (provider, key) => {
-                // Store in secure storage
-                if (globalThis.electronAPI?.safeStorage) {
-                    await globalThis.electronAPI.safeStorage.set({
-                        key: `apiKey_${provider}`,
-                        value: key
-                    })
-                }
-                // Also update in-memory state for immediate access
-                const { apiKeys } = get()
-                set({ apiKeys: { ...apiKeys, [provider]: key } })
+                const result = await globalThis.electronAPI?.safeStorage?.set({ key: `apiKey_${provider}`, value: key })
+                if (!result?.success) throw new Error(result?.error || 'The key could not be saved to secure storage.')
+                set({ apiKeys: { ...get().apiKeys, [provider]: true } })
             },
 
             removeAPIKey: async (provider) => {
@@ -228,28 +194,13 @@ export const useAppStore = create<AppState>()(
                 set({ apiKeys: newKeys })
             },
 
-            getAPIKey: (provider) => {
-                return get().apiKeys[provider as keyof APIKeys]
-            },
-
             loadAPIKeys: async () => {
-                if (!globalThis.electronAPI?.safeStorage) return
-
-                const providers = ['openai', 'anthropic', 'google']
-                const loadedKeys: APIKeys = {}
-
-                for (const provider of providers) {
-                    try {
-                        const result = await globalThis.electronAPI.safeStorage.get(`apiKey_${provider}`)
-                        if (result.success && result.value) {
-                            loadedKeys[provider as keyof APIKeys] = result.value
-                        }
-                    } catch (error) {
-                        logger.general.warn(`Failed to load API key for ${provider}`, error)
-                    }
+                try {
+                    const status = await globalThis.electronAPI?.ai?.keyStatus()
+                    if (status) set({ apiKeys: status })
+                } catch (error) {
+                    logger.general.warn('Failed to read which API keys are stored', error)
                 }
-
-                set({ apiKeys: loadedKeys })
             },
 
             hasRequiredKeys: () => {

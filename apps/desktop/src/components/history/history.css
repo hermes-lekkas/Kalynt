@@ -1,0 +1,105 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
+.history__inline-icon {
+    display: inline;
+    vertical-align: -1px;
+}
+
+.history__loading {
+    display: flex;
+    justify-content: center;
+    padding: var(--sp-9);
+}
+
+.history__day + .history__day {
+    margin-top: var(--sp-8);
+}
+
+.history__date {
+    margin-bottom: var(--sp-3);
+    font-size: var(--fs-sm);
+    font-weight: var(--fw-semibold);
+    color: var(--text-2);
+}
+
+.history__list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    border-top: 1px solid var(--line);
+}
+
+.commit {
+    border-bottom: 1px solid var(--line);
+}
+
+.commit__main {
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr) 160px 64px 72px;
+    align-items: center;
+    gap: var(--sp-5);
+    width: 100%;
+    padding: var(--sp-4) var(--sp-3);
+    text-align: left;
+}
+
+.commit__main:hover,
+.commit.is-open .commit__main {
+    background: var(--surface);
+}
+
+.commit__message {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
+}
+
+.commit__author,
+.commit__time {
+    color: var(--text-3);
+    font-size: var(--fs-sm);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.commit__hash {
+    color: var(--text-3);
+    font-size: var(--fs-xs);
+    text-align: right;
+}
+
+.commit__detail {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--sp-3);
+    padding: 0 var(--sp-3) var(--sp-5) calc(22px + var(--sp-5) + var(--sp-3));
+    background: var(--surface);
+}
+
+.commit__body {
+    white-space: pre-wrap;
+    color: var(--text-2);
+    line-height: var(--lh-prose);
+}
+
+.commit__full,
+.commit__when {
+    color: var(--text-3);
+    font-size: var(--fs-xs);
+}
+
+@media (max-width: 900px) {
+    .commit__main {
+        grid-template-columns: 22px minmax(0, 1fr) 72px;
+    }
+
+    .commit__author,
+    .commit__time {
+        display: none;
+    }
+}

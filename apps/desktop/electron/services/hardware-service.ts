@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 import os from 'os'
+import fs from 'fs'
 import { exec } from 'child_process'
 import { nativeHelperService } from './native-helper-service'
 
@@ -152,6 +153,41 @@ class CachedGPUDetector {
                 }
                 this.igpuName = this.gpuName
                 this.totalIVRAM = this.totalVRAM
+            } else if (process.platform === 'linux') {
+                // NVIDIA first — same query as Windows.
+                const nvidia = await this.execCommand('nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits')
+                if (nvidia) {
+                    const [name, total] = nvidia.split(',').map(s => s.trim())
+                    this.gpuName = name
+                    this.totalVRAM = parseInt(total) || 0
+                    this.isNvidia = true
+                } else {
+                    // AMD discrete cards expose their dedicated VRAM in sysfs.
+                    try {
+                        const cards = fs.readdirSync('/sys/class/drm').filter(d => /^card\d+$/.test(d))
+                        for (const card of cards) {
+                            const vramPath = `/sys/class/drm/${card}/device/mem_info_vram_total`
+                            if (fs.existsSync(vramPath)) {
+                                const bytes = parseInt(fs.readFileSync(vramPath, 'utf8').trim())
+                                if (bytes > 0) {
+                                    this.gpuName = 'AMD GPU'
+                                    this.totalVRAM = Math.round(bytes / 1024 / 1024)
+                                    break
+                                }
+                            }
+                        }
+                    } catch { /* sysfs layout differs; fall through to lspci */ }
+
+                    if (this.totalVRAM === 0) {
+                        // Name-only detection: integrated GPUs share system RAM and
+                        // have no dedicated VRAM to offload into, so VRAM stays 0.
+                        const lspci = await this.execCommand('lspci')
+                        const line = lspci.split('\n').find(l => /VGA compatible controller|3D controller|Display controller/i.test(l))
+                        if (line) {
+                            this.igpuName = line.replace(/^[^\s]+\s/, '').trim() || 'Integrated GPU'
+                        }
+                    }
+                }
             }
         } catch (e) {
             console.error('[HardwareService] GPU Init Error:', e)
@@ -179,33 +215,25 @@ class CachedGPUDetector {
                     this.lastUsage = usage || 0
                     this.lastVramUsed = used || 0
                 }
-            } else {
+            } else if (process.platform === 'win32') {
                 // Real-time GPU Usage via Performance Counters (Intel/AMD)
                 const usageCmd = 'powershell -Command "(Get-Counter \'\\GPU Engine(*engtype_3D)\\Utilization Percentage\' -ErrorAction SilentlyContinue).CounterSamples | Select-Object -ExpandProperty CookedValue | Measure-Object -Sum | Select-Object -ExpandProperty Sum"'
                 const usageOutput = await this.execCommand(usageCmd)
                 if (usageOutput) {
                     this.lastUsage = Math.round(parseFloat(usageOutput)) || 0
                 }
-            }
-            
-            // Integrated Graphics Stats (PowerShell Performance Counters)
-            // We sum Dedicated + Shared usage for iGPUs since they share system RAM
-            const memCmd = 'powershell -Command "$s = (Get-Counter \'\\GPU Adapter Memory(*)\\Shared Usage\' -ErrorAction SilentlyContinue).CounterSamples | Measure-Object -Property CookedValue -Sum; $d = (Get-Counter \'\\GPU Adapter Memory(*)\\Dedicated Usage\' -ErrorAction SilentlyContinue).CounterSamples | Measure-Object -Property CookedValue -Sum; ($s.Sum + $d.Sum) / 1024 / 1024"'
-            const memOutput = await this.execCommand(memCmd)
-            if (memOutput) {
-                const usedMB = Math.round(parseFloat(memOutput))
-                this.lastIvramUsed = usedMB || 0
-                
-                // If integrated is the primary, mirror it
-                if (!this.isNvidia) {
-                    this.lastVramUsed = this.lastIvramUsed
-                }
 
-                // Estimation for iGPU utilization (usually correlates with memory movement or CPU load)
-                if (this.lastUsage > 0) {
-                    this.lastIUsage = this.lastUsage
-                } else {
-                    this.lastIUsage = Math.min(Math.round((os.loadavg()[0] || 0) * 5), 100)
+                // Integrated Graphics Stats (PowerShell Performance Counters)
+                // We sum Dedicated + Shared usage for iGPUs since they share system RAM
+                const memCmd = 'powershell -Command "$s = (Get-Counter \'\\GPU Adapter Memory(*)\\Shared Usage\' -ErrorAction SilentlyContinue).CounterSamples | Measure-Object -Property CookedValue -Sum; $d = (Get-Counter \'\\GPU Adapter Memory(*)\\Dedicated Usage\' -ErrorAction SilentlyContinue).CounterSamples | Measure-Object -Property CookedValue -Sum; ($s.Sum + $d.Sum) / 1024 / 1024"'
+                const memOutput = await this.execCommand(memCmd)
+                if (memOutput) {
+                    const usedMB = Math.round(parseFloat(memOutput))
+                    this.lastIvramUsed = usedMB || 0
+                    this.lastVramUsed = this.lastIvramUsed
+                    this.lastIUsage = this.lastUsage > 0
+                        ? this.lastUsage
+                        : Math.min(Math.round((os.loadavg()[0] || 0) * 5), 100)
                 }
             } else if (process.platform === 'darwin') {
                 // macOS heuristic: usage correlates with load average when no specific counters available
@@ -216,8 +244,11 @@ class CachedGPUDetector {
                 const usedRAM = (os.totalmem() - os.freemem()) / 1024 / 1024
                 this.lastVramUsed = Math.round(usedRAM * 0.25)
                 this.lastIvramUsed = this.lastVramUsed
+            } else {
+                // Linux without NVIDIA counters: approximate with CPU load.
+                this.lastUsage = Math.min(Math.round((os.loadavg()[0] || 0) * 8), 100)
+                this.lastIUsage = this.lastUsage
             }
-            
         } catch (_e) {
             // Silence errors during periodic checks
         }
@@ -283,10 +314,14 @@ export async function detectHardwareInfo(): Promise<HardwareInfo> {
             
             if (nativeStats?.gpu?.SPDisplaysDataType?.[0]) {
                 const nativeGpu = nativeStats.gpu.SPDisplaysDataType[0]
+                // spdisplays_vram reads like "8 GB" or "4096 MB".
+                const vramText = String(nativeGpu.spdisplays_vram || '')
+                const vramValue = parseFloat(vramText) || 0
+                const vramMB = /gb/i.test(vramText) ? vramValue * 1024 : vramValue
                 gpuInfo = {
                     ...gpuInfo,
                     gpuName: nativeGpu.sppci_model || gpuInfo.gpuName,
-                    totalVRAM: parseInt(nativeGpu.spdisplays_vram) || gpuInfo.totalVRAM,
+                    totalVRAM: vramMB > 0 ? vramMB : gpuInfo.totalVRAM,
                     hasGPU: true
                 }
             }
@@ -314,7 +349,7 @@ export async function detectHardwareInfo(): Promise<HardwareInfo> {
         hasGPU: gpuInfo.hasGPU,
         gpuName: gpuInfo.gpuName,
         totalVRAM: gpuInfo.totalVRAM,
-        availableVRAM: gpuInfo.totalVRAM - 512, // Buffering guess
+        availableVRAM: Math.max(0, gpuInfo.totalVRAM - 512), // Buffering guess
         totalDiskSpace: 500000,
         availableDiskSpace: 200000
     }

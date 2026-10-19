@@ -1,0 +1,112 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ * Splash screen and update dialog.
+ */
+
+/* Splash */
+.splash {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-splash);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    transition: opacity var(--dur-3) var(--ease);
+}
+
+.splash.is-leaving {
+    opacity: 0;
+}
+
+.splash__mark img {
+    width: 72px;
+    height: 72px;
+}
+
+.splash__name {
+    margin-top: var(--sp-5);
+    font-size: var(--fs-xl);
+    font-weight: var(--fw-semibold);
+    letter-spacing: 0.01em;
+}
+
+/* The agent's live wire, used once here at start-up. */
+.splash__wire {
+    position: relative;
+    width: 160px;
+    height: 1px;
+    margin: var(--sp-7) 0 var(--sp-5);
+    background: var(--line);
+    overflow: hidden;
+}
+
+.splash__wire::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    width: 40%;
+    background: var(--brand-gradient);
+    animation: k-progress-slide 1.1s var(--ease) infinite;
+}
+
+.splash__status {
+    color: var(--text-2);
+    font-size: var(--fs-sm);
+}
+
+.splash__version {
+    position: absolute;
+    bottom: var(--sp-7);
+    color: var(--text-4);
+    font-size: var(--fs-xs);
+}
+
+/* Update dialog */
+.update-dialog__versions {
+    display: grid;
+    gap: var(--sp-4);
+}
+
+.update-dialog__versions div {
+    display: flex;
+    gap: var(--sp-6);
+}
+
+.update-dialog__versions dt {
+    width: 96px;
+    color: var(--text-3);
+}
+
+.update-dialog__versions dd {
+    margin: 0;
+    color: var(--text);
+}
+
+.update-dialog__progress {
+    display: grid;
+    gap: var(--sp-3);
+    color: var(--text-3);
+    font-size: var(--fs-sm);
+}
+
+.update-dialog__note,
+.update-dialog__error {
+    color: var(--text-2);
+    line-height: var(--lh-prose);
+}
+
+.update-dialog__notes h3 {
+    margin-bottom: var(--sp-3);
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+}
+
+.update-dialog__notes div {
+    max-height: 220px;
+    overflow: auto;
+    white-space: pre-wrap;
+    color: var(--text-2);
+    line-height: var(--lh-prose);
+}

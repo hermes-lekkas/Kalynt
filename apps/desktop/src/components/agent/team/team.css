@@ -1,0 +1,129 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
+.team-chat {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.team-chat__status {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-4);
+    padding: var(--sp-4) var(--sp-5);
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+    border-bottom: 1px solid var(--line);
+}
+
+.team-chat__lock {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    color: var(--success);
+}
+
+.team-chat__lock.is-off {
+    color: var(--text-3);
+}
+
+.team-chat__thread {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: var(--sp-4) 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.team-msg {
+    position: relative;
+    padding: var(--sp-3) var(--sp-9) var(--sp-2) var(--sp-5);
+}
+
+.team-msg.is-grouped {
+    padding-top: 0;
+}
+
+.team-msg:hover {
+    background: var(--hover);
+}
+
+.team-msg__head {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    margin-bottom: var(--sp-2);
+}
+
+.team-msg__name {
+    font-weight: var(--fw-semibold);
+    font-size: var(--fs-sm);
+}
+
+.team-msg.is-own .team-msg__name {
+    color: var(--text-2);
+}
+
+.team-msg__time {
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+}
+
+.team-msg__lock {
+    color: var(--text-4);
+}
+
+.team-msg__body {
+    padding-left: 28px;
+    line-height: var(--lh-prose);
+}
+
+.team-msg__muted {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    color: var(--text-3);
+    font-size: var(--fs-sm);
+}
+
+.team-msg__quote {
+    display: block;
+    max-width: 100%;
+    margin: 0 0 var(--sp-2) 28px;
+    padding: var(--sp-1) var(--sp-4);
+    border-left: 2px solid var(--line-strong);
+    color: var(--text-3);
+    font-size: var(--fs-sm);
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.team-msg__quote span {
+    color: var(--text-2);
+    font-weight: var(--fw-medium);
+}
+
+.team-msg__reply {
+    position: absolute;
+    top: var(--sp-3);
+    right: var(--sp-4);
+    opacity: 0;
+}
+
+.team-msg:hover .team-msg__reply,
+.team-msg__reply:focus-visible {
+    opacity: 1;
+}
+
+.team-chat__typing {
+    padding: 0 var(--sp-5);
+    color: var(--text-3);
+    font-size: var(--fs-xs);
+}

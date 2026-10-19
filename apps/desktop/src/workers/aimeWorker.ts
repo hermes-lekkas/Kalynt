@@ -76,7 +76,7 @@ interface FileIndex {
 const fileIndex = new Map<string, FileIndex>()
 
 // Parse file content and extract symbols
-function parseFile(filePath: string, content: string, relativePath: string): FileIndex {
+function parseFile(filePath: string, content: string, relativePath: string, lastModified = 0): FileIndex {
     const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase()
     const language = EXTENSION_MAP[ext] || 'unknown'
     const parser = PARSERS[language]
@@ -124,7 +124,7 @@ function parseFile(filePath: string, content: string, relativePath: string): Fil
         language,
         symbols,
         content: content.substring(0, 50000), // Limit stored content
-        lastIndexed: Date.now()
+        lastIndexed: lastModified || Date.now()
     }
 }
 
@@ -237,7 +237,7 @@ async function handleIndexWorkspace(message: any) {
         }
         
         try {
-            const index = parseFile(file.path, file.content, file.relativePath)
+            const index = parseFile(file.path, file.content, file.relativePath, file.lastModified)
             fileIndex.set(file.path, index)
             processed++
             
@@ -271,7 +271,8 @@ async function handleIndexWorkspace(message: any) {
         relativePath: f.relativePath,
         symbols: f.symbols,
         content: f.content.substring(0, 50000),
-        language: f.language
+        language: f.language,
+        lastModified: f.lastIndexed
     }))
     
     self.postMessage({

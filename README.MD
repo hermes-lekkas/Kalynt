@@ -1,23 +1,18 @@
 # Kalynt - The Privacy-First AI IDE
 
 <div align="center">
-  <img src="apps/desktop/public/Kalynt_256x256.ico" alt="Kalynt Logo" width="128" height="128" />
-  
-  <h3>Local-First AI. End-to-End Encrypted Collaboration. No Subscription Required.</h3>
+  <img src="apps/desktop/public/Kalynt.png" alt="Kalynt Logo" width="128" height="128" />
+
+  <h3>Local-First AI. Peer-to-Peer Collaboration. No Subscription Required.</h3>
 
   <p>
-    🚀 <strong>Kalynt is developing fast!</strong> We're shipping new features weekly. 
-    Star ⭐ the repo and join our <a href="https://reddit.com/r/Kalynt_IDE">Reddit community</a> to stay updated!
-  </p>
-
-  <p>
-    Kalynt is a next-generation Integrated Development Environment designed for the post-GPT era. 
-    It embeds an autonomous AI agent deeply into your workflow while ensuring your code never leaves your machine unless you want it to.
+    Kalynt is a desktop code editor with an AI agent built in. Run models on your own machine or bring your own API key,
+    and edit together with your team directly, peer to peer, without a server in between.
   </p>
 
   [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-  [![Version](https://img.shields.io/badge/version-v1.0.5--beta-green)](https://github.com/Hermes-Lekkas/Kalynt/releases)
-  [![Platform](https://img.shields.io/badge/platform-win%20%7C%20mac%20%7C%20linux-lightgrey)](https://github.com/Hermes-Lekkas/Kalynt/releases)
+  [![Version](https://img.shields.io/badge/version-v2.0.0-green)](https://github.com/trisle-app/Kalynt/releases)
+  [![Platform](https://img.shields.io/badge/platform-win%20%7C%20mac%20%7C%20linux-lightgrey)](https://github.com/trisle-app/Kalynt/releases)
   [![Reddit](https://img.shields.io/badge/reddit-r%2FKalynt__IDE-FF4500?logo=reddit)](https://reddit.com/r/Kalynt_IDE)
   [![YouTube](https://img.shields.io/badge/YouTube-Kalynt-FF0000?logo=youtube)](https://youtu.be/pV7THS2ZGls)
   [![Spotify](https://img.shields.io/badge/Spotify-Podcast-1DB954?logo=spotify)](https://open.spotify.com/show/0Hm1TtyPtzpRkhGCZjaAbb)
@@ -26,176 +21,126 @@
 ---
 
 <div align="center">
-  <img src="apps/desktop/public/Kalynt_showcase/Editor.png" alt="Kalynt Editor" width="100%" />
+  <img src="apps/desktop/public/Kalynt_showcase/Editor.png" alt="The Kalynt code view: explorer, editor and agent panel" width="100%" />
 </div>
 
 <details>
-  <summary><b>📷 Click to view more screenshots</b></summary>
+  <summary><b>More screenshots</b></summary>
 
-  ### Dashboard
-  ![Dashboard](apps/desktop/public/Kalynt_showcase/Dashboard.png)
+  ### Source control and diffs
+  ![Diff view](apps/desktop/public/Kalynt_showcase/Diff.png)
 
-  ### Artificial Intelligence Memory Engine (AIME)
-  ![AIME](apps/desktop/public/Kalynt_showcase/AIME.png)
-
-  ### Multi-Agent Workflows
-  ![Agents](apps/desktop/public/Kalynt_showcase/Agents.png)
-
-  ### Project Task Board
+  ### Task board
   ![Tasks](apps/desktop/public/Kalynt_showcase/Tasks.png)
 
-  ### P2P Collaboration & Team Sync
-  ![Team & Collaboration](apps/desktop/public/Kalynt_showcase/Team_and_Collaboration.png)
-
-  ### Smart P2P File Share
-  ![Files](apps/desktop/public/Kalynt_showcase/Files.png)
-
-  ### Version History & Diff Viewer
+  ### History
   ![History](apps/desktop/public/Kalynt_showcase/History.png)
 
-  ### Comprehensive Settings & Model Manager
+  ### Inviting people
+  ![Team and collaboration](apps/desktop/public/Kalynt_showcase/Team_and_Collaboration.png)
+
+  ### Shared files
+  ![Shared files](apps/desktop/public/Kalynt_showcase/Files.png)
+
+  ### Models and keys
   ![Settings](apps/desktop/public/Kalynt_showcase/Settings.png)
 
-  ### Built-in Language Support
-  ![Built-in Language Support](apps/desktop/public/Kalynt_showcase/Built_in_language_support.png)
+  ### Local model memory (AIME)
+  ![AIME](apps/desktop/public/Kalynt_showcase/AIME.png)
+
+  ### Language runtimes
+  ![Language runtimes](apps/desktop/public/Kalynt_showcase/Built_in_language_support.png)
 
 </details>
 
-## Key Features
+## What's new in 2.0
 
-### Autonomous AI Agent (AIME)
-*   **Local Inference:** Run LLMs (Llama 3, Mistral, CodeQwen) directly on your CPU/GPU using `node-llama-cpp`. No internet required.
-*   **Agentic Loop:** An autonomous ReAct (Reasoning + Acting) loop that can plan, execute terminal commands, edit files, and fix bugs without hand-holding.
-*   **Shadow Workspace:** AI changes are sandboxed and validated in a temporary "shadow" environment before touching your real code.
-*   **Cloud Fallback:** Seamlessly switch to OpenAI (GPT-4o), Anthropic (Claude 3.5 Sonnet), or Google (Gemini 1.5 Pro) when you need extra horsepower.
-*   **RAG Engine:** AIME indexes your entire codebase semantically, allowing the agent to retrieve relevant context for complex tasks.
-*   **Model Manager:** Download, manage, and configure local GGUF models directly from the IDE.
-*   **50+ Language Support:** Expanded file extension coverage including TypeScript, Python, Go, Rust, Java, C/C++, C#, Ruby, PHP, Swift, and more.
+Kalynt 2.0 is the first stable release: a rebuilt interface and a reliability pass over every backend service. Highlights:
 
-### Agentic AI System (New in v1.0.5)
-A comprehensive architecture overhaul with 26 new services enabling autonomous decision-making and intelligent task execution:
+*   **A new interface** with a home screen, per-workspace folders, full-page Tasks, History and Shared files views, a command palette, and light and dark themes.
+*   **Six cloud providers, current models only:** Claude (Opus 5.5, Fable 5.1, Sonnet 5.5, Haiku 5.5), OpenAI (GPT-6.1 Sol, GPT-6 Astra, GPT-6 Luna), Gemini (4 Argon, 3.8 Flash, 3.5 Flash-Lite), DeepSeek (V4 Pro, V4.1 Flash), Kimi K3 and GLM-5.3. Each provider's live model list is read with your key, so new models show up without an app update and retired ones disappear.
+*   **A rebuilt agent** with native tool calling on every provider: it edits files with reviewable diffs, runs commands and background servers, searches the web, keeps a plan, and can be undone in one click.
+*   **Local AI that works in the installed app**, with MemoryGuard to free memory before your machine starts swapping.
+*   **A rewritten debugger** for Python, Node.js, C/C++ and Go.
+*   **"Stop all processes" stops only what Kalynt started**, never unrelated programs.
 
-*   **Transaction Service:** ACID-compliant file operations with shadow file system and commit/rollback support
-*   **Cycle Detection:** Automatic detection and breaking of infinite loops in agent execution with randomized backoff
-*   **Tool Cache:** LRU cache with TTL invalidation and file dependency tracking for automatic cache invalidation
-*   **Goal Stack:** Hierarchical task planning with goal decomposition, dependency management, and plan persistence
-*   **Intent Classification:** 14 task categories (code generation, debugging, refactoring, etc.) with intelligent routing
-*   **Confidence Scoring:** Tool performance tracking with historical success rates and auto-approval for high-confidence operations
-*   **Learning Service:** Correction history database with pattern matching for similar errors and adaptive tool selection
-*   **Symbol Service:** Comprehensive symbol relationship tracking with impact analysis for refactoring
-*   **Semantic Operations:** High-level refactoring (extract method, rename symbol, move symbol) with automatic reference updates
-*   **Parallel Execution:** Concurrent tool execution with dependency analysis, topological sorting, and resource conflict detection
-*   **Context Assembly:** Priority-based context management with token budget management and intelligent deduplication
-*   **Token Optimization:** Context window optimization with compression strategies and conversation window management
+See the [changelog](./CHANGELOG.md) for the full list.
 
-### Privacy & Security by Design
-*   **Local-First:** Your code, chat history, and vector embeddings live strictly on your disk.
-*   **P2P Collaboration:** Serverless, end-to-end encrypted (AES-256-GCM) collaboration using CRDTs and WebRTC. No central server sees your keystrokes.
-*   **Process Isolation:** Renderer sandboxing (`contextIsolation`, `sandbox: true`), strict Content Security Policy headers, and no `nodeIntegration`.
-*   **API Key Security:** Keys stored via Electron's `safeStorage` (OS keychain) — never in plain text.
-*   **Path Protection:** All file operations pass through `validatePath` with symlink resolution.
-*   **Update Integrity:** GitHub token validation and checksum verification for all updates.
-*   **Security Scanning:** Integrated workspace scanner for code quality and vulnerability detection.
-*   **Audit Logging:** Security event tracking via `auditLogService`.
-*   **Safe JSON Parsing:** Type-safe JSON handling infrastructure with validation and error recovery.
-*   **Shell Injection Prevention:** PID and port validation with parameterized commands to prevent injection attacks.
-*   **CSP Hardening:** Strengthened Content Security Policy with `object-src 'none'`, `base-uri 'self'`, and `frame-ancestors 'none'` directives.
+## Features
 
-### Full-Featured IDE
-*   **Monaco Editor:** The battle-tested core of VS Code, with AI inline completions and model-aware editing.
-*   **Integrated Terminal:** Xterm.js-based terminal with split views, search, context menus, and smart command suggestions.
-*   **Git Integration:** Full Git panel with staging, committing, branch management, and diff viewing.
-*   **File Explorer:** Tree view with drag-and-drop, context menus, and file operations.
-*   **Search Panel:** Full-text and regex search across the workspace.
-*   **Command Palette:** Fuzzy-matched command execution.
-*   **Debugger:** Integrated runtime debugging with breakpoints and inspection using VS Code's official js-debug-dap adapter.
-*   **Task Board:** Project task management directly in the IDE.
-*   **Version History:** Diff viewer for comparing file versions.
+### AI agent
+*   **Local or cloud.** Run GGUF models on your CPU or GPU through `node-llama-cpp`, or bring your own key for Anthropic, OpenAI, Google, DeepSeek, Kimi (Moonshot AI) or GLM (Z.ai). Requests go from your machine straight to the provider; once saved, keys are used only by the main process.
+*   **Real tools.** The agent reads, searches and edits your files, runs tests, builds, scripts and git in your shell, starts dev servers in the background and checks their output, searches the web and reads pages, and keeps a step-by-step plan you can follow.
+*   **You stay in control.** Pick *Ask before changes*, *Auto-edit* or *Full auto*. Every edit is shown as a diff, commands show exactly what will run, and destructive commands (`sudo`, `rm -rf`, force push, …) always ask, whatever the mode. Decline with a note to steer the agent, or allow similar commands for the rest of the chat.
+*   **Undo a whole run.** Files are snapshotted before the agent first touches them, so one click restores everything it changed, created or deleted.
+*   **Checks its own edits.** Python, JavaScript, JSON and shell edits are syntax-checked immediately, and the agent can run your project's own TypeScript compiler, `go vet` or `cargo check`; errors go back to the agent to fix.
+*   **Thinking you can read.** Reasoning streams in a collapsible section, effort is adjustable (Low to Max), and long conversations are summarized automatically before they outgrow the model's context.
+*   **Conversations are saved** per workspace and survive restarts. Mention files with `@` to attach them.
+*   **Code review.** A *Review code* mode scans the workspace and suggests fixes you can apply.
+*   **AIME, the AI memory engine.** Indexes your codebase in the background so the agent has context, and manages local model memory: context window, GPU offload, threads, batch size, reserved RAM, and automatic unloading when memory runs low or the model sits idle.
+*   **Model manager.** Download curated models (Qwen2.5-Coder, Qwen3, Devstral and more) with pause and resume.
 
-### Extension System
-*   **VS Code Compatibility:** Implements a subset of the VS Code API for easy extension porting.
-*   **Process Isolation:** Extensions run in a forked Node.js process for safety.
-*   **Open VSX Support:** Install extensions from the Open VSX marketplace or local `.vsix` files.
-*   **Plugin Management:** Full-featured panel for discovering, installing, and managing extensions.
+### Editor and tools
+*   **Monaco editor** (the core of VS Code) with split view, breadcrumbs, and optional AI inline completions.
+*   **Terminal** built on xterm.js and node-pty, with search and multiple sessions.
+*   **Run** the current file in 25 languages, **build** with your project's tasks (`tasks.json`, npm scripts and more), and **debug** Python, Node.js, C/C++ and Go with breakpoints, call stacks and expression evaluation.
+*   **Source control:** stage, commit, branch, pull and push, with a diff view.
+*   **Workspace search** with regex and replace preview, and a **command palette** for files, commands and workspaces.
+*   **Language runtimes:** detect, install and remove 34 runtimes from one place.
+*   **VS Code extensions** from the Open VSX marketplace or a local `.vsix`, running in a separate process.
 
-### Shadow Workspace with LSP (v1.0.5)
-*   **Sandboxed Validation:** AI changes are tested in a temporary "shadow" environment before touching your real code
-*   **LSP Integration:** Automatic Language Server Protocol session startup with real-time diagnostics validation
-*   **Multi-Language Support:** Comprehensive language ID mapping for LSP compatibility across all major languages
-*   **Document Synchronization:** Real-time document change synchronization with language servers
+### Working together
+*   **Peer-to-peer sync** with Yjs CRDTs over WebRTC. Invite people with a link or a room code.
+*   **End-to-end encryption** (AES-256-GCM) when the workspace has a room password. Without one, anyone with the link can join.
+*   **Shared task board, team chat, member roles and file sharing** (up to 200 MB per file), all synced directly between peers.
 
-### Performance Acceleration
-*   **Memory Optimization:** Multi-layer RAM reduction system (Chromium flags, V8 heap cap, idle GC loops, lazy loading) achieving ~700 MB idle on Windows/Ubuntu.
-*   **Lazy Loading:** Monaco Editor, tab panels, and heavy services load on-demand via `React.lazy()` and `ServiceOrchestrator`.
-*   **Native Acceleration:** Swift native helper on macOS for FSEvents, CoreML, and memory management.
-*   **Performance Modes:** Balanced, High Performance, and Power Saver profiles.
-*   **Real-Time Monitoring:** CPU, RAM, disk, and network metrics in the header and a dedicated Performance tab.
+### Privacy and security
+*   **Local-first:** your code, conversations and index stay on your disk.
+*   **API keys** are kept in the operating system's keychain through Electron's `safeStorage` and used only by the main process.
+*   **Sandboxed renderer** (`contextIsolation`, `sandbox`, no `nodeIntegration`) and a strict Content Security Policy.
+*   **Every file operation** is checked against the workspace folder, with symlinks resolved.
+*   **No shell is spawned** for run or package commands; arguments are passed as lists. Build tasks declared as `shell` in `tasks.json` and the agent's commands do use a shell, and the agent's only run after your approval unless you choose *Full auto*.
+*   **Agent web access** stays on the public internet; reading a page on your machine or local network needs your approval.
 
-### Real-Time Collaboration
-*   **P2P Sync:** Yjs CRDTs over WebRTC data channels — no central server.
-*   **Encrypted Channels:** AES-256-GCM encryption on all collaboration data.
-*   **Presence:** Real-time cursor positions, selections, and member awareness.
-*   **File Transfer:** Secure peer-to-peer file sharing.
-
-### Modern UI/UX
-*   **Glassmorphism Aesthetic:** Sleek, modern interface with depth and transparency effects.
-*   **Theme System:** Full Light and Dark mode support with CSS variable-based theming.
-*   **Resizable Panels:** Draggable Terminal, File Explorer, and Agent Sidebar with state persistence.
-*   **Notification System:** Toast notifications with priority levels.
-*   **Auto-Updates:** Built-in update system with integrity verification.
+See [SECURITY.md](./SECURITY.md) for details and how to report a vulnerability.
 
 ---
 
-## Compatibility & Testing
+## Platforms
 
-Kalynt is a cross-platform application:
+*   **Linux** (AppImage and .deb): 2.0.0 was tested end to end on Ubuntu, in both development and packaged builds.
+*   **Windows** (installer) and **macOS** (DMG, with a Swift native helper on Apple Silicon): built by CI from the same code.
 
-*   **Windows:** **Extensively Tested.** Full support for local LLM acceleration (CUDA/DirectML) and native PTY. v1.0.5 includes ESM loader fix for Windows absolute paths (C:\) in AI engine loading.
-*   **Linux (Ubuntu/Debian):** **Extensively Tested.** Optimized for modern distributions (Ubuntu 24.04+). Includes stability fixes for Wayland and transparency.
-*   **macOS:** **Supported.** Apple Silicon (M1/M2/M3) with Swift native performance helper for FSEvents, CoreML, and memory management.
+Local models use your GPU where `node-llama-cpp` supports it (CUDA, Vulkan, Metal) and fall back to the CPU otherwise.
 
 ---
 
 ## Architecture
 
-Kalynt is built on a robust, modern tech stack:
+*   **Runtime:** Electron 40 (main process) and Chromium (renderer)
+*   **Interface:** React 18, TypeScript (strict), Vite 7, a small in-house design system with CSS variables
+*   **Editor and terminal:** Monaco Editor, xterm.js and node-pty
+*   **State:** Zustand, with Yjs for shared workspace data
+*   **AI:** `node-llama-cpp` for local models; a main-process gateway for Anthropic (official SDK), OpenAI (Responses API), Gemini, and the OpenAI-compatible APIs of DeepSeek, Kimi and GLM
+*   **Storage:** IndexedDB, better-sqlite3 and Electron `safeStorage`
+*   **Icons:** Lucide
 
-*   **Runtime:** Electron 40 (Main Process), Chromium (Renderer)
-*   **Frontend:** React 18, Vite, TypeScript (Strict Mode)
-*   **Editor:** Monaco Editor (VS Code core)
-*   **State Management:** Zustand (w/ Persistence), Yjs (CRDT for collaboration)
-*   **AI Engine:** `node-llama-cpp` (Local), OpenAI/Anthropic/Google (Cloud)
-*   **Agentic System:** 26 autonomous services for intelligent task execution
-*   **Terminal:** Xterm.js + node-pty
-*   **Styling:** CSS Variables + Glassmorphism aesthetic
-*   **Icons:** Lucide React
-*   **Security:** Context-bridged IPC, CSP, renderer sandbox, safeStorage
-*   **Database:** Better-sqlite3 v12.6 for local data persistence
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for how the pieces fit together.
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for a deep dive into the system design.
+### Monorepo structure
 
-### Monorepo Structure
-
-> **⚠️ IMPORTANT:** This repository contains **two separate projects** that are **built independently** and **distributed separately**:
-> - **Kalynt Desktop** - The main Electron IDE (this README)
-> - **Kalynt Mobile Companion** - Android companion app for remote management ([see README_KALYNT_MOBILE.md](./README_KALYNT_MOBILE.md))
+> This repository contains **two separate projects** that are built and distributed separately:
+> - **Kalynt Desktop**, the Electron IDE (this README)
+> - **Kalynt Mobile Companion**, an Android app for remote management ([README_KALYNT_MOBILE.md](./README_KALYNT_MOBILE.md))
 
 ```text
 kalynt/
 ├── apps/
-│   ├── desktop/                 # Main Electron IDE (THIS PROJECT)
-│   │   ├── electron/            # Main process (services, IPC, native)
-│   │   │   └── services/
-│   │   │       └── Performance_Acceleration/
-│   │   └── src/                 # Renderer (React UI, services, stores)
-│   │       ├── components/      # 23 top-level + ide/ + collaboration/ + extensions/
-│   │       ├── services/        # 54+ renderer services (including 26 agentic AI services)
-│   │       └── stores/          # 6 Zustand stores
-│   │
-│   └── mobile/                  # Android Companion App (SEPARATE PROJECT)
-│       └── android/             # Kotlin/Jetpack Compose app
-│           ├── app/src/main/    # Mobile UI, P2P connection, security
-│           └── ...              # See README_KALYNT_MOBILE.md
+│   ├── desktop/                 # Kalynt Desktop (Electron)
+│   │   ├── electron/            # Main process: IPC handlers, services, terminal, extensions
+│   │   ├── src/                 # Renderer: React UI, stores, services
+│   │   └── scripts/             # Build hooks (after-pack.cjs)
+│   └── mobile/                  # Android companion app (separate project)
 │
 ├── packages/
 │   ├── crdt/                    # Shared Yjs CRDT logic
@@ -205,30 +150,33 @@ kalynt/
 └── ...
 ```
 
-**Build Separation:**
-- Desktop builds do NOT include mobile code
-- Mobile APKs do NOT include desktop code
-- Each project has its own build system (npm/esbuild for Desktop, Gradle for Mobile)
-- They communicate via P2P WebSocket when both are running
+The desktop and mobile apps don't include each other's code. They talk over a local WebSocket bridge when you pair a phone.
 
 ---
 
 ## Installation
 
-### Pre-built Binaries
-Download the latest installer for Windows, macOS, or Linux from the [Releases Page](https://github.com/Hermes-Lekkas/Kalynt/releases).
+### Pre-built binaries
+Download the installer for Windows, macOS or Linux from the [releases page](https://github.com/trisle-app/Kalynt/releases). Kalynt checks for updates and asks before downloading one.
 
-### Building from Source
+### Building from source
 
 ```bash
-# Prerequisites: Node.js >= 22, Python 3.10+, C++ Build Tools
-git clone https://github.com/Hermes-Lekkas/Kalynt.git
+# Prerequisites: Node.js >= 22, Python 3.10+, a C++ toolchain
+git clone https://github.com/trisle-app/Kalynt.git
 cd Kalynt
 npm install
-npm run dev
+npm run electron:dev
 ```
 
-For macOS native helper:
+To build installers for your platform:
+
+```bash
+cd apps/desktop
+npx tsc && npx vite build && npx electron-builder
+```
+
+For the macOS native helper:
 ```bash
 cd packages/native-macos
 swift build -c release
@@ -238,23 +186,16 @@ swift build -c release
 
 ## Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines on how to submit PRs, report bugs, and request features.
+We welcome contributions! See [CONTRIBUTING.md](./CONTRIBUTING.md) for how to submit pull requests, report bugs and request features.
 
 ---
 
-## Community & Support
+## Community and support
 
-Join our community for support, discussions, and updates:
-
-*   **Reddit:** [r/Kalynt_IDE](https://reddit.com/r/Kalynt_IDE) - Community support, feature requests, and discussions
-*   **YouTube:** [Kalynt Channel](https://youtu.be/pV7THS2ZGls) - Video demos and tutorials
-*   **Spotify:** [Kalynt Podcast](https://open.spotify.com/show/0Hm1TtyPtzpRkhGCZjaAbb) - Audio content and discussions
-
----
-
-## Security
-
-Kalynt is built on a "Trust No One" (Zero Trust) architecture. See [SECURITY.md](./SECURITY.md) for the full security policy, vulnerability reporting, and recent security updates.
+*   **Reddit:** [r/Kalynt_IDE](https://reddit.com/r/Kalynt_IDE): support, feature requests and discussion
+*   **YouTube:** [Kalynt channel](https://youtu.be/pV7THS2ZGls): demos and tutorials
+*   **Spotify:** [Kalynt podcast](https://open.spotify.com/show/0Hm1TtyPtzpRkhGCZjaAbb)
+*   **GitHub:** [issues](https://github.com/trisle-app/Kalynt/issues) for bugs and feature requests
 
 ---
 

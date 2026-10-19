@@ -25,7 +25,7 @@ If applicable, add screenshots to help explain your problem.
 
 **Environment (please complete the following information):**
  - OS: [e.g. Windows 11, macOS 14, Ubuntu 22.04]
- - Kalynt Version: [e.g. 1.0.5-beta]
+ - Kalynt Version (Settings → About): [e.g. 2.0.0]
  - Installation Method: [e.g. .exe, .dmg, AppImage, .deb]
  - Node Version (if building from source): [e.g. 22.0.0]
 

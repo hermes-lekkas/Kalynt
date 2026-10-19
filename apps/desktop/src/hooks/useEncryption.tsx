@@ -11,6 +11,7 @@ import {
     LRUCache,
     decryptionCache
 } from '../services/encryptedProvider'
+import { hasRoomPassword } from '../services/roomPasswordStore'
 
 // Encryption context for the entire app
 interface EncryptionContextType {
@@ -54,25 +55,14 @@ export function EncryptionProvider({
         decryptionCache.clear()
 
         // Check if encryption is configured for this space
-        const checkEncryption = () => {
-            const settings = localStorage.getItem(`space-settings-${spaceId}`)
-            let enabled = false
-            if (settings) {
-                try {
-                    const parsed = JSON.parse(settings)
-                    // Only check if settings exist, key derivation happens in useYjs
-                    enabled = (parsed.encryptionEnabled && !!parsed.roomPassword)
-                } catch (e) {
-                    console.error('[Encryption] Failed to parse space settings:', e)
-                }
-            }
-            
+        // (only whether a password is stored; key derivation happens in useYjs)
+        let cancelled = false
+        hasRoomPassword(spaceId).then(enabled => {
+            if (cancelled) return
             // Batch updates
             setIsEnabled(enabled)
             setIsReady(true)
-        }
-
-        checkEncryption()
+        })
 
         // Re-check when encryption state might change
         const checkReady = () => {
@@ -86,6 +76,7 @@ export function EncryptionProvider({
         setTimeout(() => clearInterval(interval), 5000) // Stop after 5s
 
         return () => {
+            cancelled = true
             clearInterval(interval)
         }
     }, [spaceId])

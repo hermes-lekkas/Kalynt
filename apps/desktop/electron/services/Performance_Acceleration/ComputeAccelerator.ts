@@ -1,13 +1,27 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
  */
+import * as os from 'node:os'
 import { nativeHelperService } from '../native-helper-service'
 import { PerformanceMode } from './MemoryAccelerator'
 
 /**
+ * Engine tuning that follows the app-wide performance mode. The renderer folds
+ * these into the AIME configuration whenever a model is loaded.
+ */
+export interface InferenceOptimization {
+    flashAttention: boolean
+    batchSize: number
+    /** 0 lets the engine use every performance core. */
+    threads: number
+    /** Draft-model speculative decoding (still subject to family and RAM checks). */
+    useSpeculativeDecoding: boolean
+}
+
+/**
  * ComputeAccelerator
- * 
- * Optimizes CPU/GPU intensive tasks, specifically LLM inference 
+ *
+ * Optimizes CPU/GPU intensive tasks, specifically LLM inference
  * and heavy process management.
  */
 export class ComputeAccelerator {
@@ -24,42 +38,51 @@ export class ComputeAccelerator {
     }
 
     /**
-     * Adjusts the OS-level priority of the current process and its children.
-     * Uses 'renice' on Unix or 'SetPriorityClass' on Windows (via native helper).
+     * Adjusts this process's OS priority to match the mode.
+     * Windows priority classes are freely reversible. Unix niceness can only
+     * be lowered — restoring it needs privileges — so on macOS/Linux only
+     * attempts to *raise* priority are made (a failed raise leaves the current
+     * priority); power saving there comes from threads/batch/draft tuning
+     * instead. The macOS native helper propagates the hint to its children.
      */
-    private async applyProcessPriorities() {
-        const priority = this.mode === PerformanceMode.HIGH_PERFORMANCE ? 'high' : 'normal'
-        
-        if (this.isNativeSupported) {
-            try {
-                await nativeHelperService.request('process:set-priority', { priority })
-            } catch (_e) {
-                // Ignore failure
+    private applyProcessPriorities(): void {
+        const p = os.constants.priority
+        const target = this.mode === PerformanceMode.HIGH_PERFORMANCE
+            ? p.PRIORITY_HIGH
+            : this.mode === PerformanceMode.POWER_SAVER
+                ? p.PRIORITY_LOW
+                : p.PRIORITY_NORMAL
+        try {
+            const current = os.getPriority(process.pid)
+            if (process.platform === 'win32' || target < current) {
+                os.setPriority(process.pid, target)
             }
+        } catch {
+            // Raising priority needs privileges; keep the current priority.
+        }
+        if (this.isNativeSupported) {
+            nativeHelperService
+                .request('process:set-priority', { priority: target === p.PRIORITY_HIGH ? 'high' : 'normal' })
+                .catch(() => undefined)
         }
     }
 
     /**
-     * Optimizes LLM inference configuration based on performance mode and hardware.
+     * LLM inference tuning for the current performance mode.
      */
-    public getInferenceOptimization(hardware: any) {
-        const config: any = {
-            useSpeculativeDecoding: false,
-            kvCacheQuantization: 'f16',
-            maxBatchSize: 1
+    public getInferenceOptimization(): InferenceOptimization {
+        switch (this.mode) {
+            case PerformanceMode.HIGH_PERFORMANCE:
+                // Everything the hardware can give: full-core threads and a
+                // large prompt-eval batch.
+                return { flashAttention: true, batchSize: 512, threads: 0, useSpeculativeDecoding: true }
+            case PerformanceMode.POWER_SAVER:
+                // Half the cores, small batches and no draft model: less heat
+                // and lower peak power on batteries.
+                return { flashAttention: true, batchSize: 128, threads: Math.max(2, Math.floor(os.cpus().length / 2)), useSpeculativeDecoding: false }
+            default:
+                return { flashAttention: true, batchSize: 256, threads: 0, useSpeculativeDecoding: true }
         }
-
-        if (this.mode === PerformanceMode.HIGH_PERFORMANCE) {
-            config.useSpeculativeDecoding = hardware.hasGPU
-            config.kvCacheQuantization = 'q4' // Better speed, less RAM
-            config.maxBatchSize = 4
-        } else if (this.mode === PerformanceMode.POWER_SAVER) {
-            config.kvCacheQuantization = 'q8' // Better quality, more compute but maybe less RAM overall?
-            // Actually for power saver we want to minimize compute
-            config.maxBatchSize = 1
-        }
-
-        return config
     }
 
     /**

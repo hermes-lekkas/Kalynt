@@ -1,4 +1,4 @@
-﻿/*
+/*
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
@@ -9,6 +9,7 @@ import { memberSyncService } from '../services/memberSyncService'
 import { useMemberStore } from '../stores/memberStore'
 
 import { p2pService } from '../services/p2pService'
+import { getRoomPassword } from '../services/roomPasswordStore'
 
 // Store for Yjs documents per space
 const documents = new Map<string, Y.Doc>()
@@ -186,28 +187,21 @@ export function useYDoc(spaceId: string | null) {
             setPeerCount(count)
         }
 
+        // Set by cleanup so a setup still waiting on secure storage stops there
+        let cancelled = false
+
         // Main setup - connect first, then initialize encryption with shared salt
         const setup = async () => {
             if (!isMountedRef.current || setupRef.current !== spaceId) return
 
-            // Increment reference count
+            // Increment reference count (before any await, so cleanup's unref always matches)
             refSpace(spaceId)
 
-            const ydoc = getSpaceDocument(spaceId)
+            // Fetch the password from secure storage if encryption is enabled
+            const passwordValue = (await getRoomPassword(spaceId)) ?? undefined
+            if (cancelled) return
 
-            // Fetch password if encryption is enabled
-            let passwordValue: string | undefined = undefined
-            const settings = localStorage.getItem(`space-settings-${spaceId}`)
-            if (settings) {
-                try {
-                    const parsed = JSON.parse(settings)
-                    if (parsed.encryptionEnabled && parsed.roomPassword) {
-                        passwordValue = parsed.roomPassword
-                    }
-                } catch (e) {
-                    console.warn('[P2P] Failed to parse settings for encryption:', e)
-                }
-            }
+            const ydoc = getSpaceDocument(spaceId)
 
             // Connect to room first (room name includes password for y-webrtc encryption)
             const yprovider = connectSpace(spaceId, passwordValue)
@@ -308,6 +302,8 @@ export function useYDoc(spaceId: string | null) {
             // Track sync state
             const persistence = persistences.get(spaceId)
             if (persistence) {
+                // Later subscribers miss the one-time event, so read the current state too.
+                if (persistence.synced && isMountedRef.current) setSynced(true)
                 persistence.on('synced', () => {
                     if (isMountedRef.current) setSynced(true)
                 })
@@ -331,6 +327,7 @@ export function useYDoc(spaceId: string | null) {
         setup()
 
         return () => {
+            cancelled = true
             isMountedRef.current = false
             setupRef.current = null
 

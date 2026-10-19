@@ -37,6 +37,21 @@ class AIMEService {
     private workerCallbacks = new Map<string, (data: any) => void>()
     private useWorker = true // Feature flag
 
+    // Background work pauses for a while after a memory-pressure signal.
+    private suspendedUntil = 0
+    private suspended = () => Date.now() < this.suspendedUntil
+
+    constructor() {
+        if (typeof window !== 'undefined') {
+            window.addEventListener('kalynt-suspend-background', () => {
+                this.suspendedUntil = Date.now() + 5 * 60_000
+                // Stop an in-flight indexing pass.
+                this.worker?.postMessage({ type: 'cancel' })
+                logger.agent.warn('AIME: Indexing paused by memory pressure')
+            })
+        }
+    }
+
     /**
      * Open IndexedDB for AIME persistence
      */
@@ -170,7 +185,7 @@ class AIMEService {
     /**
      * Send message to worker with callback
      */
-    private async sendToWorker(type: string, payload: any, callbackKey: string): Promise<any> {
+    private async sendToWorker(type: string, payload: any, callbackKey: string, timeoutMs = 60000): Promise<any> {
         const worker = this.initWorker()
         if (!worker) throw new Error('Worker not available')
 
@@ -178,7 +193,7 @@ class AIMEService {
             const timeout = setTimeout(() => {
                 this.workerCallbacks.delete(callbackKey)
                 reject(new Error('Worker timeout'))
-            }, 60000) // 60s timeout
+            }, timeoutMs)
 
             this.workerCallbacks.set(callbackKey, (data: any) => {
                 clearTimeout(timeout)
@@ -193,7 +208,7 @@ class AIMEService {
      * Initialize indexing for a workspace (with Web Worker support)
      */
     async indexWorkspace(path: string) {
-        if (this.isIndexing) return
+        if (this.isIndexing || this.suspended()) return
         this.isIndexing = true
         this.workspacePath = path
 
@@ -333,9 +348,12 @@ class AIMEService {
             try {
                 const res = await electronAPI?.fs.readFile(path)
                 if (res?.success && res.content) {
+                    // The real mtime, so later incremental re-indexes see real changes.
+                    const stats = await electronAPI?.fs.stat(path).catch(() => undefined)
                     files.push({
                         path,
                         content: res.content,
+                        lastModified: stats?.mtime || 0,
                         relativePath: path.replace(workspacePath, '').replace(/^[/\\]/, '')
                     })
                 }
@@ -353,7 +371,9 @@ class AIMEService {
     private async indexWithWorker(files: any[]): Promise<void> {
         logger.agent.info('AIME: Delegating indexing to Web Worker', { fileCount: files.length })
 
-        const result = await this.sendToWorker('indexWorkspace', { files }, 'indexComplete')
+        // Large workspaces take a while; the timeout scales with the file count.
+        const timeoutMs = 30000 + files.length * 60
+        const result = await this.sendToWorker('indexWorkspace', { files }, 'indexComplete', timeoutMs)
 
         if (result?.indexData) {
             for (const entry of result.indexData) {
@@ -366,7 +386,7 @@ class AIMEService {
                 }))
                 this.index.push({
                     path: entry.path,
-                    lastModified: Date.now(),
+                    lastModified: entry.lastModified || Date.now(),
                     symbols
                 })
             }
@@ -581,24 +601,6 @@ class AIMEService {
     }
 
     /**
-     * Search using Web Worker (if available)
-     */
-    async searchWithWorker(query: string, limit = 10): Promise<any[]> {
-        if (!this.useWorker || !this.worker) return []
-
-        try {
-            const results = await this.sendToWorker('search', {
-                query,
-                maxResults: limit
-            }, `search:${query}`)
-            return results || []
-        } catch (error) {
-            console.warn('[AIME] Worker search failed, falling back:', error)
-            return []
-        }
-    }
-
-    /**
      * Search for relevant symbols/files based on a query
      */
     async search(query: string, limit = 10): Promise<CodeSymbol[]> {
@@ -794,19 +796,33 @@ class AIMEService {
     }
 
     /**
-     * Incremental re-index: only re-index files that have changed since last index.
+     * Incremental re-index: re-indexes files that changed since the last
+     * index, picks up files that are new to the workspace, and drops ones
+     * that no longer exist.
      */
     async reindexChanged() {
-        if (this.isIndexing || !this.workspacePath) return
+        if (this.isIndexing || this.suspended() || !this.workspacePath) return
 
         const electronAPI = globalThis.window.electronAPI
         if (!electronAPI) return
 
+        const indexed = new Set(this.index.map(f => f.path))
         let updated = 0
+        let removed = 0
+
         for (let i = 0; i < this.index.length; i++) {
             const file = this.index[i]
+            let stats: { mtime?: number } | undefined
             try {
-                const stats = await electronAPI.fs.stat(file.path)
+                stats = await electronAPI.fs.stat(file.path)
+            } catch {
+                // File is gone; drop it from the index.
+                this.index.splice(i, 1)
+                i--
+                removed++
+                continue
+            }
+            try {
                 if (stats?.mtime && stats.mtime > file.lastModified) {
                     const res = await electronAPI.fs.readFile(file.path)
                     if (res?.success && res.content) {
@@ -820,13 +836,27 @@ class AIMEService {
                     }
                 }
             } catch {
-                // File may have been deleted
+                // A failed read leaves the stale entry; the next pass retries it.
             }
         }
 
-        if (updated > 0) {
+        // Files added since the last full index.
+        let added = 0
+        try {
+            const current = await this.collectFiles(this.workspacePath)
+            for (const path of current) {
+                if (indexed.has(path)) continue
+                await this.indexFile(path)
+                added++
+            }
+        } catch (error) {
+            logger.agent.warn('AIME: New-file scan failed', { error })
+        }
+
+        if (updated > 0 || added > 0 || removed > 0) {
             this.buildSearchIndex()
-            logger.agent.info('AIME: Incremental re-index', { updated })
+            await this.saveIndex()
+            logger.agent.info('AIME: Incremental re-index', { updated, added, removed })
         }
     }
 

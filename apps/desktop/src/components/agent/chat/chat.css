@@ -1,0 +1,216 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ * Agent conversation: thread, messages, markdown, live run, approvals.
+ */
+
+.agent-chat {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.agent-chat__thread {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+}
+
+.agent-chat__messages {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-6);
+    padding: var(--sp-4) var(--sp-5) var(--sp-6);
+}
+
+.agent-chat__blocked {
+    margin: 0 var(--sp-5);
+    color: var(--warning);
+    font-size: var(--fs-sm);
+}
+
+.agent-chat__intro {
+    margin: auto 0 0;
+    padding: var(--sp-7) var(--sp-5) var(--sp-5);
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-4);
+}
+
+.agent-chat__intro-title {
+    font-size: var(--fs-lg);
+    font-weight: var(--fw-semibold);
+}
+
+.agent-chat__intro-text {
+    color: var(--text-2);
+    line-height: var(--lh-prose);
+}
+
+.agent-chat__examples {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    margin-top: var(--sp-3);
+}
+
+.agent-chat__example {
+    padding: var(--sp-4) var(--sp-5);
+    border: 1px solid var(--line);
+    border-radius: var(--r-2);
+    text-align: left;
+    color: var(--text-2);
+}
+
+.agent-chat__example:hover {
+    border-color: var(--agent-line);
+    color: var(--text);
+}
+
+/* Messages */
+.chat-msg {
+    min-width: 0;
+    line-height: var(--lh-prose);
+}
+
+.chat-msg--user {
+    align-self: flex-end;
+    max-width: 92%;
+    padding: var(--sp-4) var(--sp-5);
+    border-radius: var(--r-3);
+    background: var(--raised);
+    border: 1px solid var(--line);
+}
+
+.chat-msg--agent {
+    padding-left: var(--sp-5);
+    border-left: 1px solid var(--agent-line);
+}
+
+.chat-msg--agent.is-error {
+    border-left-color: var(--danger);
+}
+
+.chat-msg--agent.is-streaming {
+    border-left-color: var(--violet);
+}
+
+.chat-msg__meta {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-2);
+    font-size: var(--fs-xs);
+    color: var(--agent);
+    font-weight: var(--fw-medium);
+}
+
+.chat-msg.is-error .chat-msg__meta {
+    color: var(--danger);
+}
+
+/* Markdown */
+.md > * + * {
+    margin-top: var(--sp-4);
+}
+
+.md p {
+    overflow-wrap: anywhere;
+}
+
+.md ul,
+.md ol {
+    padding-left: 20px;
+}
+
+.md li + li {
+    margin-top: var(--sp-2);
+}
+
+.md-heading {
+    font-size: var(--fs-md);
+    font-weight: var(--fw-semibold);
+}
+
+.md blockquote {
+    padding-left: var(--sp-5);
+    border-left: 2px solid var(--line-strong);
+    color: var(--text-2);
+}
+
+.md hr {
+    border: 0;
+    border-top: 1px solid var(--line);
+}
+
+.md-code {
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: var(--hover);
+    font-size: 0.92em;
+}
+
+.md-pre {
+    margin: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--r-2);
+    background: var(--bg);
+    overflow: hidden;
+}
+
+.md-pre__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 26px;
+    padding: 0 var(--sp-2) 0 var(--sp-4);
+    border-bottom: 1px solid var(--line);
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+}
+
+.md-pre__copy {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: 2px var(--sp-3);
+    border-radius: var(--r-1);
+    color: var(--text-3);
+    font-size: var(--fs-xs);
+}
+
+.md-pre__copy:hover {
+    background: var(--hover);
+    color: var(--text);
+}
+
+.md-pre pre {
+    margin: 0;
+    padding: var(--sp-4);
+    overflow-x: auto;
+    white-space: pre;
+    font-size: var(--fs-sm);
+    line-height: 1.55;
+}
+
+.md-mention {
+    color: var(--agent);
+    font-weight: var(--fw-medium);
+}
+
+.md-mention--file {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 0 5px;
+    border-radius: var(--r-1);
+    background: var(--agent-soft);
+    font-size: 0.95em;
+    vertical-align: baseline;
+}
+
+.md-mention--file:hover {
+    text-decoration: underline;
+}

@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 const APP_START_TIME = Date.now()
-import { app, BrowserWindow, ipcMain, dialog, session } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 // SECURITY FIX: Enable sandbox mode for all platforms
 // This must be called before app.whenReady() for full effect
 app.enableSandbox()
@@ -28,13 +28,17 @@ import { registerNukeHandlers } from './handlers/nuke-handler'
 import { registerDependencyHandlers } from './handlers/dependency'
 import { setupBuildHandlers } from './handlers/build'
 import { setupDebugHandlers } from './handlers/debug'
-import { registerUpdateHandlers, initializeAutoUpdater } from './handlers/update-handler'
+import { registerUpdateHandlers, initializeAutoUpdater, isInstallingUpdate } from './handlers/update-handler'
 import { extensionHostManager } from './extensions/extensionHostManager'
 import { startSignalingServer } from './signalingServer'
 import type { SignalingServerHandle } from './signalingServer'
-import { startMobileBridge, generatePairingQR } from './mobileBridge'
+import { startMobileBridge, generatePairingQR, getLocalIp } from './mobileBridge'
 import type { MobileBridgeHandle } from './mobileBridge'
 import { initializeAgentBridge, cleanupAgentBridge } from './mobileAgentBridge'
+import { stopEverything } from './services/shutdown'
+import { createAppWindow } from './appWindow'
+import { registerAiHandlers } from './ai'
+import { registerAgentHandlers } from './agent'
 
 // Window and workspace state
 let mainWindow: BrowserWindowType | null = null
@@ -82,9 +86,6 @@ function validateDeepLink(link: string): string | null {
         return null
     }
 }
-
-// VITE_DEV_SERVER_URL
-const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL']
 
 // Hardware Acceleration: Enable by default for better UI performance. 
 // If Linux users experience GL errors, they can use --disable-gpu flag.
@@ -150,104 +151,6 @@ function ensureExtensionsDir() {
     }
 }
 
-// Window management
-function createWindow() {
-    const isLinux = process.platform === 'linux'
-
-    const win = new BrowserWindow({
-        width: 1400,
-        height: 900,
-        minWidth: 800,
-        minHeight: 600,
-        frame: isLinux, // Enable frame on Linux for better compatibility
-        titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
-        ...(process.platform === 'darwin' && { trafficLightPosition: { x: 16, y: 16 } }),
-        icon: path.join(__dirname, VITE_DEV_SERVER_URL
-            ? (isLinux ? '../public/Kalynt.png' : '../public/Kalynt_256x256.ico')
-            : (isLinux ? '../dist/Kalynt.png' : '../dist/Kalynt_256x256.ico')),
-        webPreferences: {
-            preload: path.join(__dirname, 'preload.js'),
-            nodeIntegration: false,
-            contextIsolation: true,
-            sandbox: true,  // SECURITY FIX: Enable sandbox on all platforms for production security
-            spellcheck: false,  // RAM: Saves ~20-30MB (no dictionary loaded)
-            v8CacheOptions: 'bypassHeatCheck',  // RAM: Faster V8 code caching, less heap growth
-            backgroundThrottling: true,  // RAM: Throttle timers/requestAnimationFrame when hidden
-        },
-        transparent: !isLinux, // Disable transparency on Linux to prevent crashes
-        backgroundColor: isLinux ? '#1e1e1e' : '#00000000', // Use solid background on Linux
-        show: false
-    })
-
-    mainWindow = win
-
-    // SECURITY FIX: Add Content Security Policy headers
-    // HIGH-003: Strengthened CSP with additional directives
-    session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-        callback({
-            responseHeaders: {
-                ...details.responseHeaders,
-                'Content-Security-Policy': [
-                    "default-src 'self';" +
-                    // HIGH-003 NOTE: unsafe-eval required for some bundler features
-                    // Consider removing if app works without it after testing
-                    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net http://localhost:8097;" +
-                    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net;" +
-                    "img-src 'self' data: blob: https:;" +
-                    "font-src 'self' data: https://fonts.gstatic.com;" +
-                    // P2P signaling: ws://localhost:4444 (built-in server) + explicit external hosts only
-                    "connect-src 'self' ws://localhost:4444 https://api.openai.com https://api.anthropic.com https://generativelanguage.googleapis.com http://localhost:8097 ws://localhost:8097 https://open-vsx.org;" +
-                    "media-src 'self' blob:;" +
-                    "worker-src 'self' blob:;" +
-                    // HIGH-003 FIX: Additional security directives
-                    "object-src 'none';" +  // Prevent Flash/Java applets
-                    "base-uri 'self';" +    // Restrict base tag manipulation
-                    "form-action 'self';" + // Restrict form submissions
-                    "frame-ancestors 'none';"  // Prevent clickjacking (Electron apps shouldn't be framed)
-                ]
-            }
-        })
-    })
-
-    win.once('ready-to-show', () => {
-        win.show()
-
-        // RAM Optimization: Clear old Chromium session data on startup
-        session.defaultSession.clearStorageData({
-            storages: ['cachestorage', 'shadercache', 'serviceworkers'],
-        }).catch(() => { /* ignore */ })
-    })
-
-    // RAM Optimization: Working set trimming on minimize/restore
-    // When minimized, trigger aggressive GC + clear renderer back/forward cache
-    win.on('minimize', () => {
-        // Trigger GC in each renderer
-        if (!win.isDestroyed()) {
-            win.webContents.send('performance:request-gc')
-        }
-        // Trigger main process GC
-        if (typeof globalThis.gc === 'function') {
-            try { globalThis.gc() } catch { /* ignore */ }
-        }
-        // Clear Chromium back-forward cache to free page snapshots
-        session.defaultSession.clearCache().catch(() => { /* ignore */ })
-    })
-
-    if (VITE_DEV_SERVER_URL) {
-        void win.loadURL(VITE_DEV_SERVER_URL)
-        // RAM: Only open DevTools if explicitly requested (saves ~50MB)
-        if (process.argv.includes('--devtools')) {
-            win.webContents.openDevTools()
-        }
-    } else {
-        void win.loadFile(path.join(__dirname, '../dist/index.html'))
-    }
-
-    win.on('closed', () => {
-        mainWindow = null
-    })
-}
-
 // Register all IPC handlers
 function registerAllHandlers() {
     // App info and hardware
@@ -297,7 +200,11 @@ function registerAllHandlers() {
     )
 
     // LLM inference
-    registerLLMInferenceHandlers(ipcMain, () => MODELS_DIR)
+    registerLLMInferenceHandlers(ipcMain, () => MODELS_DIR, () => mainWindow)
+
+    // Cloud AI providers and the agent's tools (commands, files, web, conversations)
+    registerAiHandlers(ipcMain)
+    registerAgentHandlers(ipcMain, () => currentWorkspacePath)
 
     // Secure storage for API keys
     registerSafeStorageHandlers(ipcMain, () => app.getPath('userData'))
@@ -362,21 +269,13 @@ function registerMobileBridgeHandlers() {
     // Generate QR code for mobile pairing
     ipcMain.handle('mobile:generate-qr', async () => {
         if (!mobileBridge) {
-            throw new Error('Mobile bridge not started')
+            mobileBridge = await startMobileBridge(8443)
+            initializeAgentBridge()
+            console.log(`[Main] Mobile bridge started for pairing at ${mobileBridge.url}`)
         }
         // Get local IP for the QR code
-        const os = require('os')
-        const interfaces = os.networkInterfaces()
-        let localIp = 'localhost'
-        for (const name of Object.keys(interfaces)) {
-            for (const iface of interfaces[name]) {
-                if (iface.family === 'IPv4' && !iface.internal) {
-                    localIp = iface.address
-                    break
-                }
-            }
-        }
-        const { qrData, cancel } = generatePairingQR(localIp)
+        const localIp = getLocalIp()
+        const { qrData } = generatePairingQR(localIp)
         return { qrData, localIp, port: mobileBridge.port }
     })
 
@@ -457,20 +356,14 @@ if (!gotTheLock) {
                 console.error('[Main] Failed to start signaling server:', err)
             })
 
-        // Start mobile bridge server for Android companion app
-        console.log('[Main] Starting mobile bridge server...');
-        startMobileBridge(8443)
-            .then(handle => {
-                mobileBridge = handle
-                initializeAgentBridge()
-                console.log(`[Main] Mobile bridge ready at ${handle.url}`)
-            })
-            .catch(err => {
-                console.error('[Main] Failed to start mobile bridge:', err)
-            })
+        // The mobile bridge listens on the network, so it starts only when
+        // someone pairs a phone (mobile:generate-qr), not on every launch.
 
         console.log('[Main] Creating window...');
-        createWindow()
+        mainWindow = createAppWindow()
+        mainWindow.on('closed', () => {
+            mainWindow = null
+        })
 
         // Initialize extension host
         console.log('[Main] Starting extension host...');
@@ -501,7 +394,10 @@ app.on('open-url', (event, url) => {
     }
 })
 
-app.on('before-quit', () => {
+// Stop everything Kalynt started before quitting, so no shell, program or
+// debugger is left running. Waits at most a few seconds.
+let cleanedUp = false
+app.on('before-quit', event => {
     if (signalingServer) {
         signalingServer.close()
         signalingServer = null
@@ -511,6 +407,19 @@ app.on('before-quit', () => {
         mobileBridge.close()
         mobileBridge = null
     }
+    if (cleanedUp) return
+    cleanedUp = true
+    // Installing an update must quit right away; stop processes without waiting.
+    if (isInstallingUpdate()) {
+        void stopEverything()
+        return
+    }
+    event.preventDefault()
+    const timeout = new Promise(resolve => setTimeout(resolve, 3000))
+    Promise.race([
+        Promise.all([stopEverything(), extensionHostManager.stop().catch(() => undefined)]),
+        timeout
+    ]).finally(() => app.quit())
 })
 
 app.on('window-all-closed', () => {
@@ -521,6 +430,9 @@ app.on('window-all-closed', () => {
 
 app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-        createWindow()
+        mainWindow = createAppWindow()
+        mainWindow.on('closed', () => {
+            mainWindow = null
+        })
     }
 })

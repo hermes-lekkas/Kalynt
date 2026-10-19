@@ -1,0 +1,152 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
+.k-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--sp-3);
+    height: var(--control-h);
+    padding: 0 var(--sp-5);
+    border-radius: var(--r-2);
+    border: 1px solid transparent;
+    font-size: var(--fs-md);
+    font-weight: var(--fw-medium);
+    line-height: 1;
+    white-space: nowrap;
+    transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+
+.k-btn--sm {
+    height: var(--control-h-sm);
+    padding: 0 var(--sp-4);
+    font-size: var(--fs-sm);
+    gap: var(--sp-2);
+}
+
+.k-btn--block {
+    width: 100%;
+}
+
+.k-btn:disabled {
+    opacity: 0.45;
+}
+
+.k-btn__label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Commit actions: neutral, high contrast */
+.k-btn--primary {
+    background: var(--primary);
+    color: var(--on-primary);
+}
+
+.k-btn--primary:hover:not(:disabled) {
+    background: var(--primary-hover);
+}
+
+.k-btn--secondary {
+    background: var(--raised);
+    border-color: var(--line-strong);
+    color: var(--text);
+}
+
+.k-btn--secondary:hover:not(:disabled) {
+    background: var(--hover);
+}
+
+.k-btn--ghost {
+    color: var(--text-2);
+}
+
+.k-btn--ghost:hover:not(:disabled) {
+    background: var(--hover);
+    color: var(--text);
+}
+
+.k-btn--danger {
+    background: var(--danger-soft);
+    border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+    color: var(--danger);
+}
+
+.k-btn--danger:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--danger) 24%, transparent);
+}
+
+/* Agent actions: the only place a filled brand colour appears */
+.k-btn--agent {
+    background: var(--agent-solid);
+    color: #ffffff;
+}
+
+.k-btn--agent:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--agent-solid) 86%, #ffffff);
+}
+
+/* Icon buttons */
+.k-icon-btn {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    border-radius: var(--r-2);
+    color: var(--text-2);
+    transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+
+.k-icon-btn--sm {
+    width: 22px;
+    height: 22px;
+    border-radius: var(--r-1);
+}
+
+.k-icon-btn:hover:not(:disabled) {
+    background: var(--hover);
+    color: var(--text);
+}
+
+.k-icon-btn.is-active {
+    background: var(--active);
+    color: var(--text);
+}
+
+.k-icon-btn--danger:hover:not(:disabled) {
+    color: var(--danger);
+    background: var(--danger-soft);
+}
+
+.k-icon-btn--agent {
+    color: var(--agent);
+}
+
+.k-icon-btn--agent.is-active {
+    background: var(--agent-soft);
+    color: var(--agent);
+}
+
+.k-icon-btn:disabled {
+    opacity: 0.4;
+}
+
+.k-icon-btn__badge {
+    position: absolute;
+    top: 1px;
+    right: 1px;
+    min-width: 14px;
+    height: 14px;
+    padding: 0 3px;
+    border-radius: var(--r-pill);
+    background: var(--text-2);
+    color: var(--bg);
+    font-size: 9px;
+    font-weight: var(--fw-semibold);
+    line-height: 14px;
+    text-align: center;
+}

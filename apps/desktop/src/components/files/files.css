@@ -1,0 +1,98 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+
+.shared {
+    position: relative;
+}
+
+.shared__drop {
+    border: 1px dashed var(--line-strong);
+    border-radius: var(--r-4);
+    min-height: 280px;
+    display: flex;
+}
+
+.shared__list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    border-top: 1px solid var(--line);
+}
+
+.shared-row {
+    display: grid;
+    grid-template-columns: 20px minmax(0, 1fr) 180px auto;
+    align-items: center;
+    gap: var(--sp-5);
+    padding: var(--sp-4) var(--sp-3);
+    border-bottom: 1px solid var(--line);
+}
+
+.shared-row:hover {
+    background: var(--surface);
+}
+
+.shared-row__icon {
+    color: var(--text-3);
+}
+
+.shared-row__main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+}
+
+.shared-row__name {
+    color: var(--text);
+}
+
+.shared-row__meta {
+    color: var(--text-3);
+    font-size: var(--fs-xs);
+}
+
+.shared-row__owner {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    min-width: 0;
+    color: var(--text-2);
+    font-size: var(--fs-sm);
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.shared-row__actions {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+}
+
+.shared__overlay {
+    position: absolute;
+    inset: var(--sp-5);
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--sp-4);
+    border: 2px dashed var(--agent-line);
+    border-radius: var(--r-4);
+    background: color-mix(in srgb, var(--bg) 85%, transparent);
+    color: var(--agent);
+    font-weight: var(--fw-medium);
+    pointer-events: none;
+}
+
+@media (max-width: 900px) {
+    .shared-row {
+        grid-template-columns: 20px minmax(0, 1fr) auto;
+    }
+
+    .shared-row__owner {
+        display: none;
+    }
+}
