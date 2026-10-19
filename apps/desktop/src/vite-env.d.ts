@@ -263,6 +263,32 @@ export interface ElectronAPI {
     getPath: (name: string) => Promise<string>
   }
 
+  // Cloud AI requests (main process) and the agent's tools
+  ai: {
+    chat: (requestId: string, request: import('./types/aiProtocol').ChatRequest) => Promise<
+      | { ok: true; result: import('./types/aiProtocol').ChatResult }
+      | { ok: false; error: string; status?: number; aborted?: boolean }>
+    cancel: (requestId: string) => Promise<{ ok: boolean }>
+    models: (provider: string, refresh?: boolean) => Promise<{ models: import('./types/aiProtocol').ModelInfo[]; live: boolean; error?: string }>
+    verify: (provider: string, key: string) => Promise<{ ok: boolean; error?: string; status?: number }>
+    keyStatus: () => Promise<Partial<Record<import('./types/aiProtocol').ProviderId, boolean>>>
+    onEvent: (callback: (data: import('./types/aiProtocol').AiEventEnvelope) => void) => () => void
+  }
+  agent: {
+    exec: (options: { id: string; command: string; cwd?: string; timeoutMs?: number; background?: boolean }) => Promise<{ ok: boolean; output: string; exitCode: number | null; running: boolean; timedOut?: boolean; durationMs: number; error?: string }>
+    execRead: (id: string) => Promise<{ ok: boolean; output: string; running: boolean; exitCode: number | null; error?: string }>
+    execKill: (id: string) => Promise<{ ok: boolean }>
+    onExecOutput: (callback: (data: { id: string; data: string }) => void) => () => void
+    glob: (options: { pattern: string; path?: string; limit?: number }) => Promise<{ ok: boolean; files?: string[]; total?: number; truncated?: boolean; error?: string }>
+    grep: (options: { pattern: string; path?: string; glob?: string; caseSensitive?: boolean; context?: number; maxResults?: number; filesOnly?: boolean }) => Promise<{ ok: boolean; matches?: Array<{ file: string; line: number; text: string; before?: string[]; after?: string[] }>; files?: string[]; truncated?: boolean; error?: string }>
+    webSearch: (options: { query: string; count?: number }) => Promise<{ ok: boolean; results?: Array<{ title: string; url: string; snippet: string }>; error?: string }>
+    webFetch: (options: { url: string; maxChars?: number; allowPrivate?: boolean }) => Promise<{ ok: boolean; url?: string; title?: string; content?: string; contentType?: string; truncated?: boolean; error?: string }>
+    listSessions: (spaceId?: string) => Promise<Array<{ id: string; title: string; spaceId?: string; provider?: string; model?: string; updatedAt: number; createdAt: number }>>
+    loadSession: (id: string) => Promise<unknown>
+    saveSession: (session: unknown) => Promise<{ ok: boolean; error?: string }>
+    deleteSession: (id: string) => Promise<{ ok: boolean }>
+  }
+
   // IPC Renderer
   ipcRenderer: {
     invoke: (channel: string, ...args: any[]) => Promise<any>

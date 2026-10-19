@@ -7,6 +7,7 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import { workspaceApi } from './preload/workspaceApi'
 import { toolsApi } from './preload/toolsApi'
 import { platformApi } from './preload/platformApi'
+import { agentApi } from './preload/agentApi'
 
 contextBridge.exposeInMainWorld('electronAPI', {
     // Platform info
@@ -108,5 +109,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     ...workspaceApi,
     ...toolsApi,
-    ...platformApi
+    ...platformApi,
+    ...agentApi
 })

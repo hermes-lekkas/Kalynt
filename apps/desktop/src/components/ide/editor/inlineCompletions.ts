@@ -7,14 +7,14 @@
 import { useEffect } from 'react'
 import { useAppStore } from '../../../stores/appStore'
 import { registerGhostTextProvider } from '../../../hooks/useGhostText'
-import type { AIProvider } from '../../../services/aiService'
+import { pickProvider } from '../../../services/aiService'
 import { monaco } from './monacoSetup'
 import { INLINE_COMPLETIONS_EVENT, inlineCompletionsEnabled } from './inlineCompletionsPref'
 
 /** Registers the completion provider while the setting is on and a cloud key exists. */
 export function useInlineCompletions() {
     const apiKeys = useAppStore(s => s.apiKeys)
-    const provider = (['openai', 'anthropic', 'google'] as AIProvider[]).find(p => !!apiKeys[p]) ?? null
+    const provider = pickProvider(apiKeys)
 
     useEffect(() => {
         let disposable: { dispose: () => void } | null = null

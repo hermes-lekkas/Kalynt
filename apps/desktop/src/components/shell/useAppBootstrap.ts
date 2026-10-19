@@ -10,13 +10,11 @@ import { useUpdateStore } from '../../stores/updateStore'
 import { usePerformanceAcceleration } from '../../hooks/usePerformanceAcceleration'
 import { setModelsDirectory } from '../../services/modelDownloadService'
 import { p2pService } from '../../services/p2pService'
-import { aiService, type AIProvider } from '../../services/aiService'
 import { logger } from '../../utils/logger'
 
 export function useAppBootstrap(): { ready: boolean } {
     const initialize = useAppStore(s => s.initialize)
     const theme = useAppStore(s => s.theme)
-    const apiKeys = useAppStore(s => s.apiKeys)
     const initializeUpdates = useUpdateStore(s => s.initialize)
     const [ready, setReady] = useState(false)
     usePerformanceAcceleration()
@@ -25,15 +23,6 @@ export function useAppBootstrap(): { ready: boolean } {
     useEffect(() => {
         document.documentElement.dataset.theme = theme === 'light' ? 'light' : 'dark'
     }, [theme])
-
-    // Every AI feature (agent, scan, completions) reads keys from aiService.
-    useEffect(() => {
-        (['openai', 'anthropic', 'google'] as AIProvider[]).forEach(provider => {
-            const key = apiKeys[provider]
-            if (key) aiService.setAPIKey(provider, key)
-            else aiService.removeAPIKey(provider)
-        })
-    }, [apiKeys])
 
     useEffect(() => {
         let cancelled = false

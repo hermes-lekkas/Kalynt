@@ -5,7 +5,6 @@
 import { OfflineModel, getModelById } from '../types/offlineModels'
 import { useModelStore } from '../stores/modelStore'
 import { hardwareService } from './hardwareService'
-import { getModelSizeCategory } from './ideAgentTools'
 import type { AIMEConfig } from '../types/aime'
 import { DEFAULT_AIME_CONFIG } from '../types/aime'
 
@@ -31,6 +30,15 @@ async function resolveGpuLayers(aime: AIMEConfig, modelId: string): Promise<numb
     } catch {
         return 0
     }
+}
+
+/** Rough size class from a model's name, used to tune context and batch sizes. */
+function getModelSizeCategory(modelId: string): 'small' | 'medium' | 'large' {
+    const lower = modelId.toLowerCase()
+    if (/1\.5b|1b|0\.5b|500m|tiny|mini/.test(lower)) return 'small'
+    if (/3b|4b|7b|8b/.test(lower)) return 'medium'
+    if (/13b|14b|32b|70b|72b|large|xl/.test(lower)) return 'large'
+    return 'medium'
 }
 
 export interface ChatMessage {

@@ -37,6 +37,8 @@ import type { MobileBridgeHandle } from './mobileBridge'
 import { initializeAgentBridge, cleanupAgentBridge } from './mobileAgentBridge'
 import { stopEverything } from './services/shutdown'
 import { createAppWindow } from './appWindow'
+import { registerAiHandlers } from './ai'
+import { registerAgentHandlers } from './agent'
 
 // Window and workspace state
 let mainWindow: BrowserWindowType | null = null
@@ -199,6 +201,10 @@ function registerAllHandlers() {
 
     // LLM inference
     registerLLMInferenceHandlers(ipcMain, () => MODELS_DIR, () => mainWindow)
+
+    // Cloud AI providers and the agent's tools (commands, files, web, conversations)
+    registerAiHandlers(ipcMain)
+    registerAgentHandlers(ipcMain, () => currentWorkspacePath)
 
     // Secure storage for API keys
     registerSafeStorageHandlers(ipcMain, () => app.getPath('userData'))

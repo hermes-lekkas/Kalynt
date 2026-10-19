@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [v2.0.0] - 2026-10-18
+## [v2.0.0] - 2026-10-19
 
 Kalynt 2.0 is a ground-up rebuild of the interface and a reliability pass over every backend service. It is the first stable release.
 
@@ -21,13 +21,22 @@ The whole renderer was rebuilt from scratch on a small design system, replacing 
 
 ### Agent and AI
 
-- **Cloud models updated.** The previous model IDs had all been retired by their providers, so Anthropic and Google keys no longer worked. Kalynt now offers Claude Opus 5.5, Sonnet 5.5 and Haiku 5.5; GPT-4o and GPT-4o mini; Gemini 2.5 Pro, 3.8 Flash, 2.5 Flash and 3.5 Flash-Lite. A saved choice of a retired model switches to the current default.
-- **Cloud requests fixed for current models:** adaptive thinking instead of fixed thinking budgets, responses read by block type, room for thinking tokens in the output limit, and refusals reported clearly. Streaming no longer drops tokens when a network chunk ends mid-line.
+- **Six cloud providers.** DeepSeek, Kimi (Moonshot AI) and GLM (Z.ai) join Anthropic, OpenAI and Google, each with its own key in Settings → Models and keys.
+- **Current models only.** Claude Opus 5.5, Fable 5.1, Sonnet 5.5 and Haiku 5.5; GPT-6.1 Sol, GPT-6 Astra and GPT-6 Luna; Gemini 4 Argon, 3.8 Flash and 3.5 Flash-Lite; DeepSeek V4 Pro and V4.1 Flash; Kimi K3; GLM-5.3. The previous IDs (GPT-4o, Gemini 2.5, Claude 4) are gone. Kalynt also reads each provider's live model list with your key, so new models appear without an update and retired ones drop out; a saved choice of a retired model moves to the current default.
+- **An AI gateway in the main process.** Every cloud request goes through it, so API keys are used only by the main process; once a key is saved, the interface keeps no copy and only knows which providers have one. Each protocol has a dedicated adapter: the official Anthropic SDK (adaptive thinking, effort, prompt caching, server-side fallbacks), OpenAI's Responses API (stateless, with encrypted reasoning passed back), Gemini (thought signatures), and the OpenAI-compatible APIs of DeepSeek, Kimi and GLM (their thinking modes, with reasoning passed back as they require). Rate limits and overloads are retried before anything has streamed, and errors say what to do.
+- **A rebuilt agent.** The agent loop and its tools were rewritten:
+  - Native tool calling on every cloud provider, and a text tool protocol for local models that also understands the `<tool_call>` and JSON forms local models tend to use.
+  - Tools to read, list, find (glob) and search (grep) files; edit by exact replacement (the agent must read a file before changing it); write, delete and move; run commands in your shell, in the foreground or in the background with output checks and stop; web search and page reading; a plan; semantic search over AIME's index; diagnostics; git status and diff. Independent reads run in parallel.
+  - Edits to Python, JavaScript, JSON and shell files are syntax-checked as they're made, and `get_diagnostics` runs the project's own TypeScript compiler, `go vet` or `cargo check`.
+  - Three approval modes: *Ask before changes*, *Auto-edit* and *Full auto*. Commands that look destructive or need elevated rights always ask. Approve once, allow similar commands for the chat, or decline with a note the agent sees.
+  - **Undo** restores every file a run changed, created or deleted.
+  - Live streaming of text, reasoning and tool calls; diffs and command output in the conversation; a plan checklist; *Stop* that kills running commands; *Continue* after 60 steps; automatic summarizing of long conversations; adjustable effort (Low to Max).
+  - Conversations are saved per workspace by the main process and survive restarts. Conversations from 1.x are imported once.
+- **Code review, task steps and inline completions** work with every provider, and use the model you picked for the agent when it has a key.
 - **API keys are checked against the provider's model list,** which costs nothing and does not depend on any model still being served.
 - **Local models (AIME).** The engine was rewritten on node-llama-cpp's current API: streaming, cancel, JSON-schema output, a queue so two requests don't fail with "no sequences left", speculative decoding with a draft model, and plain-language errors (damaged file, not enough memory, unsupported quantization).
 - **MemoryGuard** unloads a local model before the machine starts swapping, and optionally after a period of inactivity. New *Local model memory* settings cover the context window, GPU offload, batch size, threads and reserved RAM, and power modes feed into inference tuning.
 - **Model downloads** can pause and resume, survive servers that ignore `Range` requests, and clean up partial files when cancelled.
-- **Tool approvals.** Each agent action can be denied, allowed once or allowed for the session.
 
 ### Running, building and debugging
 
@@ -47,6 +56,7 @@ The whole renderer was rebuilt from scratch on a small design system, replacing 
 - The mobile companion bridge starts only when you pair a phone instead of listening on the network at every launch; the signaling server binds to `127.0.0.1`.
 - Terminal: killing a terminal now reports its exit, and terminals kill their whole process tree.
 - Production builds keep `console.error` and `console.warn`, so failures on users' machines can be diagnosed.
+- Agent web requests stay on the public internet: hosts are resolved and every redirect is checked, and reading a local or private address needs your approval.
 
 ### Updates and packaging
 
@@ -58,15 +68,16 @@ The whole renderer was rebuilt from scratch on a small design system, replacing 
 ### Removed
 
 - The "26 agentic services" layer (goal stack, intent classification, learning service and others) was removed: none of it was wired into the agent.
+- The previous agent (`agentLoopService`, `ideAgentTools`, tool cache, cycle detection, per-size prompt files, `shadowWorkspaceService`) and the old chat store were replaced by the new agent.
 - Document checkpoints (they snapshotted an unrelated empty document), the autonomous monitor toggle and the inline edit widget.
 - Inline AI completions are now off by default (Settings → General), and the artificial 2-second splash delay is gone.
 
 ### Known issues
 
-- OpenAI's dated GPT-4o snapshots retire on 14 January 2027. Kalynt will need a release that moves to OpenAI's current models before then.
-- Ten renderer services (for example `ideAgentTools.ts` and `agentLoopService.ts`) are still over 500 lines.
+- Seven renderer files (for example `aimeService.ts` and `p2pService.ts`) are still over 500 lines.
+- The local-model tool protocol was verified with parser tests, not with a real model run.
 - The Android companion can't be paired yet: the desktop bridge exists, but the desktop app has no pairing screen (this was also true in 1.0.5).
-- There is no unit-test suite yet; 2.0.0 was verified with end-to-end checks against the built app.
+- There is no unit-test suite in the repository yet; 2.0.0 was verified with end-to-end checks against the built app, and the provider adapters against a mock server that speaks each provider's protocol.
 
 ## [v1.0.5-beta] - 2026-02-27
 

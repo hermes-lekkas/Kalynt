@@ -7,6 +7,8 @@
 type Monaco = any
 
 import { logger } from '../utils/logger'
+import type { AIProvider } from '../services/aiService'
+import { fastModel } from '../types/aiProviders'
 
 // Import aiService dynamically to avoid path issues
 const getAiService = async () => {
@@ -23,7 +25,7 @@ const getAiService = async () => {
 export async function registerGhostTextProvider(
     monaco: Monaco,
     aiEnabled: boolean = true,
-    provider: 'openai' | 'anthropic' | 'google' = 'openai'
+    provider: AIProvider = 'anthropic'
 ) {
     if (!aiEnabled) return null
 
@@ -79,7 +81,7 @@ export async function registerGhostTextProvider(
                                 role: 'user' as const,
                                 content: `Complete this ${model.getLanguageId()} code:\n${textBeforeCursor}`
                             }
-                        ], provider)
+                        ], provider, { model: fastModel(provider), maxTokens: 256 })
 
                         const completion = response.content?.trim() || ''
                         if (!completion || completion.startsWith('```') || completion.length > 200) {

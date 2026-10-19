@@ -10,6 +10,8 @@ import { stopAllCodeProcesses } from '../handlers/code-execution'
 import { stopAllBuilds } from '../handlers/build'
 import { stopAllDebugSessions } from '../handlers/debug'
 import { getDependencyManager } from '../terminal/dependencyManager'
+import { stopAllAgentProcesses } from '../agent/exec'
+import { cancelAllAiRequests } from '../ai'
 
 export interface StopReport {
     terminals: number
@@ -17,6 +19,7 @@ export interface StopReport {
     builds: number
     debugSessions: number
     packageCommands: number
+    agentCommands: number
 }
 
 const settle = (work: Promise<number> | number) => Promise.resolve(work).catch(err => {
@@ -25,12 +28,14 @@ const settle = (work: Promise<number> | number) => Promise.resolve(work).catch(e
 })
 
 export async function stopEverything(): Promise<StopReport> {
-    const [terminals, programs, builds, debugSessions, packageCommands] = await Promise.all([
+    cancelAllAiRequests()
+    const [terminals, programs, builds, debugSessions, packageCommands, agentCommands] = await Promise.all([
         settle(killAllTerminals()),
         settle(stopAllCodeProcesses()),
         settle(stopAllBuilds()),
         settle(stopAllDebugSessions()),
-        settle(getDependencyManager().killAll())
+        settle(getDependencyManager().killAll()),
+        settle(stopAllAgentProcesses())
     ])
-    return { terminals, programs, builds, debugSessions, packageCommands }
+    return { terminals, programs, builds, debugSessions, packageCommands, agentCommands }
 }

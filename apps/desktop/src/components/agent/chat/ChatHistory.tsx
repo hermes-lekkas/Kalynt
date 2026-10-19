@@ -14,7 +14,7 @@ function when(ts: number): string {
         : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
-const messageCount = (n: number) => n === 0 ? 'Empty' : `${n} ${n === 1 ? 'message' : 'messages'}`
+import { modelLabel } from '../../../types/aiProviders'
 
 export function ChatHistory({ chat }: { chat: AgentChatApi }) {
     const triggerRef = useRef<HTMLButtonElement>(null)
@@ -37,7 +37,7 @@ export function ChatHistory({ chat }: { chat: AgentChatApi }) {
                             <li key={s.id} className={`chat-history__row ${s.id === chat.session?.id ? 'is-current' : ''}`}>
                                 <button type="button" className="chat-history__open" onClick={() => { chat.selectSession(s.id); setOpen(false) }}>
                                     <span className="truncate">{sessionLabel(s.title)}</span>
-                                    <span className="chat-history__meta">{messageCount(s.messages.length)}, {when(s.lastModified)}</span>
+                                    <span className="chat-history__meta">{s.model ? `${modelLabel(s.model)}, ` : ''}{when(s.updatedAt)}</span>
                                 </button>
                                 <IconButton size="sm" label="Rename" icon={<Pencil size={12} />} onClick={async () => {
                                     const title = await promptText({ title: 'Rename conversation', label: 'Title', initialValue: s.title, confirmLabel: 'Rename' })

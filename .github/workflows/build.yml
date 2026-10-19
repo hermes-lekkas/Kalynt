@@ -53,6 +53,7 @@ jobs:
           OBFUSCATE: 'false'
         run: |
           npx tsc
+          npx tsc -p tsconfig.node.json
           npx vite build
           npx electron-builder --win --publish always
 
@@ -101,6 +102,7 @@ jobs:
           OBFUSCATE: 'false'
         run: |
           npx tsc
+          npx tsc -p tsconfig.node.json
           npx vite build
           npx electron-builder --mac --publish always
 
@@ -145,6 +147,7 @@ jobs:
           OBFUSCATE: 'false'
         run: |
           npx tsc
+          npx tsc -p tsconfig.node.json
           npx vite build
           npx electron-builder --linux --publish always
 

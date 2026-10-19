@@ -3,13 +3,10 @@
  */
 import { useModelStore } from '../../stores/modelStore'
 import { formatBytes } from '../../types/offlineModels'
-import { PROVIDER_MODELS, type AIProvider } from '../../services/aiService'
-import { cloudModelName } from '../agent/chat/modelNames'
+import { PROVIDERS } from '../../types/aiProviders'
 import { ApiKeyRow } from './ApiKeyRow'
 import { LocalModels } from './LocalModels'
 import { SettingsPage, SettingsSection } from './parts'
-
-const modelList = (provider: AIProvider) => PROVIDER_MODELS[provider].map(cloudModelName).join(', ')
 
 export function ModelsSettings() {
     const totalSize = useModelStore(s => s.getTotalDownloadedSize())
@@ -19,11 +16,18 @@ export function ModelsSettings() {
             title="Models and keys"
             description="The agent can use a cloud model with your own API key, or a model that runs entirely on this machine. Local models keep your code on your computer."
         >
-            <SettingsSection title="Cloud providers" description="Bring your own key. Requests go directly from this machine to the provider.">
+            <SettingsSection title="Cloud providers" description="Bring your own key. Requests go directly from this machine to the provider, and the key stays in your system keychain.">
                 <div className="key-list">
-                    <ApiKeyRow provider="anthropic" name="Anthropic" models={modelList('anthropic')} placeholder="sk-ant-…" consoleUrl="https://console.anthropic.com/settings/keys" />
-                    <ApiKeyRow provider="openai" name="OpenAI" models={modelList('openai')} placeholder="sk-…" consoleUrl="https://platform.openai.com/api-keys" />
-                    <ApiKeyRow provider="google" name="Google" models={modelList('google')} placeholder="AIza…" consoleUrl="https://aistudio.google.com/app/apikey" />
+                    {PROVIDERS.map(p => (
+                        <ApiKeyRow
+                            key={p.id}
+                            provider={p.id}
+                            name={p.label === p.vendor ? p.label : `${p.label} (${p.vendor})`}
+                            models={p.models.map(m => m.label).join(', ')}
+                            placeholder={p.keyPlaceholder}
+                            consoleUrl={p.consoleUrl}
+                        />
+                    ))}
                 </div>
             </SettingsSection>
 

@@ -1,6 +1,5 @@
 {
     "compilerOptions": {
-        "composite": true,
         "skipLibCheck": true,
         "module": "ESNext",
         "moduleResolution": "bundler",
@@ -12,7 +11,8 @@
         ],
         "types": [
             "node"
-        ]
+        ],
+        "noEmit": true
     },
     "include": [
         "vite.config.ts",

@@ -3,6 +3,7 @@
  * Agent panel frame, composer, model picker, conversation list.
  */
 @import './chat/chat.css';
+@import './chat/run.css';
 @import './team/team.css';
 @import './review/review.css';
 
@@ -75,7 +76,12 @@
     flex-shrink: 0;
 }
 
+.agent-panel__sub > :first-child {
+    flex: none;
+}
+
 .agent-panel__title {
+    flex: 1;
     min-width: 0;
     color: var(--text-3);
     font-size: var(--fs-sm);
@@ -265,7 +271,8 @@
     display: flex;
     flex-direction: column;
     padding: var(--sp-2);
-    max-height: 420px;
+    max-height: min(520px, 70vh);
+    overflow-y: auto;
 }
 
 .model-menu__group + .model-menu__group {
@@ -377,4 +384,57 @@
     padding: var(--sp-5);
     color: var(--text-3);
     font-size: var(--fs-sm);
+}
+
+/* Composer controls and model menu additions */
+.agent-chat__controls {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+    min-width: 0;
+}
+
+.model-trigger__effort {
+    color: var(--text-4);
+    font-size: var(--fs-xs);
+}
+
+.mode-trigger.is-full-auto { color: var(--warning); }
+
+.model-menu__vendor {
+    color: var(--text-4);
+    font-weight: var(--fw-regular, 400);
+}
+
+.model-menu__effort {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: var(--sp-1);
+    padding: 0 var(--sp-3) var(--sp-3);
+}
+
+.model-menu__effort-btn {
+    height: 24px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-1);
+    color: var(--text-2);
+    font-size: var(--fs-xs);
+}
+
+.model-menu__effort-btn.is-selected {
+    border-color: var(--agent-line);
+    background: var(--agent-soft);
+    color: var(--text);
+}
+
+.model-menu__item--tall {
+    height: auto;
+    padding-top: var(--sp-3);
+    padding-bottom: var(--sp-3);
+}
+
+.model-menu__stack {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-1);
 }

@@ -1,45 +1,40 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
  *
- * Which model the agent uses: a cloud provider and model, or a local model.
- * Remembered between sessions and corrected when a key or model disappears.
+ * Which model the agent uses: a cloud provider and model (from the provider's
+ * live model list), or a local model. Remembered between sessions and
+ * corrected when a key disappears or a model is retired.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAppStore } from '../../../stores/appStore'
 import { useModelStore } from '../../../stores/modelStore'
-import { PROVIDER_MODELS, type AIProvider } from '../../../services/aiService'
 import { offlineLLMService } from '../../../services/offlineLLMService'
 import { useNotificationStore } from '../../../stores/notificationStore'
-import { cloudModelName, localModelName, PROVIDER_LABEL } from './modelNames'
+import { listModels } from '../../../services/agent/aiClient'
+import type { Effort, ModelInfo, ProviderId } from '../../../types/aiProtocol'
+import { PROVIDER_IDS, defaultEffort, defaultModel, isProviderId, modelLabel, providerInfo } from '../../../types/aiProviders'
+import { localModelName } from './modelNames'
 
 export type AIMode = 'cloud' | 'offline'
 
 export interface ModelChoice {
     mode: AIMode
-    provider: AIProvider
+    provider: ProviderId
     cloudModel: string
+    /** Unset: the model's default for agent work. */
+    effort?: Effort
 }
 
 const STORAGE_KEY = 'kalynt-agent-model'
-const PROVIDERS: AIProvider[] = ['anthropic', 'openai', 'google']
-
-function defaultModelFor(provider: AIProvider): string {
-    const models = PROVIDER_MODELS[provider] ?? []
-    return models.find(m => /sonnet|pro|gpt-4o$/.test(m)) ?? models[0] ?? ''
-}
 
 function load(): ModelChoice {
     try {
         const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null')
-        if (saved && (saved.mode === 'cloud' || saved.mode === 'offline')) {
-            // A model the provider has since retired is replaced by the current default.
-            const known = PROVIDER_MODELS[saved.provider as AIProvider]
-            if (!known) return { ...saved, provider: 'anthropic', cloudModel: defaultModelFor('anthropic') }
-            if (!known.includes(saved.cloudModel)) return { ...saved, cloudModel: defaultModelFor(saved.provider) }
-            return saved
+        if (saved && (saved.mode === 'cloud' || saved.mode === 'offline') && isProviderId(saved.provider)) {
+            return { mode: saved.mode, provider: saved.provider, cloudModel: String(saved.cloudModel || defaultModel(saved.provider)), effort: saved.effort }
         }
     } catch { /* fall through */ }
-    return { mode: 'cloud', provider: 'anthropic', cloudModel: defaultModelFor('anthropic') }
+    return { mode: 'cloud', provider: 'anthropic', cloudModel: defaultModel('anthropic') }
 }
 
 export function useModelChoice() {
@@ -47,24 +42,50 @@ export function useModelChoice() {
     const { loadedModelId, downloadedModels, isLoading, loadError } = useModelStore()
     const addNotification = useNotificationStore(s => s.addNotification)
     const [choice, setChoice] = useState<ModelChoice>(load)
+    const [models, setModels] = useState<Partial<Record<ProviderId, ModelInfo[]>>>({})
 
-    const providers = useMemo(() => PROVIDERS.filter(p => !!apiKeys[p]), [apiKeys])
+    const providers = useMemo(() => PROVIDER_IDS.filter(p => !!apiKeys[p]), [apiKeys])
     const downloaded = useMemo(() => Object.keys(downloadedModels), [downloadedModels])
+    const providerKey = providers.join(',')
+
+    // Ask each configured provider which models the key can use.
+    useEffect(() => {
+        let cancelled = false
+        for (const provider of providers) {
+            listModels(provider).then(result => {
+                if (!cancelled && result.models.length) setModels(m => ({ ...m, [provider]: result.models.filter(x => x.tools !== false) }))
+            }).catch(() => undefined)
+        }
+        return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [providerKey])
+
+    const modelsFor = useCallback((provider: ProviderId): ModelInfo[] => models[provider] ?? providerInfo(provider).models, [models])
 
     useEffect(() => {
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(choice)) } catch { /* storage unavailable */ }
     }, [choice])
 
-    // Fall back to something usable when the chosen provider loses its key.
+    // Fall back to something usable when the chosen provider loses its key or the model is retired.
     useEffect(() => {
-        if (choice.mode !== 'cloud' || providers.includes(choice.provider)) return
-        if (providers.length > 0) setChoice(c => ({ ...c, provider: providers[0], cloudModel: defaultModelFor(providers[0]) }))
-        else if (loadedModelId) setChoice(c => ({ ...c, mode: 'offline' }))
-    }, [choice.mode, choice.provider, providers, loadedModelId])
+        if (choice.mode !== 'cloud') return
+        if (!providers.includes(choice.provider)) {
+            if (providers.length > 0) setChoice(c => ({ ...c, provider: providers[0], cloudModel: defaultModel(providers[0]), effort: undefined }))
+            else if (loadedModelId) setChoice(c => ({ ...c, mode: 'offline' }))
+            return
+        }
+        const list = models[choice.provider]
+        if (list && list.length && !list.some(m => m.id === choice.cloudModel)) {
+            const fallback = list.find(m => m.recommended) ?? list[0]
+            setChoice(c => ({ ...c, cloudModel: fallback.id, effort: undefined }))
+        }
+    }, [choice.mode, choice.provider, choice.cloudModel, providers, models, loadedModelId])
 
-    const chooseCloud = useCallback((provider: AIProvider, cloudModel: string) => {
-        setChoice({ mode: 'cloud', provider, cloudModel })
+    const chooseCloud = useCallback((provider: ProviderId, cloudModel: string) => {
+        setChoice(c => ({ mode: 'cloud', provider, cloudModel, effort: c.provider === provider && c.cloudModel === cloudModel ? c.effort : undefined }))
     }, [])
+
+    const setEffort = useCallback((effort: Effort) => setChoice(c => ({ ...c, effort })), [])
 
     const chooseLocal = useCallback(async (modelId: string) => {
         setChoice(c => ({ ...c, mode: 'offline' }))
@@ -76,19 +97,23 @@ export function useModelChoice() {
         }
     }, [loadedModelId, addNotification])
 
-    const ready = choice.mode === 'cloud' ? providers.includes(choice.provider) : !!loadedModelId
+    const cloudReady = providers.includes(choice.provider)
+    const ready = choice.mode === 'cloud' ? cloudReady : !!loadedModelId
+    const info = modelsFor(choice.provider).find(m => m.id === choice.cloudModel)
+    const effort = choice.effort ?? defaultEffort(choice.provider, choice.cloudModel)
     const label = choice.mode === 'cloud'
-        ? (providers.includes(choice.provider) ? cloudModelName(choice.cloudModel) : 'No model')
+        ? (cloudReady ? info?.label ?? modelLabel(choice.cloudModel) : 'No model')
         : (loadedModelId ? `${localModelName(loadedModelId)} (local)` : isLoading ? 'Loading local model…' : 'No local model loaded')
 
     const blockedReason = ready ? null
         : choice.mode === 'cloud'
-            ? (providers.length === 0 ? 'Add an API key or load a local model to use the agent.' : `Add a ${PROVIDER_LABEL[choice.provider]} key or pick another model.`)
+            ? (providers.length === 0 ? 'Add an API key or load a local model to use the agent.' : `Add a ${providerInfo(choice.provider).label} key or pick another model.`)
             : (isLoading ? 'The local model is still loading.' : loadError ? `The local model failed to load: ${loadError}` : 'Load a local model or switch to a cloud model.')
 
     return {
-        choice, providers, downloaded, loadedModelId, isLoading, ready, label, blockedReason,
-        chooseCloud, chooseLocal,
+        choice, providers, downloaded, loadedModelId, isLoading, ready, label, blockedReason, effort,
+        modelsFor, chooseCloud, chooseLocal, setEffort,
+        contextWindow: choice.mode === 'cloud' ? info?.contextWindow : offlineLLMService.getContextWindow(),
         /** Model id passed to the agent loop. */
         modelId: choice.mode === 'cloud' ? choice.cloudModel : loadedModelId ?? undefined
     }

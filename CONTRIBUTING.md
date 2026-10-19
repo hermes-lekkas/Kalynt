@@ -58,8 +58,9 @@ kalynt/
 *   **Keep files under 500 lines.** Split by responsibility (see `components/ide/` or `electron/handlers/debug/` for examples).
 *   **UI** uses the primitives in `src/components/ui` and the CSS variables in `src/styles/tokens.css`; don't hard-code colours. Every view must work in both the light and dark themes.
 *   **Write interface text in plain language**, in sentence case, and say what happens ("Stage file", not "Submit").
-*   **Main process:** never spawn a shell. Pass commands as argument lists, and send every path that comes from the renderer through `validatePath` (`electron/utils/pathValidator.ts`).
-*   **Cloud model IDs** live only in `PROVIDER_MODELS` (`src/services/aiService.ts`).
+*   **Main process:** never spawn a shell. Pass commands as argument lists, and send every path that comes from the renderer through `validatePath` (`electron/utils/pathValidator.ts`). The one exception is the agent's `run_command` (`electron/agent/exec.ts`), which runs behind the approval rules in `src/services/agent/approvals.ts`.
+*   **Cloud providers and model IDs** live only in `src/types/aiProviders.ts`. Each protocol has one adapter in `electron/ai/`; a provider with an OpenAI-compatible API usually needs only a catalog entry and its parameters in `openaiChat.ts`.
+*   **Agent tools** live in `src/services/agent/tools/`, one file per area. A tool that changes something needs a `kind` that the approval rules understand, and should snapshot files with `ctx.checkpoint` before writing.
 
 ## What You Can Contribute To
 

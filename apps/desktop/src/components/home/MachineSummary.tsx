@@ -6,9 +6,9 @@ import { useAppStore } from '../../stores/appStore'
 import { useModelStore } from '../../stores/modelStore'
 import { useUiStore } from '../../stores/uiStore'
 import { getModelById } from '../../types/offlineModels'
+import { PROVIDER_IDS, providerInfo } from '../../types/aiProviders'
 import { RUNTIME_CATALOG } from '../extensions/runtimeCatalog'
 
-const PROVIDER_NAMES: Record<string, string> = { openai: 'OpenAI', anthropic: 'Anthropic', google: 'Google' }
 
 /** What this machine can run right now, stated plainly, with a way to change it. */
 export function MachineSummary() {
@@ -18,7 +18,7 @@ export function MachineSummary() {
     const openExtensions = useUiStore(s => s.openExtensions)
     const { loadedModelId, downloadedModels } = useModelStore()
 
-    const providers = Object.entries(apiKeys).filter(([, key]) => !!key).map(([id]) => PROVIDER_NAMES[id] ?? id)
+    const providers = PROVIDER_IDS.filter(id => apiKeys[id]).map(id => providerInfo(id).label)
     const downloaded = Object.keys(downloadedModels).length
     const loadedName = loadedModelId ? getModelById(loadedModelId)?.name ?? loadedModelId : null
 

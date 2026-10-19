@@ -8,7 +8,7 @@ Kalynt is built on a "Trust No One" (Zero Trust) architecture. We assume that ne
 
 1.  **Local-First:** Data should never leave the user's machine unless explicitly authorized.
 2.  **End-to-End Encryption:** Peer-to-peer workspace data is encrypted with AES-256-GCM when the workspace has a room password.
-3.  **Least Privilege:** The renderer has no Node.js access, extensions run in a separate process, and every agent action needs approval.
+3.  **Least Privilege:** The renderer has no Node.js access, extensions run in a separate process, and agent changes need approval unless you choose otherwise.
 4.  **Transparency:** The core codebase is open-source (AGPL-3.0) for public audit.
 
 ---
@@ -31,23 +31,27 @@ Kalynt is built on a "Trust No One" (Zero Trust) architecture. We assume that ne
 *   **Signaling:** the built-in signaling server listens only on `127.0.0.1`. Peers on other machines meet through the public y-webrtc signaling server, which relays connection offers but never document data.
 
 ### 2. AI Agent Safeguards
-*   **Approval:** every agent action (editing a file, running a command) can be denied, allowed once, or allowed for the session.
-*   **Self-checking edits:** after the agent edits a file, Kalynt runs that language's checker and returns any errors to the agent. This is a quality check, not a sandbox: approved edits apply to your real files.
-*   **Workspace boundary:** agent file operations go through the same path validation as everything else.
+*   **Approval modes:** *Ask before changes* (the default) asks before every edit, deletion and command; *Auto-edit* applies file edits directly but still asks for deletions and commands; *Full auto* runs everything without asking. Reading, searching and web search never ask.
+*   **Risky commands always ask,** in every mode: `sudo`, recursive force deletes, `mkfs`/`dd`, force pushes, `git reset --hard`, `git clean -f`, piping a download into a shell, `npm publish` and similar. "Always allow" remembers a command prefix (such as `npm run test`) for that conversation only, and never for inline code (`python -c`, `node -e`) or commands with shell operators.
+*   **Commands run in your shell with your permissions.** The agent's `run_command` uses a real shell so it can run scripts and pipelines, with a non-interactive environment (no prompts, no pager). Its file tools are limited to the workspace by the same path validation as everything else, but a command you approve can reach anything your user account can. Stop ends the command's whole process tree.
+*   **Web access:** pages are fetched from the main process with a size and time limit. Only public addresses are allowed: the host is resolved and every redirect is checked, and a URL on your machine or local network (`localhost`, `192.168.x.x`, `*.local`, …) is fetched only after you approve it.
+*   **Undo:** files are snapshotted before the agent's first change in a run, and *Undo* restores them. Snapshots are saved with the conversation in your profile folder (`agent-sessions/`, owner-only), so deleting a conversation deletes them too.
+*   **Untrusted content:** files and web pages the agent reads can contain instructions aimed at it (prompt injection). Keep *Ask before changes* when working with repositories or sites you don't trust.
+*   **Self-checking edits** are a quality check, not a sandbox: approved edits apply to your real files.
 
 ### 3. Path Traversal Protection
 *   **Validation:** every file system operation passes through one `validatePath` function (`electron/utils/pathValidator.ts`).
 *   **Symlinks:** paths are resolved with `fs.realpath`, so a symbolic link can't point outside the workspace root.
 
 ### 4. Secrets
-*   **API keys** (Anthropic, OpenAI, Google) and the GitHub token are **never** stored in plain text. Electron's `safeStorage` encrypts them with the OS keychain (Windows DPAPI, macOS Keychain, Linux Secret Service), and the file is written atomically with owner-only permissions.
+*   **API keys** (Anthropic, OpenAI, Google, DeepSeek, Moonshot, Z.ai) and the GitHub token are **never** stored in plain text. Electron's `safeStorage` encrypts them with the OS keychain (Windows DPAPI, macOS Keychain, Linux Secret Service), and the file is written atomically with owner-only permissions.
 *   **Git** credentials are passed per command and never written to `.git/config`. Tokens that earlier versions stored there are removed.
-*   **Cloud requests** go directly from your machine to the provider; Kalynt has no server in between.
+*   **Cloud requests** go directly from your machine to the provider; Kalynt has no server in between. They are made by the main process, which is the only part of the app that reads provider keys; the interface keeps no copy once a key is saved.
 
 ### 5. Process Isolation and Command Execution
 *   **Renderer sandbox:** `sandbox: true`, `contextIsolation: true`, `nodeIntegration: false`. The renderer reaches the system only through the preload API.
 *   **Content Security Policy:** applied to every response. Scripts, styles and fonts load only from the app itself (`default-src 'self'`, `object-src 'none'`, `base-uri 'self'`); fonts are bundled, so no third-party style or font origins are allowed. `script-src` still permits `unsafe-eval` and `unsafe-inline` because the Monaco editor needs them.
-*   **No shell:** Run, Build and package-manager commands are spawned with argument lists, so file names and arguments can't inject shell syntax.
+*   **No shell:** Run, Build and package-manager commands are spawned with argument lists, so file names and arguments can't inject shell syntax. The agent's commands are the exception (see above).
 *   **"Stop all processes"** stops only processes Kalynt started.
 *   **Extensions** run in a separate process with a restricted environment, are downloaded only from Open VSX, and their archives can't write outside their folder.
 *   **Native helper (macOS)** runs as a child process and communicates only through JSON-RPC over stdin/stdout.
@@ -75,7 +79,9 @@ We will acknowledge receipt within 48 hours and strive to provide a patch within
 
 ##  Security Updates (v2.0.0)
 
-*   **Shell execution removed:** no backend code path spawns a shell any more (Run, Build, package managers).
+*   **Shell execution removed** from Run, Build and package managers. The new agent runs commands through your shell by design, behind the approval rules above.
+*   **Provider keys moved out of the interface:** a main-process AI gateway makes every cloud request, and the renderer only learns which providers have a key.
+*   **Agent network guard:** web fetches resolve hosts and check every redirect, so a public link can't bounce the agent to a local or private address without approval.
 *   **Process cleanup scoped:** "Stop all processes" previously killed processes by port, which could hit unrelated programs. It now stops only processes Kalynt started.
 *   **Git token handling:** tokens are no longer stored in `.git/config`, and existing ones are removed; clone rejects option-like and `file://` URLs.
 *   **Single path validator:** four diverging copies of `validatePath` were merged into one with symlink resolution.

@@ -58,7 +58,8 @@
 Kalynt 2.0 is the first stable release: a rebuilt interface and a reliability pass over every backend service. Highlights:
 
 *   **A new interface** with a home screen, per-workspace folders, full-page Tasks, History and Shared files views, a command palette, and light and dark themes.
-*   **Current cloud models:** Claude Opus 5.5, Sonnet 5.5 and Haiku 5.5, GPT-4o, and Gemini 2.5 and 3.x.
+*   **Six cloud providers, current models only:** Claude (Opus 5.5, Fable 5.1, Sonnet 5.5, Haiku 5.5), OpenAI (GPT-6.1 Sol, GPT-6 Astra, GPT-6 Luna), Gemini (4 Argon, 3.8 Flash, 3.5 Flash-Lite), DeepSeek (V4 Pro, V4.1 Flash), Kimi K3 and GLM-5.3. Each provider's live model list is read with your key, so new models show up without an app update and retired ones disappear.
+*   **A rebuilt agent** with native tool calling on every provider: it edits files with reviewable diffs, runs commands and background servers, searches the web, keeps a plan, and can be undone in one click.
 *   **Local AI that works in the installed app**, with MemoryGuard to free memory before your machine starts swapping.
 *   **A rewritten debugger** for Python, Node.js, C/C++ and Go.
 *   **"Stop all processes" stops only what Kalynt started**, never unrelated programs.
@@ -68,9 +69,13 @@ See the [changelog](./CHANGELOG.md) for the full list.
 ## Features
 
 ### AI agent
-*   **Local or cloud.** Run GGUF models on your CPU or GPU through `node-llama-cpp`, or use your own Anthropic, OpenAI or Google API key. Requests go straight from your machine to the provider.
-*   **Agent with tools.** The agent reads and edits files, searches the workspace and runs commands. Every action asks first: deny it, allow it once, or allow it for the session.
-*   **Checks its own edits.** After the agent changes a file, Kalynt runs that language's checker and hands any errors back so the agent can fix them.
+*   **Local or cloud.** Run GGUF models on your CPU or GPU through `node-llama-cpp`, or bring your own key for Anthropic, OpenAI, Google, DeepSeek, Kimi (Moonshot AI) or GLM (Z.ai). Requests go from your machine straight to the provider; once saved, keys are used only by the main process.
+*   **Real tools.** The agent reads, searches and edits your files, runs tests, builds, scripts and git in your shell, starts dev servers in the background and checks their output, searches the web and reads pages, and keeps a step-by-step plan you can follow.
+*   **You stay in control.** Pick *Ask before changes*, *Auto-edit* or *Full auto*. Every edit is shown as a diff, commands show exactly what will run, and destructive commands (`sudo`, `rm -rf`, force push, …) always ask, whatever the mode. Decline with a note to steer the agent, or allow similar commands for the rest of the chat.
+*   **Undo a whole run.** Files are snapshotted before the agent first touches them, so one click restores everything it changed, created or deleted.
+*   **Checks its own edits.** Python, JavaScript, JSON and shell edits are syntax-checked immediately, and the agent can run your project's own TypeScript compiler, `go vet` or `cargo check`; errors go back to the agent to fix.
+*   **Thinking you can read.** Reasoning streams in a collapsible section, effort is adjustable (Low to Max), and long conversations are summarized automatically before they outgrow the model's context.
+*   **Conversations are saved** per workspace and survive restarts. Mention files with `@` to attach them.
 *   **Code review.** A *Review code* mode scans the workspace and suggests fixes you can apply.
 *   **AIME, the AI memory engine.** Indexes your codebase in the background so the agent has context, and manages local model memory: context window, GPU offload, threads, batch size, reserved RAM, and automatic unloading when memory runs low or the model sits idle.
 *   **Model manager.** Download curated models (Qwen2.5-Coder, Qwen3, Devstral and more) with pause and resume.
@@ -91,10 +96,11 @@ See the [changelog](./CHANGELOG.md) for the full list.
 
 ### Privacy and security
 *   **Local-first:** your code, conversations and index stay on your disk.
-*   **API keys** are kept in the operating system's keychain through Electron's `safeStorage`.
+*   **API keys** are kept in the operating system's keychain through Electron's `safeStorage` and used only by the main process.
 *   **Sandboxed renderer** (`contextIsolation`, `sandbox`, no `nodeIntegration`) and a strict Content Security Policy.
 *   **Every file operation** is checked against the workspace folder, with symlinks resolved.
-*   **No shell is spawned** for run, build or package commands; arguments are passed as lists.
+*   **No shell is spawned** for run, build or package commands; arguments are passed as lists. The agent's commands do use your shell, and only run after your approval unless you choose *Full auto*.
+*   **Agent web access** stays on the public internet; reading a page on your machine or local network needs your approval.
 
 See [SECURITY.md](./SECURITY.md) for details and how to report a vulnerability.
 
@@ -115,7 +121,7 @@ Local models use your GPU where `node-llama-cpp` supports it (CUDA, Vulkan, Meta
 *   **Interface:** React 18, TypeScript (strict), Vite 7, a small in-house design system with CSS variables
 *   **Editor and terminal:** Monaco Editor, xterm.js and node-pty
 *   **State:** Zustand, with Yjs for shared workspace data
-*   **AI:** `node-llama-cpp` for local models; Anthropic, OpenAI and Google APIs for cloud models
+*   **AI:** `node-llama-cpp` for local models; a main-process gateway for Anthropic (official SDK), OpenAI (Responses API), Gemini, and the OpenAI-compatible APIs of DeepSeek, Kimi and GLM
 *   **Storage:** IndexedDB, better-sqlite3 and Electron `safeStorage`
 *   **Icons:** Lucide
 

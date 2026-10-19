@@ -4,7 +4,8 @@
 import { useState } from 'react'
 import { Check } from 'lucide-react'
 import { useAppStore } from '../../stores/appStore'
-import { aiService, type AIProvider } from '../../services/aiService'
+import type { AIProvider } from '../../services/aiService'
+import { verifyKey } from '../../services/agent/aiClient'
 import { Badge, Button, TextInput, confirmAction } from '../ui'
 
 interface ApiKeyRowProps {
@@ -30,18 +31,23 @@ export function ApiKeyRow({ provider, name, models, placeholder, consoleUrl }: A
         setChecking(true)
         setError(null)
         try {
-            const valid = await aiService.verifyKey(provider, key)
-            if (!valid) {
-                setError(`${name} didn't accept this key. Check that it was copied in full and is active.`)
+            const result = await verifyKey(provider, key)
+            if (!result.ok) {
+                setError(`${name} didn't accept this key${result.error ? ` (${result.error.replace(/\s*Check the API key.*$/, '')})` : ''}. Check that it was copied in full and is active.`)
                 return
             }
+        } catch {
+            setError(`Couldn't reach ${name} to check the key. Check your connection and try again.`)
+            return
+        } finally {
+            setChecking(false)
+        }
+        try {
             await setAPIKey(provider, key)
             setEditing(false)
             setValue('')
-        } catch {
-            setError(`Couldn't reach ${name} to check the key. Check your connection and try again.`)
-        } finally {
-            setChecking(false)
+        } catch (e) {
+            setError(e instanceof Error ? e.message : 'The key could not be saved.')
         }
     }
 

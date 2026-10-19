@@ -1,199 +1,230 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
  *
- * Conversation state for the coding agent: sessions, the multi-step agent
- * loop, live progress, and tool approvals.
+ * The agent chat's state: conversations, runs, the turn being streamed, live
+ * command output, approvals, stop / continue / undo.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useChatStore } from '../../../stores/chatStore'
+import { useAgentSessionStore } from '../../../stores/agentSessionStore'
 import { useAgentStatusStore } from '../../../stores/agentStatusStore'
-import { agentLoopService } from '../../../services/agentLoopService'
-import { aiService } from '../../../services/aiService'
-import { offlineLLMService } from '../../../services/offlineLLMService'
-import { toolPermissionManager, stopActiveTool, type ToolCallRequest } from '../../../services/ideAgentTools'
-import type { AgentLoopEvent, AgentStep } from '../../../types/agentTypes'
-import type { ChatMessage } from '../../../types/chat'
-import { cleanModelOutput } from './modelOutput'
+import { useNotificationStore } from '../../../stores/notificationStore'
+import { runAgent, type ApprovalRequest, type LiveTurn, type RunOutcome } from '../../../services/agent/runner'
+import { ApprovalMemory, type AgentMode, type ApprovalDecision } from '../../../services/agent/approvals'
+import { buildSystemPrompt } from '../../../services/agent/systemPrompt'
+import { composeMessage, promptEnvironment } from '../../../services/agent/messageContext'
+import { restore } from '../../../services/agent/checkpoints'
+import { titleFrom, type AgentSession } from '../../../services/agent/session'
 import type { ModelChoiceApi } from './useModelChoice'
 
-type Approval = { request: ToolCallRequest; resolve: (r: { approved: boolean; alwaysAllow: boolean }) => void }
+const MODE_KEY = 'kalynt-agent-mode'
 
-const newId = () => crypto.randomUUID()
-
-/** The store keeps 'New Chat' as its untitled marker; show it in sentence case. */
 export const sessionLabel = (title: string) => !title || title === 'New Chat' ? 'New conversation' : title
 
-export function useAgentChat(spaceId: string, folder: string | null, model: ModelChoiceApi) {
-    const { sessions, currentSessionId, createSession, deleteSession, setCurrentSession, addMessageToSession, renameSession } = useChatStore()
-    const [steps, setSteps] = useState<AgentStep[]>([])
-    const [streaming, setStreaming] = useState('')
-    const [thinking, setThinking] = useState('')
-    const [running, setRunning] = useState(false)
-    const [iteration, setIteration] = useState<{ current: number; max: number } | null>(null)
-    const [approval, setApproval] = useState<Approval | null>(null)
-    const runActive = useRef(false)
+function loadMode(): AgentMode {
+    try {
+        const saved = localStorage.getItem(MODE_KEY)
+        if (saved === 'ask' || saved === 'auto-edit' || saved === 'full-auto') return saved
+    } catch { /* storage unavailable */ }
+    return 'ask'
+}
 
-    const spaceSessions = useMemo(
-        () => sessions.filter(s => !s.spaceId || s.spaceId === spaceId).sort((a, b) => b.lastModified - a.lastModified),
-        [sessions, spaceId]
-    )
-    const session = spaceSessions.find(s => s.id === currentSessionId) ?? null
-    const sessionRef = useRef<string | null>(session?.id ?? null)
-    sessionRef.current = session?.id ?? null
+/** Batches rapid updates (streamed tokens, command output) into one render per frame. */
+function useFrameState<T>(initial: T): [T, (update: (prev: T) => T) => void, (value: T) => void] {
+    const [state, setState] = useState(initial)
+    const pending = useRef<Array<(prev: T) => T>>([])
+    const frame = useRef<number | null>(null)
+    const schedule = useCallback((update: (prev: T) => T) => {
+        pending.current.push(update)
+        if (frame.current !== null) return
+        frame.current = requestAnimationFrame(() => {
+            frame.current = null
+            const updates = pending.current
+            pending.current = []
+            setState(prev => updates.reduce((acc, fn) => fn(acc), prev))
+        })
+    }, [])
+    const reset = useCallback((value: T) => {
+        pending.current = []
+        if (frame.current !== null) { cancelAnimationFrame(frame.current); frame.current = null }
+        setState(value)
+    }, [])
+    return [state, schedule, reset]
+}
+
+export function useAgentChat(spaceId: string, folder: string | null, model: ModelChoiceApi) {
+    const store = useAgentSessionStore()
+    const addNotification = useNotificationStore(s => s.addNotification)
+    const [running, setRunning] = useState(false)
+    const [live, scheduleLive, resetLive] = useFrameState<LiveTurn | null>(null)
+    const [outputs, scheduleOutput, resetOutputs] = useFrameState<Record<string, string>>({})
+    const [approval, setApproval] = useState<{ request: ApprovalRequest; decide: (d: ApprovalDecision) => void } | null>(null)
+    const [mode, setModeState] = useState<AgentMode>(loadMode)
+    const abortRef = useRef<AbortController | null>(null)
+    const memories = useRef(new Map<string, ApprovalMemory>())
+    const knownFiles = useRef(new Map<string, Set<string>>())
     const modelRef = useRef(model)
     modelRef.current = model
+    const modeRef = useRef(mode)
+    modeRef.current = mode
 
-    // Each workspace opens on its most recent conversation, or a fresh one.
+    const session = store.current && (!store.current.spaceId || store.current.spaceId === spaceId) ? store.current : null
+    const sessions = useMemo(() => store.summaries.filter(s => !s.spaceId || s.spaceId === spaceId), [store.summaries, spaceId])
+
+    // Each workspace opens on its most recent conversation.
     useEffect(() => {
-        if (session) return
-        if (spaceSessions.length > 0) setCurrentSession(spaceSessions[0].id)
-        else createSession('New Chat', spaceId)
-    }, [session, spaceSessions, spaceId, setCurrentSession, createSession])
-
-    const append = useCallback((message: ChatMessage, sessionId = sessionRef.current) => {
-        if (sessionId) addMessageToSession(sessionId, message)
-    }, [addMessageToSession])
-
-    const resetRun = useCallback(() => {
-        runActive.current = false
-        setRunning(false)
-        setStreaming('')
-        setThinking('')
-        setIteration(null)
-        setSteps([])
-        useAgentStatusStore.getState().setActivity('idle')
-        useAgentStatusStore.getState().setStep(null)
-    }, [])
-
-    // Agent loop events drive the live progress view.
-    useEffect(() => {
-        return agentLoopService.on((event: AgentLoopEvent) => {
-            const set = useAgentStatusStore.getState()
-            switch (event.type) {
-                case 'started': setSteps([]); setRunning(true); set.setActivity('thinking'); break
-                case 'step-added': setSteps(prev => [...prev, event.step]); if (event.step.type === 'tool-call') set.setActivity('working'); break
-                case 'step-updated': setSteps(prev => prev.map(s => (s.id === event.stepId ? { ...s, ...event.updates } : s))); break
-                case 'streaming': setStreaming(cleanModelOutput(event.text)); break
-                case 'thinking': setThinking(event.content); set.setActivity('thinking'); break
-                case 'iteration': setIteration({ current: event.iteration, max: event.maxIterations }); set.setStep({ current: event.iteration, max: event.maxIterations }); break
-                case 'tool-result':
-                    append({
-                        id: newId(), role: 'tool', name: event.toolName, timestamp: Date.now(), content: `Ran ${event.toolName}`,
-                        data: typeof event.result === 'string' ? event.result : JSON.stringify(event.result), isError: !event.success
-                    })
-                    break
-                case 'completed':
-                    if (event.finalMessage) {
-                        append({ id: newId(), role: 'assistant', content: event.finalMessage, timestamp: Date.now(), modelId: modelRef.current.modelId })
-                    }
-                    resetRun()
-                    break
-                case 'error':
-                    append({ id: newId(), role: 'assistant', content: event.error, timestamp: Date.now(), isError: true })
-                    resetRun()
-                    break
-                case 'aborted': resetRun(); break
-            }
+        let cancelled = false
+        void useAgentSessionStore.getState().loadList(spaceId).then(() => {
+            if (cancelled) return
+            const state = useAgentSessionStore.getState()
+            if (state.current && state.current.spaceId === spaceId) return
+            const latest = state.summaries.find(s => s.spaceId === spaceId)
+            if (latest) void state.open(latest.id)
+            else state.create(spaceId)
         })
-    }, [append, resetRun])
-
-    // Tool approvals come through this handler while the panel is mounted.
-    useEffect(() => {
-        toolPermissionManager.setConfirmationHandler(request => new Promise(resolve => {
-            useAgentStatusStore.getState().setActivity('waiting-approval')
-            setApproval({
-                request,
-                resolve: result => {
-                    setApproval(null)
-                    useAgentStatusStore.getState().setActivity('working')
-                    resolve(result)
-                }
-            })
-        }))
-        toolPermissionManager.setTrustedMode(false)
-        toolPermissionManager.setReadOnlyAutoAllow(true)
-        return () => {
-            toolPermissionManager.setConfirmationHandler(null as unknown as Parameters<typeof toolPermissionManager.setConfirmationHandler>[0])
-            toolPermissionManager.clearSession()
-        }
-    }, [])
-
-    // Deny anything still waiting if the panel goes away, so the loop can finish.
-    const approvalRef = useRef(approval)
-    approvalRef.current = approval
-    useEffect(() => () => approvalRef.current?.resolve({ approved: false, alwaysAllow: false }), [])
-
-    useEffect(() => {
-        agentLoopService.setWorkspacePath(folder || '')
-    }, [folder])
+        return () => { cancelled = true }
+    }, [spaceId])
 
     useEffect(() => {
         useAgentStatusStore.getState().setModel(model.ready ? model.label : null)
     }, [model.ready, model.label])
 
-    const send = useCallback(async (text: string) => {
-        const content = text.trim()
+    // Save before the window closes.
+    useEffect(() => {
+        const flush = () => { void useAgentSessionStore.getState().saveNow() }
+        window.addEventListener('beforeunload', flush)
+        return () => window.removeEventListener('beforeunload', flush)
+    }, [])
+
+    const memoryFor = (id: string) => {
+        let memory = memories.current.get(id)
+        if (!memory) { memory = new ApprovalMemory(); memories.current.set(id, memory) }
+        return memory
+    }
+    const knownFor = (id: string) => {
+        let set = knownFiles.current.get(id)
+        if (!set) { set = new Set(); knownFiles.current.set(id, set) }
+        return set
+    }
+
+    const run = useCallback(async (target: AgentSession): Promise<RunOutcome> => {
         const m = modelRef.current
-        if (!content || running || !m.ready) return
-        let sessionId = sessionRef.current
-        if (!sessionId) sessionId = createSession('New Chat', spaceId)
-        const history = (useChatStore.getState().sessions.find(s => s.id === sessionId)?.messages ?? []).map(msg => ({
-            role: msg.role === 'tool' ? 'assistant' : (msg.role || 'user'),
-            content: msg.role === 'tool' ? `Tool ${msg.name} result: ${msg.data?.slice(0, 500) || msg.content}` : msg.content
-        }))
-        append({ id: newId(), role: 'user', content, timestamp: Date.now() }, sessionId)
-        history.push({ role: 'user', content })
-
-        runActive.current = true
+        const controller = new AbortController()
+        abortRef.current = controller
         setRunning(true)
-        setSteps([])
-        useAgentStatusStore.getState().setActivity('thinking')
-        agentLoopService.setUseOfflineAI(m.choice.mode === 'offline')
-        agentLoopService.setCloudProvider(m.choice.provider)
-        agentLoopService.setWorkspacePath(folder || '')
+        resetOutputs({})
+        const status = useAgentStatusStore.getState()
+        status.setActivity('thinking')
         try {
-            await agentLoopService.run(content, history, {
-                trustedMode: toolPermissionManager.isTrustedMode(),
-                autoApproveReadOnly: true,
-                model: m.modelId
+            return await runAgent(target, {
+                provider: m.choice.mode === 'offline' ? 'local' : m.choice.provider,
+                model: m.modelId ?? '',
+                effort: m.choice.mode === 'cloud' ? m.effort : undefined,
+                contextWindow: m.contextWindow
+            }, {
+                workspace: folder,
+                mode: modeRef.current,
+                memory: memoryFor(target.id),
+                signal: controller.signal,
+                knownFiles: knownFor(target.id),
+                hooks: {
+                    onChange: () => useAgentSessionStore.getState().touch(),
+                    onLive: turn => {
+                        scheduleLive(() => turn)
+                        status.setActivity(turn ? (turn.calls.length ? 'working' : 'thinking') : 'working')
+                    },
+                    onOutput: (callId, chunk) => scheduleOutput(prev => ({ ...prev, [callId]: ((prev[callId] ?? '') + chunk).slice(-40_000) })),
+                    requestApproval: request => new Promise(resolve => {
+                        status.setActivity('waiting-approval')
+                        setApproval({
+                            request,
+                            decide: decision => {
+                                setApproval(null)
+                                status.setActivity('working')
+                                resolve(decision)
+                            }
+                        })
+                    })
+                }
             })
-        } catch (e) {
-            // The loop usually reports its own errors; only add one if it didn't.
-            if (runActive.current) {
-                append({ id: newId(), role: 'assistant', content: e instanceof Error ? e.message : 'The agent stopped unexpectedly.', timestamp: Date.now(), isError: true }, sessionId)
-            }
-            resetRun()
+        } catch (error) {
+            addNotification(`The agent stopped: ${error instanceof Error ? error.message : String(error)}`, 'error')
+            return 'error'
         } finally {
-            if (runActive.current) resetRun()
+            abortRef.current = null
+            setApproval(null)
+            setRunning(false)
+            resetLive(null)
+            status.setActivity('idle')
+            status.setStep(null)
+            void useAgentSessionStore.getState().saveNow()
         }
-    }, [running, createSession, spaceId, append, folder, resetRun])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [folder, addNotification])
 
-    const stop = useCallback(async () => {
-        approvalRef.current?.resolve({ approved: false, alwaysAllow: false })
-        try {
-            if (agentLoopService.isRunning()) await agentLoopService.abort()
-            if (modelRef.current.choice.mode === 'offline') await offlineLLMService.cancelGeneration()
-            else aiService.cancelStream()
-            await stopActiveTool()
-        } catch (e) {
-            console.error('Stopping the agent failed', e)
-        }
-        resetRun()
-    }, [resetRun])
+    const send = useCallback(async (text: string) => {
+        const m = modelRef.current
+        if (!text.trim() || running || !m.ready) return
+        const state = useAgentSessionStore.getState()
+        let target = state.current && state.current.spaceId === spaceId ? state.current : state.create(spaceId)
+        if (!target.system) target.system = buildSystemPrompt(await promptEnvironment(folder))
+        const message = await composeMessage(text.trim(), folder, spaceId)
+        message.attached.forEach(path => knownFor(target.id).add(path))
+        target.items.push({ role: 'user', content: message.content, display: message.display })
+        if (target.title === 'New conversation') target.title = titleFrom(message.display)
+        target.provider = m.choice.mode === 'offline' ? 'local' : m.choice.provider
+        target.model = m.modelId
+        target.updatedAt = Date.now()
+        useAgentSessionStore.getState().touch()
+        target = useAgentSessionStore.getState().current ?? target
+        await run(target)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [running, spaceId, folder, run])
 
-    const newChat = useCallback(() => {
-        if (running) return
-        if (session && session.messages.length === 0) return
-        createSession('New Chat', spaceId)
-        setSteps([])
-    }, [running, session, createSession, spaceId])
+    const stop = useCallback(() => {
+        approval?.decide({ allow: false })
+        abortRef.current?.abort()
+    }, [approval])
+
+    const undoRun = useCallback(async (runId: string) => {
+        const current = useAgentSessionStore.getState().current
+        const checkpoint = current?.checkpoints.find(c => c.runId === runId)
+        if (!current || !checkpoint || checkpoint.undone) return
+        const failed = await restore(checkpoint)
+        // Files were reverted, so their content in the conversation is stale.
+        knownFor(current.id).clear()
+        current.notes = [...(current.notes ?? []), {
+            at: current.items.length,
+            text: failed.length ? `Undid the changes, except ${failed.length} file${failed.length === 1 ? '' : 's'} that couldn't be restored.` : 'Undid the changes from this run.',
+            tone: failed.length ? 'error' : 'info'
+        }]
+        current.items.push({ role: 'user', content: 'I undid all the file changes from your last run; those files are back to how they were before it.', display: 'Undid the changes from the last run.' })
+        useAgentSessionStore.getState().touch()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [])
+
+    const setMode = useCallback((next: AgentMode) => {
+        setModeState(next)
+        try { localStorage.setItem(MODE_KEY, next) } catch { /* storage unavailable */ }
+    }, [])
 
     return {
-        sessions: spaceSessions, session, messages: session?.messages ?? [],
-        steps, streaming, thinking, running, iteration, approval,
-        send, stop, newChat,
-        selectSession: (id: string) => { if (!running) setCurrentSession(id) },
-        deleteSession, renameSession
+        sessions, session, revision: store.revision,
+        messages: session?.items ?? [],
+        running, live, outputs, approval, mode,
+        send,
+        stop,
+        continueRun: () => send('Continue.'),
+        undoRun,
+        setMode,
+        newChat: () => { if (!running) useAgentSessionStore.getState().create(spaceId) },
+        selectSession: (id: string) => { if (!running) void useAgentSessionStore.getState().open(id) },
+        deleteSession: (id: string) => {
+            void useAgentSessionStore.getState().remove(id).then(() => {
+                const state = useAgentSessionStore.getState()
+                if (!state.current) state.create(spaceId)
+            })
+        },
+        renameSession: (id: string, title: string) => void useAgentSessionStore.getState().rename(id, title)
     }
 }
 

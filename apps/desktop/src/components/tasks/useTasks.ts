@@ -9,7 +9,7 @@ import { useYDoc, useYArray } from '../../hooks/useYjs'
 import { useAppStore } from '../../stores/appStore'
 import { useModelStore } from '../../stores/modelStore'
 import { offlineLLMService, type ChatMessage as LLMMessage } from '../../services/offlineLLMService'
-import { aiService, type AIProvider } from '../../services/aiService'
+import { aiService, pickProvider } from '../../services/aiService'
 
 export type TaskStatus = 'todo' | 'in-progress' | 'done'
 export type TaskPriority = 'low' | 'medium' | 'high'
@@ -48,7 +48,7 @@ export function useTasks(spaceId: string) {
     const { items, push, update, remove } = useYArray<Task>(doc, 'tasks')
     const apiKeys = useAppStore(s => s.apiKeys)
     const loadedModelId = useModelStore(s => s.loadedModelId)
-    const cloudProvider = (['anthropic', 'openai', 'google'] as AIProvider[]).find(p => !!apiKeys[p]) ?? null
+    const cloudProvider = pickProvider(apiKeys)
 
     const save = useCallback((task: Task) => {
         const index = items.findIndex(t => t.id === task.id)

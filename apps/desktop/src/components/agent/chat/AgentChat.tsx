@@ -11,16 +11,17 @@ import { Composer, type ComposerHandle, type MentionOption } from '../Composer'
 import { AGENT_EVENTS } from '../../ide/hooks/useIdeCommands'
 import { AGENT_MENTION_EVENT } from '../../ide/explorer/FileExplorer'
 import { relativePath } from '../../ide/languages'
-import { MessageItem } from './MessageItem'
-import { LiveRun } from './LiveRun'
-import { ModelPicker } from './ModelPicker'
+import { Transcript } from './Transcript'
+import { LiveTurnView } from './LiveTurnView'
+import { PlanPanel, RunFooter } from './RunExtras'
+import { ModeMenu, ModelPicker } from './ModelPicker'
 import type { AgentChatApi } from './useAgentChat'
 import type { ModelChoiceApi } from './useModelChoice'
 
 const EXAMPLES = [
     'Explain how this project is structured',
-    'Find likely bugs in the files I changed today',
-    'Write tests for the open file'
+    'Run the tests and fix what fails',
+    'Find likely bugs in the files I changed today'
 ]
 
 interface AgentChatProps {
@@ -64,7 +65,7 @@ export function AgentChat({ chat, model, files, folder, canUseAgent }: AgentChat
     useLayoutEffect(() => {
         const el = threadRef.current
         if (el && stickToBottom.current) el.scrollTop = el.scrollHeight
-    }, [chat.messages.length, chat.steps.length, chat.streaming, chat.approval])
+    }, [chat.revision, chat.live, chat.outputs, chat.approval])
 
     const mentionOptions = useCallback((query: string): MentionOption[] => {
         const q = query.toLowerCase()
@@ -87,12 +88,13 @@ export function AgentChat({ chat, model, files, folder, canUseAgent }: AgentChat
 
     const submit = (text: string) => {
         if (!text.trim()) return
-        chat.send(text)
+        void chat.send(text)
         setDraft('')
         stickToBottom.current = true
     }
 
-    const empty = chat.messages.length === 0 && !chat.running
+    const session = chat.session
+    const empty = !session || (session.items.length === 0 && !(session.archive?.length) && !chat.running)
 
     return (
         <div className="agent-chat">
@@ -109,8 +111,8 @@ export function AgentChat({ chat, model, files, folder, canUseAgent }: AgentChat
                         <div className="agent-chat__intro">
                             <p className="agent-chat__intro-title">What should we work on?</p>
                             <p className="agent-chat__intro-text">
-                                The agent can read and search {folder ? 'this folder' : 'your files'}, edit files and run commands.
-                                It asks before changing anything. Type @ to point it at a file.
+                                The agent can read and search {folder ? 'this project' : 'your files'}, edit code, run commands and tests, and look things up on the web.
+                                {chat.mode === 'full-auto' ? ' It works without asking, except for risky commands.' : ' It asks before changing files or running commands.'} Type @ to point it at a file.
                             </p>
                             <div className="agent-chat__examples">
                                 {EXAMPLES.map(example => (
@@ -123,22 +125,24 @@ export function AgentChat({ chat, model, files, folder, canUseAgent }: AgentChat
                     ) : (
                         <EmptyState
                             title="Connect a model to start"
-                            description="Use a cloud model with your own API key, or download one that runs entirely on this machine."
+                            description="Use a cloud model with your own API key (Claude, OpenAI, Gemini, DeepSeek, Kimi or GLM), or download one that runs entirely on this machine."
                             actions={<>
                                 <Button size="sm" icon={<KeyRound size={14} />} onClick={openModels}>Add an API key</Button>
                                 <Button size="sm" icon={<Cpu size={14} />} onClick={openModels}>Get a local model</Button>
                             </>}
                         />
                     )
-                ) : (
+                ) : session && (
                     <div className="agent-chat__messages">
-                        {chat.messages.map(message => <MessageItem key={message.id} message={message} />)}
-                        <LiveRun chat={chat} />
+                        <Transcript session={session} workspace={folder} revision={chat.revision} outputs={chat.outputs} approval={chat.approval} />
+                        {chat.running && <LiveTurnView turn={chat.live} working={!chat.approval} />}
+                        <RunFooter session={session} folder={folder} running={chat.running} onUndo={chat.undoRun} onContinue={chat.continueRun} />
                     </div>
                 )}
             </div>
 
             {model.blockedReason && !empty && <p className="agent-chat__blocked">{model.blockedReason}</p>}
+            {session && <PlanPanel session={session} running={chat.running} />}
 
             <Composer
                 ref={composerRef}
@@ -148,9 +152,9 @@ export function AgentChat({ chat, model, files, folder, canUseAgent }: AgentChat
                 onStop={chat.stop}
                 busy={chat.running}
                 disabled={!model.ready && !chat.running}
-                placeholder={model.ready ? 'Ask the agent to explain, change or run something' : 'Connect a model to ask the agent'}
+                placeholder={model.ready ? 'Ask the agent to build, fix, explain or run something' : 'Connect a model to ask the agent'}
                 mentionOptions={mentionOptions}
-                footer={<ModelPicker model={model} />}
+                footer={<div className="agent-chat__controls"><ModelPicker model={model} /><ModeMenu mode={chat.mode} onChange={chat.setMode} /></div>}
                 sendLabel="Send to agent"
             />
         </div>
