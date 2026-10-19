@@ -350,15 +350,13 @@ async function handleMobileMessage(
 }
 
 /**
- * Get TLS options (self-signed cert for development)
+ * TLS options for the bridge server. There is no certificate yet, so phones
+ * can't connect over TLS until pairing ships (see the changelog's known
+ * issues). Client certificates are never requested, so nothing here turns
+ * off certificate checks.
  */
-function getTlsOptions(): any {
-    // In production, use proper certificates
-    // For development, generate self-signed cert
-    return {
-        // Allow unauthorized for development (mobile app will pin cert in Phase 9)
-        rejectUnauthorized: false
-    }
+function getTlsOptions(): import("https").ServerOptions {
+    return {}
 }
 
 /**

@@ -5,6 +5,11 @@ import { useUpdateStore } from '../../stores/updateStore'
 import { Button, Dialog, ProgressBar } from '../ui'
 import './startup.css'
 
+/** Release notes may be HTML; show them as plain text. */
+function notesText(notes: string): string {
+    return new DOMParser().parseFromString(notes, 'text/html').body.textContent ?? ''
+}
+
 function formatBytes(bytes: number): string {
     if (!bytes) return '0 B'
     const units = ['B', 'KB', 'MB', 'GB']
@@ -86,7 +91,7 @@ export function UpdateDialog() {
                     {updateInfo?.releaseNotes && (
                         <section className="update-dialog__notes">
                             <h3>What’s new</h3>
-                            <div className="selectable">{updateInfo.releaseNotes.replace(/<[^>]+>/g, '')}</div>
+                            <div className="selectable">{notesText(updateInfo.releaseNotes)}</div>
                         </section>
                     )}
                 </>

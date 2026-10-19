@@ -43,10 +43,12 @@ async function go(): Promise<RuntimeSource> {
     return { version: release.version.replace(/^go/, ''), url: `https://go.dev/dl/${file.filename}`, exe: 'go' }
 }
 
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
 // Standalone CPython builds that run without being compiled or installed system-wide.
 async function python(): Promise<RuntimeSource> {
     const release = await getJson<{ assets: { name: string; browser_download_url: string }[] }>('https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest')
-    const pattern = new RegExp(`^cpython-(3\\.(\\d+)\\.\\d+)\\+\\d+-${triple().replace(/[.+]/g, '\\$&')}-install_only\\.tar\\.gz$`)
+    const pattern = new RegExp(`^cpython-(3\\.(\\d+)\\.\\d+)\\+\\d+-${escapeRegExp(triple())}-install_only\\.tar\\.gz$`)
     const candidates = release.assets
         .map(a => ({ a, m: pattern.exec(a.name) }))
         .filter((x): x is { a: typeof x.a; m: RegExpExecArray } => !!x.m && Number(x.m[2]) <= 13)
