@@ -1,9 +1,10 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Check, Copy } from 'lucide-react'
 import { useAppStore } from '../../stores/appStore'
+import { hasRoomPassword } from '../../services/roomPasswordStore'
 import { Badge, Button, Field, TextInput } from '../ui'
 
 interface InviteSectionProps {
@@ -12,20 +13,18 @@ interface InviteSectionProps {
     onOpenSecurity: () => void
 }
 
-function hasPassword(spaceId: string): boolean {
-    try {
-        const s = JSON.parse(localStorage.getItem(`space-settings-${spaceId}`) || '{}')
-        return !!(s.encryptionEnabled && s.roomPassword)
-    } catch {
-        return false
-    }
-}
-
 export default function InviteSection({ spaceId, onGenerateLink, onOpenSecurity }: InviteSectionProps) {
     const spaceName = useAppStore(s => s.currentSpace?.name)
     const [invite] = useState(onGenerateLink)
     const [copied, setCopied] = useState<'link' | 'code' | null>(null)
-    const protectedRoom = hasPassword(spaceId)
+    // null until secure storage answers, so the callout doesn't flash the wrong state
+    const [protectedRoom, setProtectedRoom] = useState<boolean | null>(null)
+
+    useEffect(() => {
+        let live = true
+        hasRoomPassword(spaceId).then(value => { if (live) setProtectedRoom(value) })
+        return () => { live = false }
+    }, [spaceId])
 
     const copy = async (text: string, which: 'link' | 'code') => {
         await navigator.clipboard.writeText(text)
@@ -66,7 +65,7 @@ export default function InviteSection({ spaceId, onGenerateLink, onOpenSecurity 
                 )}
             </Field>
 
-            <div className="collab-callout">
+            {protectedRoom !== null && <div className="collab-callout">
                 {protectedRoom ? (
                     <>
                         <Badge tone="success">Password protected</Badge>
@@ -79,7 +78,7 @@ export default function InviteSection({ spaceId, onGenerateLink, onOpenSecurity 
                         <Button size="sm" onClick={onOpenSecurity}>Set a password</Button>
                     </>
                 )}
-            </div>
+            </div>}
 
         </div>
     )

@@ -5,6 +5,7 @@ import { useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import { p2pService } from '../../services/p2pService'
 import { encryptionService } from '../../services/encryptionService'
+import { setRoomPassword } from '../../services/roomPasswordStore'
 import { Button, Field, TextInput } from '../ui'
 
 interface JoinSectionProps {
@@ -46,13 +47,19 @@ export default function JoinSection({ onJoin, isJoining, error, onJoined }: Join
 
     const join = async () => {
         if (!parsed) return
-        try {
-            // Store the password before joining so the connection uses it from the start,
-            // the same way Settings › Security stores it.
-            if (password) {
-                localStorage.setItem(`space-settings-${parsed.roomId}`, JSON.stringify({ encryptionEnabled: true, roomPassword: password }))
-                await encryptionService.setRoomKey(parsed.roomId, password).catch(() => undefined)
+        setLocalError(null)
+        // Store the password before joining so the connection uses it from the start,
+        // the same way Settings › Security stores it.
+        if (password) {
+            try {
+                await setRoomPassword(parsed.roomId, password)
+            } catch (e) {
+                setLocalError(e instanceof Error ? e.message : String(e))
+                return
             }
+            await encryptionService.setRoomKey(parsed.roomId, password).catch(() => undefined)
+        }
+        try {
             await onJoin(input.trim())
             onJoined()
         } catch {
@@ -63,7 +70,7 @@ export default function JoinSection({ onJoin, isJoining, error, onJoined }: Join
     if (parsed) {
         return (
             <div className="collab-pane">
-                <button type="button" className="collab-back" onClick={() => { setParsed(null); setPassword('') }}>
+                <button type="button" className="collab-back" onClick={() => { setParsed(null); setPassword(''); setLocalError(null) }}>
                     <ArrowLeft size={14} aria-hidden /> Back
                 </button>
                 <header className="collab-pane__head">
@@ -75,7 +82,7 @@ export default function JoinSection({ onJoin, isJoining, error, onJoined }: Join
                         <TextInput id={id} type="password" value={password} autoComplete="off" onChange={e => setPassword(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') join() }} />
                     )}
                 </Field>
-                {error && <p className="collab-error" role="alert">{error}</p>}
+                {(localError || error) && <p className="collab-error" role="alert">{localError || error}</p>}
                 <div><Button variant="primary" loading={isJoining} onClick={join}>Join workspace</Button></div>
             </div>
         )

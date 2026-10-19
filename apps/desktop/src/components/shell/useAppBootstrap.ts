@@ -10,6 +10,7 @@ import { useUpdateStore } from '../../stores/updateStore'
 import { usePerformanceAcceleration } from '../../hooks/usePerformanceAcceleration'
 import { setModelsDirectory } from '../../services/modelDownloadService'
 import { p2pService } from '../../services/p2pService'
+import { markEncryptionEnabled, migrateLegacyRoomPasswords } from '../../services/roomPasswordStore'
 import { logger } from '../../utils/logger'
 
 export function useAppBootstrap(): { ready: boolean } {
@@ -45,6 +46,9 @@ export function useAppBootstrap(): { ready: boolean } {
         initializeUpdates().catch(error => logger.general.error('Failed to initialize auto-update system', error))
     }, [initializeUpdates])
 
+    // Older versions kept room passwords in localStorage; move them to secure storage.
+    useEffect(() => { migrateLegacyRoomPasswords() }, [])
+
     // kalynt:// invite links open (or create) the shared workspace.
     useEffect(() => {
         const join = (url: string) => {
@@ -54,8 +58,8 @@ export function useAppBootstrap(): { ready: boolean } {
                 return
             }
             if (parsed.password) {
-                // Never persist the room password itself.
-                localStorage.setItem(`space-settings-${parsed.roomId}`, JSON.stringify({ encryptionEnabled: true }))
+                // Never persist the room password from a link.
+                markEncryptionEnabled(parsed.roomId)
             }
             const store = useAppStore.getState()
             const existing = store.spaces.find(s => s.id === parsed.roomId)

@@ -5,35 +5,40 @@ import { useEffect, useState } from 'react'
 import { Eye, EyeOff } from 'lucide-react'
 import { useAppStore } from '../../stores/appStore'
 import { encryptionService } from '../../services/encryptionService'
+import { clearRoomPassword, getRoomPassword, setRoomPassword } from '../../services/roomPasswordStore'
 import { Badge, Button, Field, IconButton, TextInput, confirmAction } from '../ui'
 import { SavedNote, SettingsPage, SettingsSection } from './parts'
 
-interface SpaceSettings {
-    encryptionEnabled?: boolean
-    roomPassword?: string
-    [key: string]: unknown
-}
-
-function readSpaceSettings(spaceId: string): SpaceSettings {
-    try { return JSON.parse(localStorage.getItem(`space-settings-${spaceId}`) || '{}') } catch { return {} }
-}
-
 function WorkspaceEncryption({ spaceId, spaceName }: { spaceId: string; spaceName: string }) {
-    const [settings, setSettings] = useState<SpaceSettings>(() => readSpaceSettings(spaceId))
-    const [password, setPassword] = useState(settings.roomPassword ?? '')
+    // The saved password: undefined while loading from secure storage, null when there is none.
+    const [stored, setStored] = useState<string | null | undefined>(undefined)
+    const [password, setPassword] = useState('')
     const [visible, setVisible] = useState(false)
     const [saved, setSaved] = useState(false)
-    const active = !!settings.encryptionEnabled && !!settings.roomPassword
+    const [error, setError] = useState<string | null>(null)
+    const active = !!stored
 
-    const write = (next: SpaceSettings) => {
-        localStorage.setItem(`space-settings-${spaceId}`, JSON.stringify(next))
-        setSettings(next)
-    }
+    useEffect(() => {
+        let live = true
+        getRoomPassword(spaceId).then(value => {
+            if (!live) return
+            setStored(value)
+            if (value) setPassword(current => current || value)
+        })
+        return () => { live = false }
+    }, [spaceId])
 
     const save = async () => {
         if (!password.trim()) return
+        setError(null)
+        try {
+            await setRoomPassword(spaceId, password)
+        } catch (e) {
+            setError(e instanceof Error ? e.message : String(e))
+            return
+        }
         await encryptionService.setRoomKey(spaceId, password)
-        write({ ...settings, encryptionEnabled: true, roomPassword: password })
+        setStored(password)
         setSaved(true)
         setTimeout(() => setSaved(false), 1800)
     }
@@ -46,7 +51,8 @@ function WorkspaceEncryption({ spaceId, spaceName }: { spaceId: string; spaceNam
             danger: true
         })
         if (!ok) return
-        write({ ...settings, encryptionEnabled: false, roomPassword: '' })
+        await clearRoomPassword(spaceId)
+        setStored(null)
         setPassword('')
     }
 
@@ -54,9 +60,9 @@ function WorkspaceEncryption({ spaceId, spaceName }: { spaceId: string; spaceNam
         <SettingsSection
             title={`Room password for ${spaceName}`}
             description="Everyone in the workspace uses the same password. It encrypts team chat and the shared document with AES-256-GCM, and people need it to join. Share it outside Kalynt."
-            actions={active ? <Badge tone="success">Encrypted</Badge> : <Badge>Not encrypted</Badge>}
+            actions={stored === undefined ? undefined : active ? <Badge tone="success">Encrypted</Badge> : <Badge>Not encrypted</Badge>}
         >
-            <Field label="Password" hint={password && password.length < 12 ? 'Longer is stronger. Twelve or more characters is a good minimum.' : 'Changes apply after peers reconnect.'}>
+            <Field label="Password" error={error} hint={password && password.length < 12 ? 'Longer is stronger. Twelve or more characters is a good minimum.' : 'Changes apply after peers reconnect.'}>
                 {id => (
                     <div className="set-inline">
                         <TextInput
@@ -69,7 +75,7 @@ function WorkspaceEncryption({ spaceId, spaceName }: { spaceId: string; spaceNam
                             onKeyDown={e => { if (e.key === 'Enter') save() }}
                             trailing={<IconButton size="sm" label={visible ? 'Hide password' : 'Show password'} icon={visible ? <EyeOff size={13} /> : <Eye size={13} />} onClick={() => setVisible(v => !v)} />}
                         />
-                        <Button variant="primary" onClick={save} disabled={!password.trim() || password === settings.roomPassword}>Save password</Button>
+                        <Button variant="primary" onClick={save} disabled={!password.trim() || password === stored}>Save password</Button>
                         <SavedNote show={saved} />
                     </div>
                 )}

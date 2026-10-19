@@ -6,6 +6,7 @@ import { useMemberStore } from '../../../stores/memberStore'
 import { useAppStore } from '../../../stores/appStore'
 import { p2pService } from '../../../services/p2pService'
 import { memberSyncService } from '../../../services/memberSyncService'
+import { setRoomPassword } from '../../../services/roomPasswordStore'
 import { collabEngine } from '../../../services/collabEngine'
 import type { ActivityItem, ConnectionDiagnostics, CollaborationTab } from '../types'
 import type { WorkspaceRole, MemberPermissions } from '../../../types/permissions'
@@ -262,9 +263,7 @@ export function useCollaboration(spaceId: string | undefined) {
       
       if (parsed) {
         if (password) {
-          localStorage.setItem(`space-settings-${parsed.roomId}`, JSON.stringify({
-            encryptionEnabled: true
-          }))
+          await setRoomPassword(parsed.roomId, password)
         }
         
         const existing = spaces.find(s => s.id === parsed.roomId)

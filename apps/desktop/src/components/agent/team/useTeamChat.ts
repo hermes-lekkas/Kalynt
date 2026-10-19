@@ -10,6 +10,7 @@ import { useNotificationStore } from '../../../stores/notificationStore'
 import { useYDoc, useYArray, useAwareness } from '../../../hooks/useYjs'
 import { usePermissions } from '../../../hooks/usePermissions'
 import { encryptionService, type EncryptedPayload } from '../../../services/encryptionService'
+import { getRoomPassword } from '../../../services/roomPasswordStore'
 import type { ChatMessage } from '../../../types/chat'
 
 const USER_ID_KEY = 'unified-user-id'
@@ -50,16 +51,15 @@ export function useTeamChat(spaceId: string, visible: boolean) {
     const seen = useRef<Set<string> | null>(null)
     const inFlight = useRef(new Set<string>())
 
-    // Use the room password from workspace settings as the encryption key.
+    // Use the workspace's room password (from secure storage) as the encryption key.
     useEffect(() => {
-        try {
-            const settings = JSON.parse(localStorage.getItem(`space-settings-${spaceId}`) || '{}')
-            if (settings.encryptionEnabled && settings.roomPassword) {
-                encryptionService.setRoomKey(spaceId, settings.roomPassword)
-                    .then(() => setEncrypted(true))
-                    .catch(() => setEncrypted(false))
-            }
-        } catch { /* no settings */ }
+        let live = true
+        getRoomPassword(spaceId).then(async password => {
+            if (!password) return
+            await encryptionService.setRoomKey(spaceId, password)
+            if (live) setEncrypted(true)
+        }).catch(() => { if (live) setEncrypted(false) })
+        return () => { live = false }
     }, [spaceId])
 
     useEffect(() => {
