@@ -6,7 +6,7 @@ import { useAppStore } from '../../stores/appStore'
 import { useModelStore } from '../../stores/modelStore'
 import { useUiStore } from '../../stores/uiStore'
 import { getModelById } from '../../types/offlineModels'
-import { PROVIDER_IDS, providerInfo } from '../../types/aiProviders'
+import { CLOUD_PROVIDERS } from '../../types/aiProviders'
 import { RUNTIME_CATALOG } from '../extensions/runtimeCatalog'
 
 
@@ -18,7 +18,7 @@ export function MachineSummary() {
     const openExtensions = useUiStore(s => s.openExtensions)
     const { loadedModelId, downloadedModels } = useModelStore()
 
-    const providers = PROVIDER_IDS.filter(id => apiKeys[id]).map(id => providerInfo(id).label)
+    const providers = CLOUD_PROVIDERS.filter(p => apiKeys[p.id]).map(p => p.label)
     const downloaded = Object.keys(downloadedModels).length
     const loadedName = loadedModelId ? getModelById(loadedModelId)?.name ?? loadedModelId : null
 
@@ -42,6 +42,11 @@ export function MachineSummary() {
                 </button>
             </li>
             <li className="machine__row">
+                <Cpu size={16} className="machine__icon" aria-hidden />
+                <div className="machine__text"><span className="machine__label">Local server</span><span className="machine__value">{apiKeys['local-server'] ? 'Connection saved. Choose its model in the agent.' : 'Reuse models in Ollama or LM Studio on this computer.'}</span></div>
+                <button type="button" className="machine__link" onClick={() => openSettings('models-server')}>{apiKeys['local-server'] ? 'Manage connection' : 'Connect server'}</button>
+            </li>
+            <li className="machine__row">
                 {providers.length > 0 ? <Cloud size={16} className="machine__icon" aria-hidden /> : <KeyRound size={16} className="machine__icon" aria-hidden />}
                 <div className="machine__text">
                     <span className="machine__label">Cloud providers</span>
@@ -49,7 +54,7 @@ export function MachineSummary() {
                         {providers.length > 0 ? providers.join(', ') : 'No API keys added. Keys stay in your system keychain.'}
                     </span>
                 </div>
-                <button type="button" className="machine__link" onClick={() => openSettings('models')}>
+                <button type="button" className="machine__link" onClick={() => openSettings('models-cloud')}>
                     {providers.length > 0 ? 'Edit keys' : 'Add a key'}
                 </button>
             </li>

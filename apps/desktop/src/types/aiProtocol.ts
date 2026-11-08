@@ -6,7 +6,10 @@
  * both sides.
  */
 
-export type ProviderId = 'anthropic' | 'openai' | 'google' | 'deepseek' | 'moonshot' | 'zai'
+export type ProviderId = 'anthropic' | 'openai' | 'google' | 'deepseek' | 'moonshot' | 'zai' | 'local-server'
+
+export interface LocalServerInput { baseUrl: string; apiKey?: string; contextWindow?: number }
+export interface LocalServerStatus { configured: boolean; baseUrl: string; hasToken: boolean; contextWindow: number }
 
 /** How hard the model should think. Each adapter maps it to the provider's own scale. */
 export type Effort = 'low' | 'medium' | 'high' | 'max'
@@ -80,6 +83,8 @@ export interface ChatRequest {
     effort?: Effort
     /** Ignored by reasoning models that don't accept sampling parameters. */
     temperature?: number
+    /** Local server context configured by the user; cloud adapters ignore it. */
+    contextWindow?: number
 }
 
 export type StreamEvent =

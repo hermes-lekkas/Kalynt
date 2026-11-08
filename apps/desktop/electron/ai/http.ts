@@ -28,16 +28,17 @@ export function errorMessage(body: unknown, status: number): string {
 }
 
 const RETRYABLE = new Set([408, 409, 425, 429, 500, 502, 503, 504, 529])
+type RedirectMode = 'follow' | 'error' | 'manual'
 
 /** POSTs JSON and throws a ProviderError with the provider's own message on failure. */
-export async function postJson(url: string, body: unknown, headers: Record<string, string>, signal: AbortSignal): Promise<Response> {
+export async function postJson(url: string, body: unknown, headers: Record<string, string>, signal: AbortSignal, redirect: RedirectMode = 'follow'): Promise<Response> {
     let response: Response
     try {
         response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...headers },
             body: JSON.stringify(body),
-            signal
+            signal, redirect
         })
     } catch (error) {
         if (signal.aborted) throw error
@@ -52,13 +53,23 @@ export async function postJson(url: string, body: unknown, headers: Record<strin
     return response
 }
 
-export async function getJson(url: string, headers: Record<string, string>, signal?: AbortSignal): Promise<any> {
-    const response = await fetch(url, { headers, signal })
-    const text = await response.text()
-    let parsed: unknown = null
-    try { parsed = JSON.parse(text) } catch { /* not JSON */ }
-    if (!response.ok) throw new ProviderError(errorMessage(parsed, response.status), response.status)
-    return parsed
+export async function getJson(url: string, headers: Record<string, string>, signal?: AbortSignal, redirect: RedirectMode = 'follow'): Promise<any> {
+    const timeout = AbortSignal.timeout(15000)
+    try {
+        const response = await fetch(url, { headers, signal: signal ? AbortSignal.any([signal, timeout]) : timeout, redirect })
+        const text = await response.text()
+        let parsed: unknown
+        try { parsed = JSON.parse(text) } catch {
+            if (response.ok) throw new ProviderError('The provider returned an unreadable response. Check the endpoint and try again.')
+            parsed = { message: text.slice(0, 300) }
+        }
+        if (!response.ok) throw new ProviderError(errorMessage(parsed, response.status), response.status)
+        return parsed
+    } catch (error) {
+        if (error instanceof ProviderError || signal?.aborted) throw error
+        if (timeout.aborted) throw new ProviderError('The connection timed out. Check the server or your network and try again.', 408)
+        throw new ProviderError(`Couldn't reach the provider. Check that the server is running and the address is correct. ${error instanceof Error ? error.message : ''}`)
+    }
 }
 
 export interface SseMessage {

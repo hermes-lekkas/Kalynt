@@ -7,7 +7,8 @@
 type Monaco = any
 
 import { logger } from '../utils/logger'
-import type { AIProvider } from '../services/aiService'
+import { pickProvider, type AIProvider } from '../services/aiService'
+import { useAppStore } from '../stores/appStore'
 import { fastModel } from '../types/aiProviders'
 
 // Import aiService dynamically to avoid path issues
@@ -72,6 +73,9 @@ export async function registerGhostTextProvider(
                     }
 
                     try {
+                        // A queued completion must not use a provider selected before
+                        // the user switched to local inference or removed a key.
+                        if (pickProvider(useAppStore.getState().apiKeys) !== provider) return { items: [] }
                         const response = await aiService.chat([
                             {
                                 role: 'system' as const,
@@ -82,6 +86,8 @@ export async function registerGhostTextProvider(
                                 content: `Complete this ${model.getLanguageId()} code:\n${textBeforeCursor}`
                             }
                         ], provider, { model: fastModel(provider), maxTokens: 256 })
+
+                        if (pickProvider(useAppStore.getState().apiKeys) !== provider) return { items: [] }
 
                         const completion = response.content?.trim() || ''
                         if (!completion || completion.startsWith('```') || completion.length > 200) {

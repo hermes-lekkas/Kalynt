@@ -2,7 +2,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Cpu, KeyRound, Lock } from 'lucide-react'
+import { Cpu, KeyRound, Lock, Plug } from 'lucide-react'
+import { useUiStore } from '../../../stores/uiStore'
 import type { FileItem } from '../../../types/ide'
 import { useAppStore } from '../../../stores/appStore'
 import { fileTransferService } from '../../../services/fileTransferService'
@@ -19,7 +20,7 @@ import type { AgentChatApi } from './useAgentChat'
 import type { ModelChoiceApi } from './useModelChoice'
 
 const EXAMPLES = [
-    'Explain how this project is structured',
+    "Explain how this project starts. Point me to the entry file and the command to run it. Don't change any files.",
     'Run the tests and fix what fails',
     'Find likely bugs in the files I changed today'
 ]
@@ -43,6 +44,14 @@ export function AgentChat({ chat, model, files, folder, canUseAgent }: AgentChat
     chatRef.current = chat
     const folderRef = useRef(folder)
     folderRef.current = folder
+    const pendingDraft = useUiStore(s => s.agentDraft)
+
+    useEffect(() => {
+        if (!pendingDraft) return
+        setDraft(pendingDraft)
+        useUiStore.getState().setAgentDraft(null)
+        composerRef.current?.focus()
+    }, [pendingDraft])
 
     useEffect(() => {
         const focus = () => composerRef.current?.focus()
@@ -80,7 +89,7 @@ export function AgentChat({ chat, model, files, folder, canUseAgent }: AgentChat
         return [...local, ...shared]
     }, [files, folder])
 
-    const openModels = () => { setSettingsTab('models'); setShowSettings(true) }
+    const openModels = (tab: string) => { setSettingsTab(tab); setShowSettings(true) }
 
     if (!canUseAgent) {
         return <EmptyState icon={<Lock size={26} />} title="The agent is off for your role" description="Ask a workspace owner or admin to allow the agent for you." />
@@ -125,10 +134,11 @@ export function AgentChat({ chat, model, files, folder, canUseAgent }: AgentChat
                     ) : (
                         <EmptyState
                             title="Connect a model to start"
-                            description="Use a cloud model with your own API key (Claude, OpenAI, Gemini, DeepSeek, Kimi or GLM), or download one that runs entirely on this machine."
+                            description={model.blockedReason || 'Download a local model, connect Ollama / LM Studio, or use a cloud API key.'}
                             actions={<>
-                                <Button size="sm" icon={<KeyRound size={14} />} onClick={openModels}>Add an API key</Button>
-                                <Button size="sm" icon={<Cpu size={14} />} onClick={openModels}>Get a local model</Button>
+                                <Button size="sm" icon={<Cpu size={14} />} onClick={() => openModels('models-local')}>Download a model</Button>
+                                <Button size="sm" icon={<Plug size={14} />} onClick={() => openModels('models-server')}>Connect local server</Button>
+                                <Button size="sm" icon={<KeyRound size={14} />} onClick={() => openModels('models-cloud')}>Add a cloud key</Button>
                             </>}
                         />
                     )

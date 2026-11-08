@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## In development
+
+- Redesigned the website around real IDE screenshots, clear setup steps, current GitHub downloads, and accurate privacy and hardware guidance.
+- Added a first-session guide and direct routes to local models, local inference servers, and cloud keys.
+- Added loopback OpenAI-compatible server connections for Ollama and LM Studio, with model discovery, optional encrypted tokens, and cancellation.
+- Distinguished API authentication failures from rate limits, provider outages, and connection failures; bounded model discovery with timeouts.
+- Refresh model lists after connection changes and show local-server failures without inventing fallback models.
+- Suggest a local model based on detected system memory and distinguish code chat from agent tasks.
+
 ## [v2.0.0] - 2026-10-19
 
 Kalynt 2.0 is a ground-up rebuild of the interface and a reliability pass over every backend service. It is the first stable release.
@@ -360,4 +369,3 @@ This release introduces a comprehensive agentic architecture overhaul with 26 ne
 - `apps/desktop/src/services/fileTransferService.ts` - Race condition fix
 - `apps/desktop/src/services/agentService.ts` - Promise handling fix
 - `apps/desktop/src/services/storageService.ts` - Binary encoding fix
-

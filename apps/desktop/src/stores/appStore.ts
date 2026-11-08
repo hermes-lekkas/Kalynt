@@ -6,6 +6,7 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 import { WorkspaceCategoryId } from '../types/workspaceCategories'
 import { logger } from '../utils/logger'
 import type { ProviderId } from '../types/aiProtocol'
+import { PROVIDER_IDS } from '../types/aiProviders'
 
 // Free beta configuration - no limits
 export const BETA_CONFIG = {
@@ -40,6 +41,8 @@ interface AppState {
     spaces: Space[]
     currentSpace: Space | null
     apiKeys: APIKeys
+    connectionRevision: number
+    modelChoiceRevision: number
     userName: string
     connectedPeers: Peer[]
     sidebarCollapsed: boolean
@@ -85,6 +88,8 @@ export const useAppStore = create<AppState>()(
             spaces: [],
             currentSpace: null,
             apiKeys: {},
+            connectionRevision: 0,
+            modelChoiceRevision: 0,
             userName: 'Local User',
             connectedPeers: [],
             sidebarCollapsed: false,
@@ -179,25 +184,24 @@ export const useAppStore = create<AppState>()(
             setAPIKey: async (provider, key) => {
                 const result = await globalThis.electronAPI?.safeStorage?.set({ key: `apiKey_${provider}`, value: key })
                 if (!result?.success) throw new Error(result?.error || 'The key could not be saved to secure storage.')
-                set({ apiKeys: { ...get().apiKeys, [provider]: true } })
+                set({ apiKeys: { ...get().apiKeys, [provider]: true }, connectionRevision: get().connectionRevision + 1 })
             },
 
             removeAPIKey: async (provider) => {
                 // Remove from secure storage
-                if (globalThis.electronAPI?.safeStorage) {
-                    await globalThis.electronAPI.safeStorage.delete(`apiKey_${provider}`)
-                }
+                const result = await globalThis.electronAPI?.safeStorage?.delete(`apiKey_${provider}`)
+                if (!result?.success) throw new Error(result?.error || 'The key could not be removed from secure storage.')
                 // Update in-memory state
                 const { apiKeys } = get()
                 const newKeys = { ...apiKeys }
                 delete newKeys[provider as keyof APIKeys]
-                set({ apiKeys: newKeys })
+                set({ apiKeys: newKeys, connectionRevision: get().connectionRevision + 1 })
             },
 
             loadAPIKeys: async () => {
                 try {
                     const status = await globalThis.electronAPI?.ai?.keyStatus()
-                    if (status) set({ apiKeys: status })
+                    if (status) set({ apiKeys: Object.fromEntries(PROVIDER_IDS.map(id => [id, status[id] === true])), connectionRevision: get().connectionRevision + 1 })
                 } catch (error) {
                     logger.general.warn('Failed to read which API keys are stored', error)
                 }

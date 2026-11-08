@@ -107,10 +107,16 @@ export const PROVIDERS: ProviderInfo[] = [
         models: [
             { id: 'glm-5.3', label: 'GLM-5.3', recommended: true, tools: true, contextWindow: 1_000_000 }
         ]
+    },
+    {
+        id: 'local-server', label: 'Local server', vendor: 'Ollama / LM Studio',
+        protocol: 'openai-chat', baseUrl: 'http://127.0.0.1:11434/v1',
+        keyPlaceholder: '', consoleUrl: '', models: []
     }
 ]
 
 export const PROVIDER_IDS = PROVIDERS.map(p => p.id)
+export const CLOUD_PROVIDERS = PROVIDERS.filter(p => p.id !== 'local-server')
 
 export function providerInfo(id: ProviderId): ProviderInfo {
     const info = PROVIDERS.find(p => p.id === id)
@@ -124,7 +130,7 @@ export const isProviderId = (value: unknown): value is ProviderId =>
 /** The provider's default model. */
 export function defaultModel(id: ProviderId): string {
     const { models } = providerInfo(id)
-    return (models.find(m => m.recommended) ?? models[0]).id
+    return (models.find(m => m.recommended) ?? models[0])?.id ?? ''
 }
 
 const BRANDS: Record<string, string> = { claude: 'Claude', gpt: 'GPT', gemini: 'Gemini', deepseek: 'DeepSeek', kimi: 'Kimi', glm: 'GLM', moonshot: 'Moonshot' }
@@ -153,7 +159,7 @@ export function modelLabel(modelId: string): string {
 /** A quick, inexpensive model for small jobs such as inline completions. */
 export function fastModel(id: ProviderId): string {
     const { models } = providerInfo(id)
-    return (models.find(m => /haiku|luna|lite|flash/.test(m.id)) ?? models.find(m => m.recommended) ?? models[0]).id
+    return (models.find(m => /haiku|luna|lite|flash/.test(m.id)) ?? models.find(m => m.recommended) ?? models[0])?.id ?? ''
 }
 
 /**

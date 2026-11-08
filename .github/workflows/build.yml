@@ -26,6 +26,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -40,6 +42,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Test AI connections and command handling
+        run: npm test --workspace=apps/desktop
 
       - name: Rebuild native modules
         working-directory: apps/desktop
@@ -57,7 +62,7 @@ jobs:
           npx tsc
           npx tsc -p tsconfig.node.json
           npx vite build
-          npx electron-builder --win --publish always
+          npx electron-builder --win --publish ${{ github.event_name == 'push' && 'never' || 'always' }}
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -71,6 +76,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -85,6 +92,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Test AI connections and command handling
+        run: npm test --workspace=apps/desktop
 
       - name: Rebuild native modules
         working-directory: apps/desktop
@@ -106,7 +116,7 @@ jobs:
           npx tsc
           npx tsc -p tsconfig.node.json
           npx vite build
-          npx electron-builder --mac --publish always
+          npx electron-builder --mac --publish ${{ github.event_name == 'push' && 'never' || 'always' }}
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
@@ -120,6 +130,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -134,6 +146,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Test AI connections and command handling
+        run: npm test --workspace=apps/desktop
 
       - name: Rebuild native modules
         working-directory: apps/desktop
@@ -151,7 +166,7 @@ jobs:
           npx tsc
           npx tsc -p tsconfig.node.json
           npx vite build
-          npx electron-builder --linux --publish always
+          npx electron-builder --linux --publish ${{ github.event_name == 'push' && 'never' || 'always' }}
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4

@@ -27,12 +27,12 @@ function ensureSubscribed() {
 
 /** Streams one model turn. Throws AiRequestError (aborted=true when cancelled). */
 export async function chat(request: ChatRequest, onEvent: (event: StreamEvent) => void, signal?: AbortSignal): Promise<ChatResult> {
+    if (signal?.aborted) throw new AiRequestError('Stopped.', undefined, true)
     ensureSubscribed()
     const api = window.electronAPI.ai
     const requestId = crypto.randomUUID()
     listeners.set(requestId, onEvent)
     const cancel = () => { void api.cancel(requestId) }
-    if (signal?.aborted) throw new AiRequestError('Stopped.', undefined, true)
     signal?.addEventListener('abort', cancel, { once: true })
     try {
         const response = await api.chat(requestId, request)
@@ -72,7 +72,7 @@ export async function listModels(provider: ProviderId, refresh = false): Promise
     return api.models(provider, refresh)
 }
 
-export async function verifyKey(provider: ProviderId, key: string): Promise<{ ok: boolean; error?: string }> {
+export async function verifyKey(provider: ProviderId, key: string): Promise<{ ok: boolean; error?: string; status?: number }> {
     const api = window.electronAPI?.ai
     if (!api) return { ok: false, error: 'Cloud models need the desktop app.' }
     return api.verify(provider, key)

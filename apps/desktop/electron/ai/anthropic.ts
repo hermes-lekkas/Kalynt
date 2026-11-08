@@ -193,8 +193,13 @@ function cleanApiMessage(error: InstanceType<typeof Anthropic.APIError>): string
 }
 
 export async function listAnthropicModels(apiKey: string, baseURL?: string): Promise<string[]> {
-    const client = new Anthropic({ apiKey, baseURL, maxRetries: 1 })
+    const client = new Anthropic({ apiKey, baseURL, maxRetries: 0, timeout: 15000 })
     const ids: string[] = []
-    for await (const model of client.models.list({ limit: 100 })) ids.push(model.id)
+    try {
+        for await (const model of client.models.list({ limit: 100 })) ids.push(model.id)
+    } catch (error) {
+        if (error instanceof Anthropic.APIError) throw new ProviderError(cleanApiMessage(error), error.status)
+        throw error
+    }
     return ids
 }

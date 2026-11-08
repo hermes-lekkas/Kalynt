@@ -8,6 +8,8 @@ import { useLayoutStore } from '../../stores/layoutStore'
 import { Button, Select, Switch, TextInput } from '../ui'
 import { inlineCompletionsEnabled, setInlineCompletionsEnabled } from '../ide/editor/inlineCompletionsPref'
 import { SavedNote, SettingRow, SettingsPage, SettingsSection } from './parts'
+import { pickProvider } from '../../services/aiService'
+import { providerInfo } from '../../types/aiProviders'
 
 export function GeneralSettings() {
     const { userName, setUserName, theme, setTheme, apiKeys } = useAppStore()
@@ -15,7 +17,8 @@ export function GeneralSettings() {
     const [name, setName] = useState(userName === 'Local User' ? '' : userName)
     const [saved, setSaved] = useState(false)
     const [completions, setCompletions] = useState(inlineCompletionsEnabled)
-    const hasCloudKey = Object.values(apiKeys).some(Boolean)
+    const completionProvider = pickProvider(apiKeys)
+    const canComplete = !!completionProvider
 
     const saveName = () => {
         const next = name.trim()
@@ -83,14 +86,14 @@ export function GeneralSettings() {
             <SettingsSection title="AI completions">
                 <SettingRow
                     label="Suggest code as you type"
-                    description={hasCloudKey
-                        ? 'Shows grey inline suggestions. The code above your cursor is sent to your first configured cloud provider each time you pause.'
-                        : 'Needs a cloud API key. Add one under Models and keys.'}
+                    description={completionProvider
+                        ? `Shows grey inline suggestions. The code above your cursor is sent to ${completionProvider === 'local-server' ? 'the local server selected for the agent' : providerInfo(completionProvider).label} each time you pause.`
+                        : 'Choose a cloud model or local server in the agent menu first. Built-in local model completions are not available.'}
                     control={
                         <Switch
                             label="Suggest code as you type"
-                            checked={completions && hasCloudKey}
-                            disabled={!hasCloudKey}
+                            checked={completions && canComplete}
+                            disabled={!canComplete}
                             onChange={v => { setCompletions(v); setInlineCompletionsEnabled(v) }}
                         />
                     }

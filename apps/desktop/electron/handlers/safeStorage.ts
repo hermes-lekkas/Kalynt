@@ -59,6 +59,20 @@ export function readSecret(userDataPath: string, key: string): string | null {
     }
 }
 
+/** Main-process settings use the same encrypted, atomic storage as API keys. */
+export function writeSecret(userDataPath: string, key: string, value: string): void {
+    if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage is unavailable. Unlock your system keychain and try again.')
+    const keys = loadKeys(userDataPath)
+    keys[key] = safeStorage.encryptString(value).toString('base64')
+    saveKeys(userDataPath, keys)
+}
+
+export function deleteSecret(userDataPath: string, key: string): void {
+    const keys = loadKeys(userDataPath)
+    delete keys[key]
+    saveKeys(userDataPath, keys)
+}
+
 export function registerSafeStorageHandlers(
     ipcMain: IpcMain,
     getUserDataPath: () => string

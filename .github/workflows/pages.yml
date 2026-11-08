@@ -6,6 +6,9 @@ on:
       - main
     paths:
       - 'index.html'
+      - 'website/**'
+      - 'apps/desktop/public/Kalynt.png'
+      - 'apps/desktop/public/Kalynt_showcase/**'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -26,11 +29,19 @@ jobs:
       
       - name: Setup Pages
         uses: actions/configure-pages@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build website
+        run: node website/build.mjs
         
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: '.'
+          path: 'dist/website'
           
       - name: Deploy to GitHub Pages
         id: deployment

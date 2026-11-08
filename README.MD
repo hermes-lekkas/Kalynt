@@ -18,6 +18,10 @@
   [![Spotify](https://img.shields.io/badge/Spotify-Podcast-1DB954?logo=spotify)](https://open.spotify.com/show/0Hm1TtyPtzpRkhGCZjaAbb)
 </div>
 
+**[Download Kalynt](https://github.com/hermes-lekkas/Kalynt/releases/latest)** · **[Website and setup guide](https://hermes-lekkas.github.io/Kalynt/)** · **[Get help](https://github.com/hermes-lekkas/Kalynt/discussions)**
+
+No Kalynt subscription or account is required. Local models use your hardware; cloud providers bill API usage separately.
+
 ---
 
 <div align="center">
@@ -52,6 +56,26 @@
   ![Language runtimes](apps/desktop/public/Kalynt_showcase/Built_in_language_support.png)
 
 </details>
+
+## Quick start
+
+1. Install Kalynt for your platform from the [latest release](https://github.com/hermes-lekkas/Kalynt/releases/latest), launch it, and select **Open folder**.
+2. Open **Settings → Models and keys**. Download and load a local model, or add your cloud provider's API key. Choose the model in the agent panel.
+3. Start with a task you can verify:
+
+   > Explain how this project starts. Point me to the entry file and the command to run it. Don't change any files.
+
+For editing tasks, use **Ask before changes**, review the diff, and run your project's tests. Try Kalynt alongside your current editor before moving your daily workflow.
+
+**Local AI requirements:** installers are roughly 200–550 MB, with model files downloaded separately. The model manager shows download sizes and estimated memory requirements. Leave RAM for your operating system, IDE, and project. Small models are useful for code chat and explanations; larger models are better suited to editing and tool use. A supported GPU can help, but actual speed depends on your model and machine.
+
+**Privacy:** local inference runs on your computer. Cloud mode sends request context directly to the selected provider. Collaboration shares workspace data with your peers; set a room password to enable end-to-end encryption. Network access is also used for downloads, update checks, and agent web tools.
+
+### In development
+
+The source on this branch adds a first-session guide, memory-aware model suggestions, clearer connection errors, and **Ollama / LM Studio** setup. These changes are **not included in the 2.0.0 installers** yet.
+
+To try a local server from source, start Ollama or enable LM Studio's local server and load a tool-capable model. In **Settings → Models and keys → Ollama / LM Studio**, select a preset, enter an optional server token, and choose **Test and connect**. Then select a discovered model in the agent menu. Only loopback servers on this computer are supported. Ollama can also proxy remote models; check your model's configuration if offline inference is required.
 
 ## What's new in 2.0
 
