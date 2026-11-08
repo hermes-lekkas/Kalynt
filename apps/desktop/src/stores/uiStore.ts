@@ -17,6 +17,8 @@ interface UiState {
     extensionsTab: ExtensionsTab
     paletteOpen: boolean
     paletteMode: PaletteMode
+    agentDraft: string | null
+    setAgentDraft: (draft: string | null) => void
 
     openCollaboration: (tab?: CollaborationTab) => void
     closeCollaboration: () => void
@@ -33,6 +35,8 @@ export const useUiStore = create<UiState>(set => ({
     extensionsTab: 'runtimes',
     paletteOpen: false,
     paletteMode: 'commands',
+    agentDraft: null,
+    setAgentDraft: agentDraft => set({ agentDraft }),
 
     openCollaboration: (tab = 'members') => set({ collaborationOpen: true, collaborationTab: tab }),
     closeCollaboration: () => set({ collaborationOpen: false }),

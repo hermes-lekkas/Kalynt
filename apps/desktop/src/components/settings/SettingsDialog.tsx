@@ -19,7 +19,7 @@ const PerformanceSettings = lazy(() => import('./PerformanceSettings'))
 type PageId = 'general' | 'models' | 'security' | 'members' | 'network' | 'performance' | 'advanced' | 'about'
 
 // Older code opens settings with these tab names.
-const LEGACY: Record<string, PageId> = { agents: 'models', credits: 'about', support: 'about' }
+const LEGACY: Record<string, PageId> = { agents: 'models', 'models-local': 'models', 'models-server': 'models', 'models-cloud': 'models', credits: 'about', support: 'about' }
 
 interface Page {
     id: PageId

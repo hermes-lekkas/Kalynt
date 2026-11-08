@@ -76,8 +76,9 @@ export function useTasks(spaceId: string) {
         let text = ''
         if (loadedModelId) {
             await offlineLLMService.generateStream(messages, token => { text += token })
-        } else if (cloudProvider) {
-            const response = await aiService.chat(messages, cloudProvider, { temperature: 0.2, maxTokens: 400 })
+        } else if (pickProvider(useAppStore.getState().apiKeys)) {
+            const currentProvider = pickProvider(useAppStore.getState().apiKeys)!
+            const response = await aiService.chat(messages, currentProvider, { temperature: 0.2, maxTokens: 400 })
             if (response.error) throw new Error(response.error)
             text = response.content
         } else {

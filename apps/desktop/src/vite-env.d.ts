@@ -272,6 +272,9 @@ export interface ElectronAPI {
     models: (provider: string, refresh?: boolean) => Promise<{ models: import('./types/aiProtocol').ModelInfo[]; live: boolean; error?: string }>
     verify: (provider: string, key: string) => Promise<{ ok: boolean; error?: string; status?: number }>
     keyStatus: () => Promise<Partial<Record<import('./types/aiProtocol').ProviderId, boolean>>>
+    localServerStatus: () => Promise<import('./types/aiProtocol').LocalServerStatus>
+    connectLocalServer: (input: import('./types/aiProtocol').LocalServerInput) => Promise<{ ok: boolean; models?: import('./types/aiProtocol').ModelInfo[]; error?: string; status?: number }>
+    disconnectLocalServer: () => Promise<{ ok: boolean; error?: string }>
     onEvent: (callback: (data: import('./types/aiProtocol').AiEventEnvelope) => void) => () => void
   }
   agent: {

@@ -233,6 +233,17 @@ export const electronAPIShim = {
     shell: shellShim,
     runtimeMgmt: runtimeMgmtShim,
     safeStorage: safeStorageShim,
+    ai: {
+        keyStatus: async () => ({}),
+        models: async () => ({ models: [], live: false, error: 'AI connections need the desktop app.' }),
+        verify: async () => ({ ok: false, error: 'AI connections need the desktop app.' }),
+        localServerStatus: async () => ({ configured: false, baseUrl: '', hasToken: false, contextWindow: 8192 }),
+        connectLocalServer: async () => ({ ok: false, error: 'Connecting a local server needs the desktop app.' }),
+        disconnectLocalServer: async () => ({ ok: false, error: 'Connecting a local server needs the desktop app.' }),
+        onEvent: noopReturn,
+        chat: async () => ({ ok: false, error: 'AI requests need the desktop app.' }),
+        cancel: async () => ({ ok: true })
+    },
     update: updateShim,
     git: gitShim,
     deps: depsShim,

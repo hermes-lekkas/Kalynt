@@ -11,6 +11,7 @@
     "description": "Kalynt Desktop Application",
     "main": "dist-electron/main.js",
     "scripts": {
+        "test": "node --test electron/ai/localServer.test.mjs src/services/agent/modelSelection.test.mjs electron/handlers/code-exec/cmd-escape.test.mjs",
         "dev": "vite",
         "dev:web": "vite --config vite.config.web.ts",
         "build": "tsc && vite build && electron-builder",

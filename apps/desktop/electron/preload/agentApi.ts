@@ -13,6 +13,9 @@ export const agentApi = {
         models: (provider: string, refresh?: boolean) => ipcRenderer.invoke('ai:models', provider, refresh),
         verify: (provider: string, key: string) => ipcRenderer.invoke('ai:verify', { provider, key }),
         keyStatus: () => ipcRenderer.invoke('ai:key-status'),
+        localServerStatus: () => ipcRenderer.invoke('ai:local-server-status'),
+        connectLocalServer: (input: { baseUrl: string; apiKey?: string; contextWindow?: number }) => ipcRenderer.invoke('ai:local-server-connect', input),
+        disconnectLocalServer: () => ipcRenderer.invoke('ai:local-server-disconnect'),
         onEvent: (callback: (data: { requestId: string; event: unknown }) => void) => subscribe('ai:event', callback)
     },
     agent: {

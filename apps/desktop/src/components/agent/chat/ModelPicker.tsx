@@ -45,14 +45,14 @@ export function ModelPicker({ model }: { model: ModelChoiceApi }) {
                 aria-expanded={open}
                 title="Choose the model the agent uses"
             >
-                {choice.mode === 'cloud' ? <Cloud size={12} aria-hidden /> : <Cpu size={12} aria-hidden />}
+                {choice.mode === 'cloud' && choice.provider !== 'local-server' ? <Cloud size={12} aria-hidden /> : <Cpu size={12} aria-hidden />}
                 <span className="truncate">{model.label}</span>
-                {choice.mode === 'cloud' && model.ready && <span className="model-trigger__effort">{model.effort}</span>}
+                {choice.mode === 'cloud' && choice.provider !== 'local-server' && model.ready && <span className="model-trigger__effort">{model.effort}</span>}
                 <ChevronDown size={12} aria-hidden />
             </button>
             <Popover open={open} onClose={() => setOpen(false)} anchor={triggerRef.current} placement="top-start" width={300} ariaLabel="Models">
                 <div className="model-menu">
-                    {choice.mode === 'cloud' && model.ready && (
+                    {choice.mode === 'cloud' && choice.provider !== 'local-server' && model.ready && (
                         <section className="model-menu__group">
                             <p className="model-menu__heading">Reasoning effort</p>
                             <div className="model-menu__effort" role="radiogroup" aria-label="Reasoning effort">
@@ -69,6 +69,7 @@ export function ModelPicker({ model }: { model: ModelChoiceApi }) {
                     {model.providers.map(provider => (
                         <section key={provider} className="model-menu__group">
                             <p className="model-menu__heading">{providerInfo(provider).label} <span className="model-menu__vendor">{providerInfo(provider).vendor}</span></p>
+                            {model.errors[provider] && <p className="model-menu__empty" role="status">{model.errors[provider]}</p>}
                             {model.modelsFor(provider).map(m => {
                                 const selected = choice.mode === 'cloud' && choice.provider === provider && choice.cloudModel === m.id
                                 return (
@@ -80,6 +81,7 @@ export function ModelPicker({ model }: { model: ModelChoiceApi }) {
                             })}
                         </section>
                     ))}
+                    {model.providers.length > 0 && <button type="button" className="model-menu__manage" onClick={model.refreshModels}>Refresh models</button>}
                     {model.downloaded.length > 0 && (
                         <section className="model-menu__group">
                             <p className="model-menu__heading">On this machine</p>

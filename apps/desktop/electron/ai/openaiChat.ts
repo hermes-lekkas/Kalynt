@@ -15,7 +15,7 @@ const EFFORT: Record<Effort, string> = { low: 'low', medium: 'high', high: 'high
 
 /** Per-provider request fields. Sampling parameters are left out: all three ignore or reject them while thinking. */
 function providerParams(provider: ProviderId, request: ChatRequest): Record<string, unknown> {
-    const maxTokens = request.maxTokens ?? 32000
+    const maxTokens = request.maxTokens ?? (provider === 'local-server' ? 4096 : 32000)
     const effort = request.effort ? { reasoning_effort: EFFORT[request.effort] } : {}
     switch (provider) {
         case 'moonshot':
@@ -43,7 +43,7 @@ function toMessages(system: string, items: ConversationItem[], provider: Provide
             messages.push({
                 role: 'assistant',
                 content: item.text,
-                reasoning_content: reasoning,
+                ...(provider === 'local-server' ? {} : { reasoning_content: reasoning }),
                 ...(item.toolCalls.length ? {
                     tool_calls: item.toolCalls.map(call => ({
                         id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments) }
@@ -75,14 +75,23 @@ export async function streamChatCompletions(request: ChatRequest, options: ChatC
         model: request.model,
         messages: toMessages(request.system, request.items, request.provider),
         stream: true,
-        stream_options: { include_usage: true },
+        ...(request.provider === 'local-server' ? {} : { stream_options: { include_usage: true } }),
         ...providerParams(request.provider, request),
         ...(request.tools?.length ? {
             tools: request.tools.map(tool => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } }))
         } : {})
     }
 
-    const response = await postJson(`${options.baseUrl}/chat/completions`, body, { Authorization: `Bearer ${options.apiKey}` }, options.signal)
+    if (request.provider === 'local-server') {
+        // Reserve space for tool schemas and output as well as the transcript.
+        // This is a conservative estimate; the inference server is authoritative.
+        const inputEstimate = Math.ceil(JSON.stringify({ messages: body.messages, tools: request.tools ?? [] }).length / 3) + 256
+        const available = (request.contextWindow ?? 8192) - inputEstimate
+        if (available < 256) throw new ProviderError('This request is too large for the local server context. Start a shorter conversation, attach fewer files, or increase the context in both your server and Kalynt settings.')
+        Object.assign(body, { max_tokens: Math.min(request.maxTokens ?? 2048, available, 4096) })
+    }
+
+    const response = await postJson(`${options.baseUrl}/chat/completions`, body, options.apiKey ? { Authorization: `Bearer ${options.apiKey}` } : {}, options.signal, request.provider === 'local-server' ? 'error' : 'follow')
     let text = ''
     let reasoning = ''
     let finish = null as string | null

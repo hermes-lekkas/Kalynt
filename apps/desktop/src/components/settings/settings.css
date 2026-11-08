@@ -464,3 +464,11 @@
         grid-template-columns: 1fr;
     }
 }
+
+.model-setup-tabs { display: flex; flex-wrap: wrap; gap: var(--sp-2); border-bottom: 1px solid var(--line); padding-bottom: var(--sp-3); }
+.model-setup-tabs button { padding: var(--sp-3) var(--sp-4); border-radius: var(--r-2); color: var(--text-2); font-size: var(--fs-sm); }
+.model-setup-tabs button:hover { background: var(--hover); }
+.model-setup-tabs button[aria-selected='true'] { background: var(--active); color: var(--text); }
+.server-setup { display: flex; flex-direction: column; gap: var(--sp-5); }
+.server-setup__success { color: var(--success); font-size: var(--fs-sm); line-height: var(--lh-prose); }
+.model-memory-note { color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-prose); padding-bottom: var(--sp-4); }

@@ -81,6 +81,7 @@ SKILL.md
 
 # Documentation cleanup
 *.md
+!/docs/adoption/*.md
 !README.MD
 !README_KALYNT_MOBILE.md
 !SECURITY.md

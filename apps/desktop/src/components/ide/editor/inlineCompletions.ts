@@ -14,6 +14,7 @@ import { INLINE_COMPLETIONS_EVENT, inlineCompletionsEnabled } from './inlineComp
 /** Registers the completion provider while the setting is on and a cloud key exists. */
 export function useInlineCompletions() {
     const apiKeys = useAppStore(s => s.apiKeys)
+    useAppStore(s => s.modelChoiceRevision)
     const provider = pickProvider(apiKeys)
 
     useEffect(() => {

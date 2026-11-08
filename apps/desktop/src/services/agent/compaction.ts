@@ -40,7 +40,7 @@ export async function compactIfNeeded(session: AgentSession, target: RunTarget, 
         system: session.system ?? '',
         items: [...session.items, { role: 'user', content: PROMPT }],
         effort: 'low',
-        maxTokens: 12000
+        maxTokens: target.provider === 'local-server' ? Math.min(2048, Math.floor((target.contextWindow ?? 8192) / 4)) : 12000
     }, () => {}, signal)
     const summary = result.assistant.text.trim()
     if (!summary) return false

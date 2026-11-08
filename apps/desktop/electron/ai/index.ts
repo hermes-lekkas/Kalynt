@@ -14,9 +14,10 @@
  *   ai:verify    { provider, key } -> { ok, error? }
  */
 import { app, type IpcMain } from 'electron'
-import type { ChatRequest, ChatResult, ModelInfo, ProviderId, StreamEvent } from '../../src/types/aiProtocol'
+import type { ChatRequest, ChatResult, LocalServerInput, ModelInfo, ProviderId, StreamEvent } from '../../src/types/aiProtocol'
 import { PROVIDER_IDS, isProviderId, providerInfo } from '../../src/types/aiProviders'
-import { readSecret } from '../handlers/safeStorage'
+import { deleteSecret, readSecret, writeSecret } from '../handlers/safeStorage'
+import { discoverLocalModels, localServerInput } from './localServer'
 import { streamAnthropic } from './anthropic'
 import { streamOpenAIResponses } from './openaiResponses'
 import { streamChatCompletions } from './openaiChat'
@@ -27,6 +28,18 @@ import { ProviderError } from './http'
 const active = new Map<string, AbortController>()
 const modelCache = new Map<string, { at: number; models: ModelInfo[]; live: boolean }>()
 const MODEL_CACHE_MS = 10 * 60 * 1000
+const SERVER_SECRET = 'localServer_connection'
+
+function serverConfig(): Required<LocalServerInput> | null {
+    const saved = readSecret(app.getPath('userData'), SERVER_SECRET)
+    if (!saved) return null
+    try { return localServerInput(JSON.parse(saved)) } catch { return null }
+}
+
+function serverStatus() {
+    const config = serverConfig()
+    return { configured: !!config, baseUrl: config?.baseUrl ?? '', hasToken: !!config?.apiKey, contextWindow: config?.contextWindow ?? 8192 }
+}
 
 /**
  * Tests point every provider at a local mock server (`<url>/<provider>`).
@@ -47,6 +60,11 @@ function apiKey(provider: ProviderId): string {
 }
 
 async function dispatch(request: ChatRequest, signal: AbortSignal, emit: (event: StreamEvent) => void): Promise<ChatResult> {
+    if (request.provider === 'local-server') {
+        const config = serverConfig()
+        if (!config) throw new ProviderError('Connect your local server in Settings → Models and keys.')
+        return streamChatCompletions({ ...request, contextWindow: config.contextWindow }, { ...config, signal, emit })
+    }
     const key = apiKey(request.provider)
     const url = baseUrl(request.provider)
     switch (providerInfo(request.provider).protocol) {
@@ -95,6 +113,15 @@ function describeError(error: unknown): { error: string; status?: number } {
 export async function listModels(provider: ProviderId, refresh = false): Promise<{ models: ModelInfo[]; live: boolean; error?: string }> {
     const cached = modelCache.get(provider)
     if (!refresh && cached && Date.now() - cached.at < MODEL_CACHE_MS) return { models: cached.models, live: cached.live }
+    if (provider === 'local-server') {
+        const config = serverConfig()
+        if (!config) return { models: [], live: false, error: 'Connect your local server in Settings → Models and keys.' }
+        try {
+            const models = await discoverLocalModels(config)
+            modelCache.set(provider, { at: Date.now(), models, live: true })
+            return { models, live: true }
+        } catch (error) { return { models: [], live: false, error: describeError(error).error } }
+    }
     const key = readSecret(app.getPath('userData'), `apiKey_${provider}`)
     if (!key) return { models: mergeModels(provider, null), live: false }
     try {
@@ -111,7 +138,7 @@ export async function listModels(provider: ProviderId, refresh = false): Promise
 export function registerAiHandlers(ipcMain: IpcMain): void {
     ipcMain.handle('ai:chat', async (event, payload: { requestId: string; request: ChatRequest }) => {
         const { requestId, request } = payload ?? {}
-        if (!requestId || !request || !isProviderId(request.provider) || typeof request.model !== 'string') {
+        if (!requestId || !request || !isProviderId(request.provider) || typeof request.model !== 'string' || !request.model.trim()) {
             return { ok: false, error: 'Invalid AI request.' }
         }
         const controller = new AbortController()
@@ -137,7 +164,25 @@ export function registerAiHandlers(ipcMain: IpcMain): void {
     })
 
     // Which providers have a key. The keys themselves never leave the main process.
-    ipcMain.handle('ai:key-status', () => Object.fromEntries(PROVIDER_IDS.map(id => [id, !!readSecret(app.getPath('userData'), `apiKey_${id}`)])))
+    ipcMain.handle('ai:key-status', () => Object.fromEntries(PROVIDER_IDS.map(id => [id, id === 'local-server' ? !!serverConfig() : !!readSecret(app.getPath('userData'), `apiKey_${id}`)])))
+
+    ipcMain.handle('ai:local-server-status', () => serverStatus())
+    ipcMain.handle('ai:local-server-connect', async (_event, input: LocalServerInput) => {
+        try {
+            const config = localServerInput(input, serverConfig() ?? undefined)
+            const models = await discoverLocalModels(config)
+            writeSecret(app.getPath('userData'), SERVER_SECRET, JSON.stringify(config))
+            modelCache.set('local-server', { at: Date.now(), models, live: true })
+            return { ok: true, models, ...serverStatus() }
+        } catch (error) { return { ok: false, ...describeError(error) } }
+    })
+    ipcMain.handle('ai:local-server-disconnect', () => {
+        try {
+            deleteSecret(app.getPath('userData'), SERVER_SECRET)
+            modelCache.delete('local-server')
+            return { ok: true }
+        } catch (error) { return { ok: false, ...describeError(error) } }
+    })
 
     ipcMain.handle('ai:models', async (_event, provider: string, refresh?: boolean) => {
         if (!isProviderId(provider)) return { models: [], live: false, error: 'Unknown provider.' }
@@ -146,7 +191,7 @@ export function registerAiHandlers(ipcMain: IpcMain): void {
 
     ipcMain.handle('ai:verify', async (_event, payload: { provider: string; key: string }) => {
         const { provider, key } = payload ?? {}
-        if (!isProviderId(provider) || typeof key !== 'string' || !key.trim()) return { ok: false, error: 'Enter a key.' }
+        if (!isProviderId(provider) || provider === 'local-server' || typeof key !== 'string' || !key.trim()) return { ok: false, error: 'Enter a cloud provider key.' }
         try {
             await fetchModelIds(provider, key.trim(), baseUrl(provider))
             modelCache.delete(provider)

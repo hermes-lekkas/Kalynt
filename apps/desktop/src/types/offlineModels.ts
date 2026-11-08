@@ -111,7 +111,7 @@ export const OFFLINE_MODELS: OfflineModel[] = [
     {
         id: 'qwen2.5-coder-0.5b',
         name: 'Qwen2.5-Coder 0.5B',
-        description: 'Ultra-lightweight model for speculative decoding. Installs irrelevant of VRAM. Best used as a "Draft Model" to accelerate larger models.',
+        description: 'Very small code chat model. Limited reasoning and unreliable tool use. Choose a larger model for editing tasks.',
         size: '0.7 GB',
         sizeBytes: 700_000_000,
         ramRequired: '1.5 GB',
@@ -219,7 +219,7 @@ export const OFFLINE_MODELS: OfflineModel[] = [
     {
         id: 'qwen2.5-coder-7b',
         name: 'Qwen2.5-Coder 7B Q8',
-        description: 'Full-featured coding agent. Can read, write, and edit files. Strong tool-calling abilities for agentic coding. Higher quality Q8 quantization. (SWE-bench: 47%)',
+        description: 'Coding model with tool calling for file edits and agent tasks. Higher precision Q8 quantization uses more memory. Review edits and run your own tests.',
         size: '8.1 GB',
         sizeBytes: 8_100_000_000,
         ramRequired: '12 GB',
@@ -246,7 +246,7 @@ export const OFFLINE_MODELS: OfflineModel[] = [
     {
         id: 'devstral-small-2-24b',
         name: 'Devstral Small 2 24B',
-        description: 'Professional coding agent from Mistral AI. Full IDE capabilities with 128K context. Optimized for software engineering. (SWE-bench: 68%)',
+        description: 'Mistral coding model for software engineering and tool use. Requires substantial memory, with additional headroom for long contexts.',
         size: '14.3 GB',
         sizeBytes: 14_330_000_000,
         ramRequired: '20 GB',
@@ -273,7 +273,7 @@ export const OFFLINE_MODELS: OfflineModel[] = [
     {
         id: 'qwen2.5-coder-14b',
         name: 'Qwen2.5-Coder-14B',
-        description: 'Flagship coding agent. Full IDE control with 128K context for indexing entire projects. Best for complex coding tasks. (SWE-bench: 47%)',
+        description: 'Larger coding model for file edits and tool use. Needs additional memory for long contexts. Performance depends on the task and hardware.',
         size: '9.0 GB',
         sizeBytes: 9_000_000_000,
         ramRequired: '16 GB',

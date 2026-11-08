@@ -10,6 +10,7 @@
         "packages/shared"
     ],
     "scripts": {
+        "website:build": "node website/build.mjs",
         "dev": "npm run dev --workspace=apps/desktop",
         "dev:web": "npm run dev:web --workspace=apps/desktop",
         "electron:dev": "npm run electron:dev --workspace=apps/desktop",

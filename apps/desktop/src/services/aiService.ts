@@ -49,17 +49,25 @@ export interface ChatOptions {
 export function pickProvider(apiKeys: Partial<Record<ProviderId, boolean>>): AIProvider | null {
     try {
         const saved = JSON.parse(localStorage.getItem('kalynt-agent-model') || 'null')
+        if (saved?.mode === 'offline') return null
+        if (saved?.provider === 'local-server') return saved.mode === 'cloud' && apiKeys['local-server'] && saved.cloudModel ? 'local-server' : null
         const provider: unknown = saved?.mode === 'cloud' ? saved.provider : null
-        if (isProviderId(provider) && apiKeys[provider]) return provider
+        if (isProviderId(provider) && apiKeys[provider] && (provider !== 'local-server' || !!saved.cloudModel)) return provider
     } catch { /* fall through */ }
-    return PROVIDER_IDS.find(p => !!apiKeys[p]) ?? null
+    return PROVIDER_IDS.find(p => p !== 'local-server' && !!apiKeys[p]) ?? null
 }
 
 /** Current models think before answering; small output limits would leave no room for the answer. */
 const MIN_OUTPUT_TOKENS = 8000
 
 function toRequest(messages: AIMessage[], provider: AIProvider, options?: ChatOptions) {
-    const model = options?.model || defaultModel(provider)
+    let model = options?.model || defaultModel(provider)
+    if (!model && provider === 'local-server') {
+        try {
+            const saved = JSON.parse(localStorage.getItem('kalynt-agent-model') || 'null')
+            if (saved?.provider === provider && typeof saved.cloudModel === 'string') model = saved.cloudModel
+        } catch { /* The gateway will report the missing model. */ }
+    }
     const system = messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n') || 'You are a helpful assistant.'
     const items = messages.filter(m => m.role !== 'system').map(m => m.role === 'user'
         ? { role: 'user' as const, content: m.content }
@@ -67,7 +75,7 @@ function toRequest(messages: AIMessage[], provider: AIProvider, options?: ChatOp
     const effort: Effort = options?.thinking ? 'high' : 'low'
     return {
         model,
-        request: { provider, model, system, items, effort, maxTokens: Math.max(options?.maxTokens ?? 0, MIN_OUTPUT_TOKENS), temperature: options?.temperature }
+        request: { provider, model, system, items, effort, maxTokens: provider === 'local-server' ? options?.maxTokens ?? 2048 : Math.max(options?.maxTokens ?? 0, MIN_OUTPUT_TOKENS), temperature: options?.temperature }
     }
 }
 
@@ -86,7 +94,7 @@ class AIService {
 
     getContextWindow(provider: AIProvider): number {
         const info = providerInfo(provider)
-        return (info.models.find(m => m.recommended) ?? info.models[0])?.contextWindow ?? 128_000
+        return (info.models.find(m => m.recommended) ?? info.models[0])?.contextWindow ?? (provider === 'local-server' ? 8192 : 128_000)
     }
 
     async verifyKey(provider: AIProvider, key: string): Promise<boolean> {

@@ -9,6 +9,7 @@ import { useWorkspaceFolderStore } from '../../stores/workspaceFolderStore'
 import { Button, SearchInput } from '../ui'
 import { WorkspaceList } from './WorkspaceList'
 import { MachineSummary } from './MachineSummary'
+import { QuickStart } from './QuickStart'
 import { NewWorkspaceDialog } from './NewWorkspaceDialog'
 import { CloneDialog } from './CloneDialog'
 import { openFolderAsWorkspace } from './workspaceActions'
@@ -48,6 +49,8 @@ export function HomeScreen() {
                     </p>
                     {actions}
                 </header>
+
+                <QuickStart />
 
                 {spaces.length > 0 && (
                     <section className="home__section" aria-labelledby="home-recent">

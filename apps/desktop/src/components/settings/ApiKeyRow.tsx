@@ -33,7 +33,14 @@ export function ApiKeyRow({ provider, name, models, placeholder, consoleUrl }: A
         try {
             const result = await verifyKey(provider, key)
             if (!result.ok) {
-                setError(`${name} didn't accept this key${result.error ? ` (${result.error.replace(/\s*Check the API key.*$/, '')})` : ''}. Check that it was copied in full and is active.`)
+                const detail = result.error?.replace(/\s*Check the API key.*$/, '')
+                setError(result.status === 401 || result.status === 403
+                    ? `${name} could not authorize this key. Check the key and its permissions.${detail ? ` ${detail}` : ''}`
+                    : result.status === 429
+                        ? `${name} is limiting requests or your account has no available quota. Check your provider's billing and try again later.`
+                        : result.status && result.status >= 500
+                            ? `${name} is temporarily unavailable. Try again later; this does not mean your key is invalid.`
+                            : detail || `Couldn't verify this key. Check your connection and try again.`)
                 return
             }
         } catch {
@@ -58,7 +65,10 @@ export function ApiKeyRow({ provider, name, models, placeholder, consoleUrl }: A
             confirmLabel: 'Remove key',
             danger: true
         })
-        if (ok) await removeAPIKey(provider)
+        if (ok) {
+            try { await removeAPIKey(provider) }
+            catch (e) { setEditing(true); setError(e instanceof Error ? e.message : 'Could not remove the key.') }
+        }
     }
 
     return (
