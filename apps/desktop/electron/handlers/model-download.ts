@@ -115,21 +115,32 @@ export function registerModelDownloadHandlers(
             })
 
             const get = (url: string) => {
+                if (settled) return
+                let parsedUrl: URL
+                try {
+                    parsedUrl = new URL(url)
+                    if (!['http:', 'https:'].includes(parsedUrl.protocol)) throw new Error('Unsupported download URL protocol')
+                } catch {
+                    return fail('Invalid download URL or redirect protocol')
+                }
                 const startByte = sizeOf(partPath)
-                const client = url.startsWith('https:') ? https : http
-                request = client.get(url, { headers: startByte > 0 ? { Range: `bytes=${startByte}-` } : {} }, response => {
+                const client = parsedUrl.protocol === 'https:' ? https : http
+                request = client.get(parsedUrl, { headers: startByte > 0 ? { Range: `bytes=${startByte}-` } : {} }, response => {
                     const status = response.statusCode ?? 0
 
                     if ([301, 302, 303, 307, 308].includes(status) && response.headers.location) {
                         response.resume()
                         if (++redirects > MAX_REDIRECTS) return fail('Too many redirects')
-                        return get(new URL(response.headers.location, url).toString())
+                        try { return get(new URL(response.headers.location, parsedUrl).toString()) }
+                        catch { return fail('Invalid download redirect URL') }
                     }
 
                     // The .part file already holds everything.
                     if (status === 416 && startByte > 0) {
                         response.resume()
-                        return complete(startByte)
+                        const total = /^bytes \*\/(\d+)$/i.exec(response.headers['content-range'] || '')
+                        if (total && Number(total[1]) === startByte) return complete(startByte)
+                        return fail('The server rejected the partial download. Cancel it and start again.')
                     }
 
                     if (status !== 200 && status !== 206) {
@@ -142,7 +153,15 @@ export function registerModelDownloadHandlers(
                     let received = resumed ? startByte : 0
                     // Catalog sizes are approximate; only Content-Length is exact.
                     const length = Number(response.headers['content-length'] || 0)
-                    const exactTotal = length > 0 ? length + (resumed ? startByte : 0) : 0
+                    let exactTotal = length > 0 ? length + (resumed ? startByte : 0) : 0
+                    if (resumed) {
+                        const range = /^bytes (\d+)-(\d+)\/(\d+)$/i.exec(response.headers['content-range'] || '')
+                        if (!range || Number(range[1]) !== startByte || Number(range[2]) < startByte || Number(range[3]) <= Number(range[2]) || (length > 0 && Number(range[2]) - startByte + 1 !== length)) {
+                            response.resume()
+                            return fail('The server returned an invalid resume range. Cancel the download and start again.')
+                        }
+                        exactTotal = Number(range[3])
+                    }
                     const total = exactTotal || expectedSize
 
                     file = fs.createWriteStream(partPath, { flags: resumed ? 'a' : 'w' })
@@ -169,7 +188,7 @@ export function registerModelDownloadHandlers(
                     file.on('finish', () => {
                         if (settled) return
                         progress(true)
-                        if (exactTotal > 0 && received < exactTotal) {
+                        if (exactTotal > 0 && received !== exactTotal) {
                             fail('The connection dropped. Resume to continue.')
                         } else {
                             complete(received)

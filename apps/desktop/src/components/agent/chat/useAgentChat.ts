@@ -90,7 +90,14 @@ export function useAgentChat(spaceId: string, folder: string | null, model: Mode
 
     // Save before the window closes.
     useEffect(() => {
-        const flush = () => { void useAgentSessionStore.getState().saveNow() }
+        const flush = (event: BeforeUnloadEvent) => {
+            const result = useAgentSessionStore.getState().flushNow()
+            if (!result.ok) {
+                event.preventDefault()
+                event.returnValue = ''
+                useNotificationStore.getState().addNotification(`Conversation recovery failed: ${result.error ?? 'Save your conversation before closing.'}`, 'error')
+            }
+        }
         window.addEventListener('beforeunload', flush)
         return () => window.removeEventListener('beforeunload', flush)
     }, [])
@@ -197,7 +204,13 @@ export function useAgentChat(spaceId: string, folder: string | null, model: Mode
             text: failed.length ? `Undid the changes, except ${failed.length} file${failed.length === 1 ? '' : 's'} that couldn't be restored.` : 'Undid the changes from this run.',
             tone: failed.length ? 'error' : 'info'
         }]
-        current.items.push({ role: 'user', content: 'I undid all the file changes from your last run; those files are back to how they were before it.', display: 'Undid the changes from the last run.' })
+        current.items.push({
+            role: 'user',
+            content: failed.length
+                ? `I attempted to undo your file changes. These files could not be restored: ${failed.join(', ')}. Other files were restored. Read the affected files again before making further changes.`
+                : 'I undid all the file changes from your last run; those files are back to how they were before it.',
+            display: failed.length ? 'Some file changes could not be undone. You can retry Undo.' : 'Undid the changes from the last run.'
+        })
         useAgentSessionStore.getState().touch()
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])

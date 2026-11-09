@@ -172,6 +172,11 @@ export interface UpdateAPI {
 }
 
 export interface ElectronAPI {
+  editorState: {
+    load: (spaceId: string, folder: string) => Promise<import('./services/editorRecovery').EditorRecoveryState | null>
+    save: (state: import('./services/editorRecovery').EditorRecoveryState) => Promise<{ success: boolean; error?: string }>
+    flush: (state: import('./services/editorRecovery').EditorRecoveryState) => { success: boolean; error?: string }
+  }
   platform: string
   getAppPath: () => Promise<string>
   getVersion: () => Promise<string>
@@ -278,6 +283,7 @@ export interface ElectronAPI {
     onEvent: (callback: (data: import('./types/aiProtocol').AiEventEnvelope) => void) => () => void
   }
   agent: {
+    flushSession: (session: unknown) => { ok: boolean; error?: string }
     exec: (options: { id: string; command: string; cwd?: string; timeoutMs?: number; background?: boolean }) => Promise<{ ok: boolean; output: string; exitCode: number | null; running: boolean; timedOut?: boolean; durationMs: number; error?: string }>
     execRead: (id: string) => Promise<{ ok: boolean; output: string; running: boolean; exitCode: number | null; error?: string }>
     execKill: (id: string) => Promise<{ ok: boolean }>
@@ -289,7 +295,7 @@ export interface ElectronAPI {
     listSessions: (spaceId?: string) => Promise<Array<{ id: string; title: string; spaceId?: string; provider?: string; model?: string; updatedAt: number; createdAt: number }>>
     loadSession: (id: string) => Promise<unknown>
     saveSession: (session: unknown) => Promise<{ ok: boolean; error?: string }>
-    deleteSession: (id: string) => Promise<{ ok: boolean }>
+    deleteSession: (id: string) => Promise<{ ok: boolean; error?: string }>
   }
 
   // IPC Renderer

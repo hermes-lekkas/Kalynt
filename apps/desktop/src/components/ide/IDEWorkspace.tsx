@@ -106,6 +106,7 @@ export function IDEWorkspace({ space, active }: IDEWorkspaceProps) {
                         reveal={reveal}
                         onRevealed={() => setReveal(null)}
                         git={git}
+                        buffers={files}
                         onOpenFile={files.openFile}
                         onOpenFolder={actions.openFolder}
                         onCloseFolder={actions.closeFolder}

@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## In development
 
+- Keep unsaved editor buffers across workspace switches and normal application restarts; atomically store recovery files with owner-only permissions and block a normal close when recovery fails.
+- Detect disk changes before saving, offer explicit reload/overwrite choices, preserve edits made during an in-flight save, and retain tabs when newer edits have not been saved.
+- Save text atomically while preserving UTF-8 BOM, line endings, executable permissions and symlinks.
+- Search and replace operate on open editor buffers without silently overwriting their disk versions. Added recursive include globs, brace alternatives, literal whitespace queries, and correct regex lookaround/capture replacements.
+- Keep failed conversation saves available for retry after switching chats and synchronously acknowledge saving conversations during normal window closing.
+- Normalize Windows drive/UNC paths and distinguish actual workspace boundaries and case-sensitive POSIX paths.
+- Added direct React hook regressions and a dev-only Monaco interaction fixture; verified a real Python debug session including breakpoint, stack, evaluation and continue.
+- Fixed nested workspace-search globs, invalid/missing folder recovery, watcher preservation when reopening the same folder, and serialized rapid workspace switches.
+- Validate resumed model-download ranges before publishing a completed file; handle invalid redirects without an uncaught main-process exception.
+- Keep partially failed agent undo operations retryable, preserve subsequent user edits, and accurately report partial undo to the model.
+- Fixed an agent-panel crash in browser preview mode and report failed conversation saves instead of treating them as successful.
+- Respect GGUF training contexts smaller than 512 tokens when allocating inference contexts.
+- Added executable lint configuration, repository-wide checks, regression tests, and an isolated production Electron smoke suite with optional real GGUF inference; run checks on pull requests through CI.
 - Redesigned the website around real IDE screenshots, clear setup steps, current GitHub downloads, and accurate privacy and hardware guidance.
 - Added a first-session guide and direct routes to local models, local inference servers, and cloud keys.
 - Added loopback OpenAI-compatible server connections for Ollama and LM Studio, with model discovery, optional encrypted tokens, and cancellation.

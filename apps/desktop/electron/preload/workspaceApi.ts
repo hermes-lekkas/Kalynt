@@ -8,6 +8,11 @@ import { subscribe } from './subscribe'
 import type { TerminalAPI, RuntimeAPI, TasksAPI, SessionsAPI } from './types'
 
 export const workspaceApi = {
+    editorState: {
+        load: (spaceId: string, folder: string) => ipcRenderer.invoke('editor:load-state', spaceId, folder),
+        save: (state: unknown) => ipcRenderer.invoke('editor:save-state', state),
+        flush: (state: unknown) => ipcRenderer.sendSync('editor:flush-state', state)
+    },
 
     // ==========================================
     // Enhanced Terminal API
@@ -172,7 +177,7 @@ export const workspaceApi = {
     // ==========================================
     fs: {
         openFolder: () => ipcRenderer.invoke('fs:openFolder'),
-        setWorkspace: (workspacePath: string) => ipcRenderer.invoke('fs:setWorkspace', workspacePath),
+        setWorkspace: (workspacePath: string | null) => ipcRenderer.invoke('fs:setWorkspace', workspacePath),
         readDir: (dirPath: string) => ipcRenderer.invoke('fs:readDir', dirPath),
         stat: (filePath: string) => ipcRenderer.invoke('fs:stat', filePath),
         readFile: (filePath: string) => ipcRenderer.invoke('fs:readFile', filePath),

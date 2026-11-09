@@ -34,12 +34,19 @@ const MAX_LINE = 200
 /** "*.ts" or "src/**\/*.py" to an anchored, case-insensitive matcher on the file name or relative path. */
 function globMatcher(glob: string | undefined): (relative: string) => boolean {
     if (!glob) return () => true
-    const source = glob
-        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-        .replace(/\*\*\//g, '(?:.*/)?')
-        .replace(/\*\*/g, '.*')
-        .replace(/\*/g, '[^/]*')
-        .replace(/\?/g, '[^/]')
+    // Translate once: later replacements must not rewrite regex syntax emitted
+    // for **/ (its * and ? belong to the regex, not the user's glob).
+    let source = ''
+    for (let index = 0; index < glob.length; index++) {
+        const char = glob[index]
+        if (char === '*' && glob[index + 1] === '*') {
+            index++
+            if (glob[index + 1] === '/') { source += '(?:.*/)?'; index++ }
+            else source += '.*'
+        } else if (char === '*') source += '[^/]*'
+        else if (char === '?') source += '[^/]'
+        else source += char.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    }
     const re = new RegExp(`^${source}$`, 'i')
     return relative => {
         const normalized = relative.split(path.sep).join('/')

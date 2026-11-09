@@ -39,6 +39,7 @@ import { stopEverything } from './services/shutdown'
 import { createAppWindow } from './appWindow'
 import { registerAiHandlers } from './ai'
 import { registerAgentHandlers } from './agent'
+import { registerEditorStateHandlers } from './handlers/editor-state'
 
 // Window and workspace state
 let mainWindow: BrowserWindowType | null = null
@@ -205,6 +206,7 @@ function registerAllHandlers() {
     // Cloud AI providers and the agent's tools (commands, files, web, conversations)
     registerAiHandlers(ipcMain)
     registerAgentHandlers(ipcMain, () => currentWorkspacePath)
+    registerEditorStateHandlers(ipcMain, () => app.getPath('userData'))
 
     // Secure storage for API keys
     registerSafeStorageHandlers(ipcMain, () => app.getPath('userData'))

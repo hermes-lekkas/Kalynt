@@ -1,0 +1,72 @@
+name: Verify IDE
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  cross-platform-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      - run: npm run lint
+      - run: npx tsc --noEmit -p apps/desktop/tsconfig.json
+      - run: npx tsc --noEmit -p apps/desktop/tsconfig.node.json
+
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python debug adapter for integration tests
+        run: python -m pip install debugpy==1.8.19
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - name: Check Electron types
+        run: npx tsc --noEmit -p apps/desktop/tsconfig.node.json
+      - name: Check editor interaction fixture types
+        run: npm run typecheck:fixtures --workspace=apps/desktop
+      - name: Build renderer, main process and preload
+        run: npm run build:vite --workspace=apps/desktop
+      - name: Rebuild Electron native modules
+        working-directory: apps/desktop
+        env:
+          CXXFLAGS: -std=c++20
+        run: npx @electron/rebuild
+      - name: Exercise production Electron IPC with disposable data
+        env:
+          KALYNT_SMOKE_PYTHON: python
+        run: xvfb-run -a npm run test:smoke --workspace=apps/desktop -- --no-sandbox --disable-gpu --password-store=basic
+      - name: Package Linux app without publishing
+        working-directory: apps/desktop
+        run: npx electron-builder --linux --dir --publish never
+      - name: Verify packaged bundles and inference dependencies
+        env:
+          KALYNT_SMOKE_RESOURCES: ${{ github.workspace }}/apps/desktop/release/linux-unpacked/resources
+          KALYNT_SMOKE_PYTHON: python
+        run: xvfb-run -a npm run test:smoke --workspace=apps/desktop -- --no-sandbox --disable-gpu --password-store=basic

@@ -77,6 +77,10 @@ Kalynt Website/
 .github/workflows/
 !index.html
 !.github/workflows/pages.yml
+!.github/workflows/
+.github/workflows/*
+!.github/workflows/pages.yml
+!.github/workflows/verify.yml
 SKILL.md
 
 # Documentation cleanup

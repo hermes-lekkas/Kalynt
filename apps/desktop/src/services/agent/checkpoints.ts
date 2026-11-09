@@ -26,16 +26,26 @@ export async function snapshot(checkpoint: RunCheckpoint, absolutePath: string):
 export async function restore(checkpoint: RunCheckpoint): Promise<string[]> {
     const fs = window.electronAPI.fs
     const failed: string[] = []
+    const restored: string[] = []
     for (const [path, content] of Object.entries(checkpoint.files)) {
-        let result: { success?: boolean } | undefined
-        if (content === null) {
-            const stat = await fs.stat(path)
-            result = stat?.success ? await fs.delete(path) : { success: true }
-        } else {
-            result = await fs.writeFile({ path, content })
+        try {
+            let result: { success?: boolean } | undefined
+            if (content === null) {
+                const stat = await fs.stat(path)
+                // A failed stat can mean access denied, not only absence.
+                result = stat?.success ? await fs.delete(path) : { success: /\bENOENT\b/.test(stat?.error ?? '') }
+            } else {
+                result = await fs.writeFile({ path, content })
+            }
+            if (!result?.success) failed.push(path)
+            else restored.push(path)
+        } catch {
+            failed.push(path)
         }
-        if (!result?.success) failed.push(path)
     }
-    checkpoint.undone = true
+    checkpoint.undone = failed.length === 0
+    // Retrying a partial undo must touch only failed files. The user may have
+    // made fresh edits to files that were successfully restored already.
+    if (failed.length) for (const path of restored) delete checkpoint.files[path]
     return failed
 }

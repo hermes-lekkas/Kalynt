@@ -64,7 +64,7 @@ export function registerAgentSessionHandlers(ipcMain: IpcMain): void {
         }
     })
 
-    ipcMain.handle('agent:session-save', (_event, session: SessionSummary & Record<string, unknown>) => {
+    const saveSession = (session: SessionSummary & Record<string, unknown>) => {
         if (!session || !ID.test(String(session.id))) return { ok: false, error: 'Invalid session id.' }
         try {
             writeAtomic(path.join(dir(), `${session.id}.json`), JSON.stringify(session))
@@ -83,7 +83,9 @@ export function registerAgentSessionHandlers(ipcMain: IpcMain): void {
             console.error('[Agent] Saving a conversation failed:', error)
             return { ok: false, error: error instanceof Error ? error.message : String(error) }
         }
-    })
+    }
+    ipcMain.handle('agent:session-save', (_event, session: SessionSummary & Record<string, unknown>) => saveSession(session))
+    ipcMain.on('agent:session-flush', (event, session: SessionSummary & Record<string, unknown>) => { event.returnValue = saveSession(session) })
 
     ipcMain.handle('agent:session-delete', (_event, id: string) => {
         if (!ID.test(String(id))) return { ok: false }

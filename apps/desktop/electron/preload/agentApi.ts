@@ -30,6 +30,7 @@ export const agentApi = {
         listSessions: (spaceId?: string) => ipcRenderer.invoke('agent:sessions-list', spaceId),
         loadSession: (id: string) => ipcRenderer.invoke('agent:session-load', id),
         saveSession: (session: unknown) => ipcRenderer.invoke('agent:session-save', session),
+        flushSession: (session: unknown) => ipcRenderer.sendSync('agent:session-flush', session),
         deleteSession: (id: string) => ipcRenderer.invoke('agent:session-delete', id)
     }
 }
