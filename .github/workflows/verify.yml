@@ -44,6 +44,8 @@ jobs:
           python-version: '3.12'
       - name: Install Python debug adapter for integration tests
         run: python -m pip install debugpy==1.8.19
+      - name: Install a real Secret Service for encrypted-storage checks
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gnome-keyring dbus-x11
       - run: npm ci
       - run: npm run lint
       - run: npm test
@@ -61,7 +63,7 @@ jobs:
       - name: Exercise production Electron IPC with disposable data
         env:
           KALYNT_SMOKE_PYTHON: python
-        run: xvfb-run -a npm run test:smoke --workspace=apps/desktop -- --no-sandbox --disable-gpu --password-store=basic
+        run: bash apps/desktop/scripts/smoke-linux-ci.sh
       - name: Package Linux app without publishing
         working-directory: apps/desktop
         run: npx electron-builder --linux --dir --publish never
@@ -69,4 +71,4 @@ jobs:
         env:
           KALYNT_SMOKE_RESOURCES: ${{ github.workspace }}/apps/desktop/release/linux-unpacked/resources
           KALYNT_SMOKE_PYTHON: python
-        run: xvfb-run -a npm run test:smoke --workspace=apps/desktop -- --no-sandbox --disable-gpu --password-store=basic
+        run: bash apps/desktop/scripts/smoke-linux-ci.sh

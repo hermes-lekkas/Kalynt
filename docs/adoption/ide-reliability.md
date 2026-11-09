@@ -25,7 +25,7 @@ The real Python debugger was tested with `debugpy` 1.8.19: it launched a program
 
 ## Verification
 
-- `npm test`: 63 desktop tests plus the shared package's strict TypeScript check.
+- `npm test`: 66 desktop test cases (65 pass and one Windows-only check is skipped on Linux), plus the shared package's strict TypeScript check.
 - `npm run lint`: TypeScript/TSX lint and React hook rules.
 - `npx tsc --noEmit -p apps/desktop/tsconfig.node.json`: Electron type check.
 - `npm run build:vite --workspace=apps/desktop`: renderer type check and production renderer, main-process and preload bundles.
