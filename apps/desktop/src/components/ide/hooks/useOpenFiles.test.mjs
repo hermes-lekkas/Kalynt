@@ -97,6 +97,42 @@ test('closing several clean files removes all of them in the same event tick', a
     assert.deepEqual(current.files, [])
     assert.equal(current.activePath, null)
 })
+test('closing an active tab selects an adjacent tab that remains open', async () => {
+    await mount(['/project/a.txt', '/project/b.txt', '/project/c.txt'])
+    await act(async () => { current.setActivePath('/project/b.txt'); current.forceClose('/project/b.txt') })
+    assert.equal(current.activePath, '/project/c.txt')
+    await act(async () => current.forceClose('/project/c.txt'))
+    assert.equal(current.activePath, '/project/a.txt')
+    assert.equal(current.activeFile.path, '/project/a.txt')
+})
+test('a save waiting on file existence cannot write after switching workspaces', async () => {
+    await mount()
+    await act(async () => current.updateContent('/project/a.txt', 'old workspace edit'))
+    const gate = deferred()
+    window.electronAPI.fileExists = () => gate.promise
+    let saving
+    await act(async () => { saving = current.saveFile(); await wait() })
+    await act(async () => { instance.update(React.createElement(Harness, propsFor(crypto.randomUUID(), '/other'))); await wait() })
+    await act(async () => { gate.resolve(true); assert.equal(await saving, false) })
+    assert.deepEqual(writes, [])
+    assert.equal(disks.get('/project/a.txt'), 'original')
+})
+for (const method of ['closeFile', 'closeMany']) test(`a pending ${method} decision cannot close another workspace's tabs`, async () => {
+    await mount()
+    await act(async () => current.updateContent('/project/a.txt', 'old workspace edit'))
+    const gate = deferred()
+    globalThis.chooseTestAction = () => gate.promise
+    let closing
+    await act(async () => { closing = current[method](method === 'closeFile' ? '/project/a.txt' : undefined); await wait() })
+    const another = propsFor(crypto.randomUUID(), '/project')
+    folders.getState().setFolder(another.spaceId, '/project')
+    folders.getState().setOpenFiles(another.spaceId, ['/project/a.txt'], '/project/a.txt')
+    await act(async () => { instance.update(React.createElement(Harness, another)); await wait() })
+    await act(async () => current.updateContent('/project/a.txt', 'new workspace edit'))
+    await act(async () => { gate.resolve('discard'); await closing })
+    assert.equal(current.files[0].content, 'new workspace edit')
+    assert.equal(current.files[0].isDirty, true)
+})
 test('a late open response cannot append an old file to the new workspace', async () => {
     await mount([])
     const gate = deferred()

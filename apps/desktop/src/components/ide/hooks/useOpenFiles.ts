@@ -132,6 +132,7 @@ export function useOpenFiles({ spaceId, folder, onRevealDirectory, onDisposeMode
                 if (choice !== 'overwrite') return false
                 result = await api()?.fs?.writeFile({ path: file.path, content: file.content })
             }
+            if (savedIn !== generation.current) return false
             if (!result?.success) {
                 addNotification(`Couldn't save ${file.name}: ${result?.error || 'unknown error'}`, 'error')
                 return false
@@ -150,10 +151,10 @@ export function useOpenFiles({ spaceId, folder, onRevealDirectory, onDisposeMode
     }, [addNotification])
 
     const forceClose = useCallback((path: string) => {
+        const index = filesRef.current.findIndex(f => f.path === path)
         const remaining = filesRef.current.filter(f => f.path !== path)
         setFiles(remaining)
         if (activeRef.current === path) {
-            const index = filesRef.current.findIndex(f => f.path === path)
             const next = remaining[Math.min(index, remaining.length - 1)]
             setActivePath(next?.path ?? null)
         }
@@ -161,12 +162,14 @@ export function useOpenFiles({ spaceId, folder, onRevealDirectory, onDisposeMode
     }, [onDisposeModel])
 
     const saveFile = useCallback(async (path?: string | null): Promise<boolean> => {
+        const savedIn = generation.current
         const target = path ?? activeRef.current
         const file = filesRef.current.find(f => f.path === target)
         if (!file) return false
         if (!validate(file.path)) return false
 
         const exists = await api()?.fileExists?.(file.path)
+        if (savedIn !== generation.current) return false
         if (exists === false && api()?.platform !== 'browser') {
             const choice = await chooseAction({
                 title: `${file.name} was deleted`,
@@ -176,6 +179,7 @@ export function useOpenFiles({ spaceId, folder, onRevealDirectory, onDisposeMode
                     { id: 'save', label: 'Save again', variant: 'primary' }
                 ]
             })
+            if (savedIn !== generation.current) return false
             if (choice === 'close') forceClose(file.path)
             if (choice !== 'save') return false
         }
@@ -183,10 +187,15 @@ export function useOpenFiles({ spaceId, folder, onRevealDirectory, onDisposeMode
     }, [validate, writeFile, forceClose])
 
     const saveAll = useCallback(async () => {
-        for (const file of filesRef.current.filter(f => f.isDirty)) await saveFile(file.path)
+        const savedIn = generation.current
+        for (const file of filesRef.current.filter(f => f.isDirty)) {
+            if (savedIn !== generation.current) return
+            await saveFile(file.path)
+        }
     }, [saveFile])
 
     const closeFile = useCallback(async (path: string) => {
+        const closedIn = generation.current
         const file = filesRef.current.find(f => f.path === path)
         if (!file) return
         if (file.isDirty) {
@@ -199,8 +208,10 @@ export function useOpenFiles({ spaceId, folder, onRevealDirectory, onDisposeMode
                     { id: 'save', label: 'Save', variant: 'primary' }
                 ]
             })
+            if (closedIn !== generation.current) return
             if (choice === 'save') {
                 if (!(await writeFile(file))) return
+                if (closedIn !== generation.current) return
                 if (filesRef.current.find(f => f.path === path)?.isDirty) return
             } else if (choice !== 'discard') {
                 return
@@ -211,6 +222,7 @@ export function useOpenFiles({ spaceId, folder, onRevealDirectory, onDisposeMode
 
     /** Closes every tab except `keep`; asks once when any of them has unsaved changes. */
     const closeMany = useCallback(async (keep?: string): Promise<boolean> => {
+        const closedIn = generation.current
         const closing = filesRef.current.filter(f => f.path !== keep)
         const dirty = closing.filter(f => f.isDirty)
         if (dirty.length > 0) {
@@ -223,8 +235,12 @@ export function useOpenFiles({ spaceId, folder, onRevealDirectory, onDisposeMode
                     { id: 'save', label: dirty.length === 1 ? 'Save' : 'Save all', variant: 'primary' }
                 ]
             })
+            if (closedIn !== generation.current) return false
             if (choice === 'save') {
-                for (const file of dirty) if (!(await writeFile(file))) return false
+                for (const file of dirty) {
+                    if (closedIn !== generation.current || !(await writeFile(file))) return false
+                }
+                if (closedIn !== generation.current) return false
                 if (filesRef.current.some(f => f.path !== keep && f.isDirty)) return false
             } else if (choice !== 'discard') {
                 return false

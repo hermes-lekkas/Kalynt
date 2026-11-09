@@ -22,10 +22,12 @@ The real Python debugger was tested with `debugpy` 1.8.19: it launched a program
 - The browser preview's generic agent-session response was an object rather than an array, crashing the agent panel. Supply the correct response shapes, validate session lists and loads, and report rejected conversation saves.
 - The GGUF engine imposed a minimum 512-token context even for models with a smaller training context. Respect the model's maximum and use a matching minimum in memory estimates and context allocation.
 - Repository tests referenced an absent Jest runner in the shared type package. Use an actual type check there. Added an ESLint configuration with React hook rules.
+- The encrypted-message helper treated any random AES-GCM IV starting with zero as plaintext. CI exposed this intermittent failure. Encrypted rooms now always authenticate incoming packets and reject plaintext, truncated messages, unready keys and encryption errors instead of falling back to plaintext.
+- New-file path validation now resolves existing parent symlinks before allowing a write. Active-tab closing selects the adjacent tab, and delayed save/close decisions are cancelled after a workspace switch.
 
 ## Verification
 
-- `npm test`: 66 desktop test cases (65 pass and one Windows-only check is skipped on Linux), plus the shared package's strict TypeScript check.
+- `npm test`: 73 desktop test cases (72 pass and one Windows-only check is skipped on Linux), plus the shared package's strict TypeScript check.
 - `npm run lint`: TypeScript/TSX lint and React hook rules.
 - `npx tsc --noEmit -p apps/desktop/tsconfig.node.json`: Electron type check.
 - `npm run build:vite --workspace=apps/desktop`: renderer type check and production renderer, main-process and preload bundles.
@@ -49,4 +51,4 @@ Browser UI checks covered workspace creation, task creation and persistence afte
 - Python debugging is verified through a real debugpy session. Other debug adapters and arbitrary marketplace-extension compatibility remain unverified.
 - The Electron harness loads production bundles from the checkout and can verify matching packaged bundles/dependencies. Full installed-application GUI behavior and platform installer flows need separate release validation.
 
-`Verify IDE` now defines pull-request checks for lint, tests, types, production builds, native-module rebuilding and the Electron smoke suite. Defining the workflow does not mean remote CI has already run.
+`Verify IDE` runs pull-request checks for lint, tests, types, production builds, native-module rebuilding and the Electron smoke suite. Linux CI uses a private D-Bus session and disposable GNOME keyring to exercise real encrypted storage.

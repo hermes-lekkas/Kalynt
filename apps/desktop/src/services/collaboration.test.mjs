@@ -42,3 +42,35 @@ test('wrong passwords and modified ciphertext are rejected', async () => {
     await assert.rejects(second.decryptRoomMessage('wrong-password', encrypted), /Decryption failed/)
     first.disableRoomEncryption('wrong-password'); second.disableRoomEncryption('wrong-password')
 })
+test('a zero-prefixed AES-GCM IV decrypts normally and still rejects the wrong key', async () => {
+    const room = 'zero-iv'
+    const salt = await first.initializeRoomEncryption(room, 'right')
+    await second.initializeRoomEncryption(room, 'wrong', salt)
+    const iv = new Uint8Array(12), text = new TextEncoder().encode('authenticated message')
+    const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, first.getRoomEncryptionState(room).key, text)
+    const packet = new Uint8Array(12 + ciphertext.byteLength)
+    packet.set(iv); packet.set(new Uint8Array(ciphertext), 12)
+    assert.deepEqual(await first.decryptRoomMessage(room, packet), text)
+    await assert.rejects(second.decryptRoomMessage(room, packet), /Decryption failed/)
+    first.disableRoomEncryption(room); second.disableRoomEncryption(room)
+})
+test('encrypted rooms reject plaintext and truncated packets', async () => {
+    const room = 'reject-plaintext'
+    await first.initializeRoomEncryption(room, 'right')
+    for (const packet of [new Uint8Array(), new Uint8Array([0, 1]), new TextEncoder().encode('plaintext message longer than the encrypted minimum')]) {
+        await assert.rejects(first.decryptRoomMessage(room, packet), /Decryption failed/)
+    }
+    first.disableRoomEncryption(room)
+})
+test('unready or failed encryption never returns plaintext in an encrypted room', async () => {
+    const room = 'encryption-failure', text = new TextEncoder().encode('private message')
+    const initialized = first.initializeRoomEncryption(room, 'right')
+    await assert.rejects(first.encryptRoomMessage(room, text), /not ready/)
+    await assert.rejects(first.decryptRoomMessage(room, text), /not ready/)
+    await initialized
+    // A non-encryption key simulates the crypto provider rejecting a request.
+    first.getRoomEncryptionState(room).key = await crypto.subtle.generateKey({ name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+    await assert.rejects(first.encryptRoomMessage(room, text), /Encryption failed/)
+    first.disableRoomEncryption(room)
+    assert.deepEqual(await first.encryptRoomMessage(room, text), text)
+})
