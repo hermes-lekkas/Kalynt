@@ -132,22 +132,23 @@ export async function unloadModel(): Promise<void> {
  * budget. The context cost grows linearly with its size, so two estimates
  * pin the line and the budget is solved directly.
  */
-function fitContextToBudget(
+export function fitContextToBudget(
     estimate: (contextSize: number) => { cpuRam: number },
     budgetBytes: number,
-    maxContext: number
+    maxContext: number,
+    minimumContext = Math.min(512, maxContext)
 ): { contextSize: number; capped: boolean } {
-    const minEstimate = estimate(512).cpuRam
+    const minEstimate = estimate(minimumContext).cpuRam
     const maxEstimate = estimate(maxContext).cpuRam
     if (maxEstimate <= budgetBytes) return { contextSize: maxContext, capped: false }
 
-    const perToken = maxContext > 512 ? (maxEstimate - minEstimate) / (maxContext - 512) : 0
-    if (perToken <= 0) return { contextSize: 512, capped: true }
+    const perToken = maxContext > minimumContext ? (maxEstimate - minEstimate) / (maxContext - minimumContext) : 0
+    if (perToken <= 0) return { contextSize: minimumContext, capped: true }
 
-    const fit = Math.floor((budgetBytes - minEstimate) / perToken) + 512
+    const fit = Math.floor((budgetBytes - minEstimate) / perToken) + minimumContext
     // Verify the linear model against the real estimator, then settle.
-    const verified = estimate(Math.max(512, fit)).cpuRam <= budgetBytes ? fit : Math.floor(fit * budgetBytes / estimate(Math.max(512, fit)).cpuRam)
-    return { contextSize: Math.max(512, Math.min(maxContext, verified)), capped: true }
+    const verified = estimate(Math.max(minimumContext, fit)).cpuRam <= budgetBytes ? fit : Math.floor(fit * budgetBytes / estimate(Math.max(minimumContext, fit)).cpuRam)
+    return { contextSize: Math.max(minimumContext, Math.min(maxContext, verified)), capped: true }
 }
 
 export function loadModel(options: LoadOptions): Promise<LoadResult> {
@@ -168,7 +169,8 @@ export function loadModel(options: LoadOptions): Promise<LoadResult> {
         const tiny = /1\.5b|\b1b|0\.5b/i.test(options.modelId)
         const small = tiny || /\b3b|\b4b/i.test(options.modelId)
         const wanted = Math.min(options.contextLength || 8192, tiny ? 8192 : small ? 16384 : Infinity)
-        const max = Math.max(512, Math.min(wanted, model.trainContextSize || wanted))
+        const max = Math.max(24, Math.min(wanted, model.trainContextSize || wanted))
+        const minimumContext = Math.min(512, max)
         const insights = model.fileInsights
         const flashAttention = options.flashAttention ?? true
         const useFlash = flashAttention && insights.flashAttentionSupported
@@ -182,22 +184,22 @@ export function loadModel(options: LoadOptions): Promise<LoadResult> {
             const totalFor = (ctx: number) => modelReq.cpuRam + insights.estimateContextResourceRequirements({
                 contextSize: ctx, modelGpuLayers: gpuLayers, batchSize: options.batchSize || (tiny ? 64 : small ? 128 : 256), flashAttention: useFlash
             }).cpuRam
-            if (totalFor(512) > budget) {
+            if (totalFor(minimumContext) > budget) {
                 await disposeModel()
-                const needMB = Math.round(totalFor(512) / 1048576)
+                const needMB = Math.round(totalFor(minimumContext) / 1048576)
                 const freeMB = Math.round(readMemorySnapshot().available / 1048576)
                 throw new Error(`Not enough memory for this model: it needs at least ${needMB} MB even with the smallest context, and only ${freeMB} MB is free. Close other apps or pick a smaller model.`)
             }
             const fit = fitContextToBudget(ctx => ({ cpuRam: insights.estimateContextResourceRequirements({
                 contextSize: ctx, modelGpuLayers: gpuLayers, batchSize: options.batchSize || (tiny ? 64 : small ? 128 : 256), flashAttention: useFlash
-            }).cpuRam }), budget - modelReq.cpuRam, max)
+            }).cpuRam }), budget - modelReq.cpuRam, max, minimumContext)
             contextSize = fit.contextSize
             capped = fit.capped
             if (capped) console.warn(`[LLM] Context capped to ${contextSize} tokens (from ${max}) to fit ${(budget / 1048576).toFixed(0)} MB of free memory`)
         }
 
         const base = {
-            contextSize: { min: 512, max: contextSize },
+            contextSize: { min: minimumContext, max: contextSize },
             failedCreationRemedy: { retries: 3, autoContextSizeShrink: 0.75 },
             batchSize: options.batchSize || (tiny ? 64 : small ? 128 : 256),
             ...(options.threads && options.threads > 0 ? { threads: options.threads } : {})

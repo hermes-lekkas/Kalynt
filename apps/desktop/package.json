@@ -11,7 +11,9 @@
     "description": "Kalynt Desktop Application",
     "main": "dist-electron/main.js",
     "scripts": {
-        "test": "node --test electron/ai/localServer.test.mjs src/services/agent/modelSelection.test.mjs electron/handlers/code-exec/cmd-escape.test.mjs",
+        "test": "node scripts/test.cjs",
+        "test:smoke": "electron scripts/smoke.cjs",
+        "typecheck:fixtures": "tsc --noEmit -p tsconfig.fixtures.json",
         "dev": "vite",
         "dev:web": "vite --config vite.config.web.ts",
         "build": "tsc && vite build && electron-builder",
@@ -90,6 +92,7 @@
         "javascript-obfuscator": ">=5.0.0",
         "postcss": "^8.5.6",
         "react-syntax-highlighter": "^16.1.0",
+        "react-test-renderer": "^18.3.1",
         "rollup-plugin-javascript-obfuscator": "^1.0.4",
         "rollup-plugin-obfuscator": "^1.1.0",
         "tailwindcss": "^3.4.1",

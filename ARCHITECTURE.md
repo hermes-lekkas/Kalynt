@@ -167,6 +167,8 @@ Every cloud model request goes through the main process, so keys are used only t
 
 Workspace data that collaborators share (tasks, team chat, members) lives in Yjs documents (`hooks/useYjs.ts`), persisted to IndexedDB and synced over WebRTC.
 
+Unsaved editor buffers are captured per workspace by `editorRecovery.ts` and stored atomically in `<userData>/editor-state/` through `handlers/editor-state.ts`. The renderer debounces recovery writes and uses an acknowledged synchronous flush only during normal window closing/reload. A failed flush prevents the close. Saved text uses compare-and-write conflict detection and atomic replacement through `handlers/file-write.ts`; open editors retain edits made while a save is pending. Workspace search reads and replaces open buffers in memory, leaving them unsaved for normal editor review/save.
+
 ### 4.3 The agent
 
 The agent lives in `src/services/agent/`; the chat UI is `components/agent/chat/`.
@@ -193,8 +195,12 @@ The agent lives in `src/services/agent/`; the chat UI is `components/agent/chat/
 
 ## 6. Testing
 
-There is no unit-test suite yet. Releases are verified by type-checking both projects (`tsc -p tsconfig.json` and `tsc -p tsconfig.node.json`) and by driving the built app (development and packaged) over the Chrome DevTools Protocol in a headless X server with an isolated profile. Suites exercise `window.electronAPI` directly: file system, git, run, build, debug, terminals, secure storage, model download and local inference. The AI adapters and the agent are driven through the real chat UI against a mock server that speaks each provider's streaming protocol (`KALYNT_AI_TEST_BASE_URL` points the gateway at it).
+Run `npm test` for the desktop Node test suite and shared-package type checks, and `npm run lint` for TypeScript/TSX lint and React hook rules. The tests exercise local-server discovery and streaming, model selection, context sizing, download resume/cancel, nested search, conversation storage, agent undo, command escaping, and encrypted Yjs document exchange.
+
+Build the desktop bundles with `npm run build:vite --workspace=apps/desktop`, then run `xvfb-run -a npm run test:smoke --workspace=apps/desktop -- --no-sandbox --disable-gpu` on Linux. The smoke harness launches the real main process and production renderer/preload with a temporary user profile and workspace. It exercises filesystem operations/watchers, Git, PTYs, commands, npm build tasks, agent sessions, and local-server AI against a loopback fixture. It does not change the user's protocol registration or access personal API keys. Set `KALYNT_SMOKE_MODEL` to an existing GGUF path to additionally test native model loading, non-streamed and streamed generation, and unloading. The small reference model used in the reliability pass verifies runtime behavior, not coding quality.
+
+`.github/workflows/verify.yml` runs lint, tests, both desktop type checks, a production build, native-module rebuild, Linux packaging and the Electron smoke suite on pull requests and pushes to main; Windows/macOS jobs run unit/type/lint checks. Set `KALYNT_SMOKE_PYTHON` to an interpreter with debugpy installed to exercise breakpoint/stack/evaluate/continue against a real Python adapter (enabled in Linux CI). Other debug adapters, arbitrary marketplace-extension compatibility, live paid provider APIs and cross-machine WebRTC require separate integration validation.
 
 ---
 
-*Last updated: October 19, 2026 (v2.0.0)*
+*Testing section updated: November 10, 2026; runtime overview describes v2.0.0 with development-branch additions.*

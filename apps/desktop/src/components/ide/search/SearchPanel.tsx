@@ -9,18 +9,20 @@ import { dirName, relativePath } from '../languages'
 import { useWorkspaceSearch } from './useWorkspaceSearch'
 import type { SearchMatch } from './searchUtils'
 import { FOCUS_SEARCH_EVENT } from '../hooks/useIdeCommands'
+import type { OpenFilesApi } from '../hooks/useOpenFiles'
 import './search.css'
 
 type Row = { kind: 'file'; path: string; name: string; count: number; open: boolean } | { kind: 'match'; match: SearchMatch }
 
 interface SearchPanelProps {
     folder: string | null
+    buffers: OpenFilesApi
     visible: boolean
     onOpenMatch: (path: string, line: number) => void
 }
 
-export function SearchPanel({ folder, visible, onOpenMatch }: SearchPanelProps) {
-    const s = useWorkspaceSearch(folder)
+export function SearchPanel({ folder, buffers, visible, onOpenMatch }: SearchPanelProps) {
+    const s = useWorkspaceSearch(folder, buffers)
     const [showReplace, setShowReplace] = useState(false)
     const [showFilters, setShowFilters] = useState(false)
     const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -126,8 +128,8 @@ export function SearchPanel({ folder, visible, onOpenMatch }: SearchPanelProps) 
                 )}
                 {showFilters && (
                     <div className="search-panel__filters">
-                        <TextInput size="sm" value={s.include} placeholder="Files to include, e.g. ts, tsx" aria-label="Files to include" onChange={e => s.setInclude(e.target.value)} />
-                        <TextInput size="sm" value={s.exclude} placeholder="Folders to exclude" aria-label="Folders to exclude" onChange={e => s.setExclude(e.target.value)} />
+                        <TextInput size="sm" value={s.include} placeholder="e.g. src/**/*.{ts,tsx}" aria-label="Files to include" onChange={e => s.setInclude(e.target.value)} />
+                        <TextInput size="sm" value={s.exclude} placeholder="Exclude folders or file patterns" aria-label="Folders or files to exclude" onChange={e => s.setExclude(e.target.value)} />
                     </div>
                 )}
             </form>

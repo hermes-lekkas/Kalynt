@@ -163,15 +163,6 @@ export async function decryptUpdate(encryptedData: Uint8Array, key: CryptoKey): 
 }
 
 /**
- * Check if an update is encrypted (has valid structure)
- */
-export function isEncryptedUpdate(data: Uint8Array): boolean {
-    // Encrypted updates have at least 12 bytes IV + some ciphertext
-    // Unencrypted Yjs updates start with specific byte patterns
-    return data.length > 12 && data[0] !== 0 // Yjs updates typically start with 0
-}
-
-/**
  * Encryption state for a room
  */
 interface RoomEncryptionState {
@@ -253,9 +244,10 @@ export async function encryptRoomMessage(
     data: Uint8Array
 ): Promise<Uint8Array> {
     const state = roomStates.get(roomId)
-    if (!state?.enabled || !state.key) {
+    if (!state?.enabled) {
         return data // Return unencrypted if not enabled
     }
+    if (!state.key) throw new Error('Room encryption is not ready')
 
     try {
         // SECURITY FIX V-007: Sign the data before encryption
@@ -266,7 +258,7 @@ export async function encryptRoomMessage(
         return await encryptUpdate(dataToEncrypt, state.key)
     } catch (e) {
         console.error('[Encryption] Failed to encrypt:', e)
-        return data // Fallback to unencrypted on error
+        throw new Error('Encryption failed')
     }
 }
 
@@ -281,16 +273,16 @@ export async function decryptRoomMessage(
     const state = roomStates.get(roomId)
 
     // If encryption not enabled, return as-is
-    if (!state?.enabled || !state.key) {
+    if (!state?.enabled) {
         return data
     }
-
-    // Check if data looks encrypted
-    if (!isEncryptedUpdate(data)) {
-        return data // Unencrypted message (legacy or from non-encrypted peer)
-    }
+    if (!state.key) throw new Error('Room encryption is not ready')
 
     try {
+        // AES-GCM IVs are random: every first-byte value, including zero, is
+        // valid. Encrypted rooms always authenticate; do not guess whether a
+        // packet is plaintext from its contents or accept a legacy downgrade.
+        if (data.length < 12 + 16) throw new Error('Invalid encrypted message')
         const decrypted = await decryptUpdate(data, state.key)
 
         // SECURITY FIX V-007: Verify integrity if enabled

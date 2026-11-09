@@ -45,7 +45,7 @@ function executeTask(task: Task, workspacePath: string, getWindow: () => Browser
     let useShell = task.type !== 'process'
     let windowsVerbatimArguments: boolean | undefined
     if (task.type === 'npm') {
-        ;({ command, args, windowsVerbatimArguments } = wrapWindowsCommand(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', task.command, ...args]))
+        ({ command, args, windowsVerbatimArguments } = wrapWindowsCommand(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', task.command, ...args]))
         useShell = false
     }
 

@@ -11,6 +11,7 @@ import { FileExplorer } from './explorer/FileExplorer'
 import { SearchPanel } from './search/SearchPanel'
 import { GitPanel } from './git/GitPanel'
 import type { GitApi } from './git/useGit'
+import type { OpenFilesApi } from './hooks/useOpenFiles'
 
 interface SidePanelProps {
     panel: SidePanelId
@@ -21,6 +22,7 @@ interface SidePanelProps {
     reveal: { path: string; kind: 'file' | 'dir' } | null
     onRevealed: () => void
     git: GitApi
+    buffers: OpenFilesApi
     onOpenFile: (path: string, line?: number) => void
     onOpenFolder: () => void
     onCloseFolder: () => void
@@ -50,7 +52,7 @@ export function SidePanel(props: SidePanelProps) {
             </div>
             <div className="side-view" hidden={panel !== 'search'}>
                 <RegionBoundary name="Search">
-                    <SearchPanel folder={folder} visible={visible && panel === 'search'} onOpenMatch={props.onOpenFile} />
+                    <SearchPanel folder={folder} buffers={props.buffers} visible={visible && panel === 'search'} onOpenMatch={props.onOpenFile} />
                 </RegionBoundary>
             </div>
             <div className="side-view" hidden={panel !== 'git'}>

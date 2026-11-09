@@ -244,6 +244,29 @@ export const electronAPIShim = {
         chat: async () => ({ ok: false, error: 'AI requests need the desktop app.' }),
         cancel: async () => ({ ok: true })
     },
+    // Conversation APIs return arrays/null, unlike generic IPC result objects.
+    // An object here used to crash the agent panel on its first workspace.
+    agent: {
+        listSessions: async () => [],
+        loadSession: async () => null,
+        saveSession: async () => ({ ok: false, error: 'Saving conversations needs the desktop app.' }),
+        flushSession: () => ({ ok: false, error: 'Saving conversations needs the desktop app.' }),
+        deleteSession: async () => ({ ok: false, error: 'Deleting conversations needs the desktop app.' }),
+        onExecOutput: noopReturn
+    },
+    editorState: {
+        load: async (spaceId: string, folder: string) => {
+            try { return JSON.parse(localStorage.getItem(`kalynt-editor-recovery:${JSON.stringify([spaceId, folder])}`) ?? 'null') } catch { return null }
+        },
+        save: async (state: any) => {
+            try { localStorage.setItem(`kalynt-editor-recovery:${JSON.stringify([state.spaceId, state.folder])}`, JSON.stringify(state)); return { success: true } }
+            catch { return { success: false, error: 'Browser recovery storage is full.' } }
+        },
+        flush: (state: any) => {
+            try { localStorage.setItem(`kalynt-editor-recovery:${JSON.stringify([state.spaceId, state.folder])}`, JSON.stringify(state)); return { success: true } }
+            catch { return { success: false, error: 'Browser recovery storage is full.' } }
+        }
+    },
     update: updateShim,
     git: gitShim,
     deps: depsShim,

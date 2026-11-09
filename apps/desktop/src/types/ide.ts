@@ -28,4 +28,6 @@ export interface OpenFile {
     content: string
     language: string
     isDirty: boolean
+    /** Disk text observed when opened or last saved, for conflict detection. */
+    diskContent?: string
 }

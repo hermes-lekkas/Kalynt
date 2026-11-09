@@ -34,7 +34,7 @@ export function isBinaryFile(fileName: string): boolean {
 /** Builds the search pattern, or returns an error message for an invalid regex. */
 export function buildPattern(query: string, options: SearchOptions): RegExp | string {
     let source = options.regex ? query : escapeRegex(query)
-    if (options.wholeWord) source = `\\b${source}\\b`
+    if (options.wholeWord) source = `\\b(?:${source})\\b`
     try {
         return new RegExp(source, options.caseSensitive ? 'g' : 'gi')
     } catch (error) {
@@ -52,16 +52,44 @@ export function preserveCase(original: string, replacement: string): string {
 }
 
 export function splitList(value: string): string[] {
-    return value.split(',').map(s => s.trim()).filter(Boolean)
+    const parts: string[] = []
+    let depth = 0, start = 0
+    for (let i = 0; i < value.length; i++) {
+        if (value[i] === '{') depth++
+        else if (value[i] === '}') depth = Math.max(0, depth - 1)
+        else if (value[i] === ',' && depth === 0) { parts.push(value.slice(start, i).trim()); start = i + 1 }
+    }
+    parts.push(value.slice(start).trim())
+    return parts.filter(Boolean)
 }
 
-/** Matches "ts", ".ts", "*.ts" or a full file name against an include list. */
+function expandBraces(pattern: string): string[] {
+    const match = /\{([^{}]+)\}/.exec(pattern)
+    if (!match) return [pattern]
+    return match[1].split(',').flatMap(part => expandBraces(pattern.slice(0, match.index) + part + pattern.slice(match.index + match[0].length)))
+}
+function globRegex(pattern: string): RegExp {
+    let source = ''
+    for (let i = 0; i < pattern.length; i++) {
+        if (pattern[i] === '*' && pattern[i + 1] === '*') {
+            i++
+            if (pattern[i + 1] === '/') { source += '(?:.*/)?'; i++ }
+            else source += '.*'
+        } else if (pattern[i] === '*') source += '[^/]*'
+        else if (pattern[i] === '?') source += '[^/]'
+        else source += escapeRegex(pattern[i])
+    }
+    return new RegExp(`^${source}$`, 'i')
+}
+/** Accepts extension shorthand, names and workspace-relative glob patterns. */
 export function matchesInclude(fileName: string, include: string[]): boolean {
     if (include.length === 0) return true
-    const lower = fileName.toLowerCase()
-    return include.some(raw => {
-        const pattern = raw.toLowerCase().replace(/^\*/, '')
-        if (pattern.startsWith('.')) return lower.endsWith(pattern)
-        return lower === pattern || lower.endsWith(`.${pattern}`)
-    })
+    const relative = fileName.replace(/\\/g, '/').replace(/^\.\//, '')
+    const name = relative.split('/').pop()!.toLowerCase()
+    return include.some(raw => expandBraces(raw).some(value => {
+        const pattern = value.replace(/^\.\//, '').toLowerCase()
+        if (/[*?{]/.test(pattern) || pattern.includes('/')) return globRegex(pattern).test(pattern.includes('/') ? relative : name)
+        if (pattern.startsWith('.')) return name.endsWith(pattern)
+        return name === pattern || name.endsWith(`.${pattern}`)
+    }))
 }

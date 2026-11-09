@@ -9,6 +9,7 @@
 import { create } from 'zustand'
 import type { ConversationItem, UserItem } from '../types/aiProtocol'
 import { newSession, titleFrom, type AgentSession } from '../services/agent/session'
+import { useNotificationStore } from './notificationStore'
 
 export interface SessionSummary {
     id: string
@@ -31,6 +32,7 @@ interface AgentSessionState {
     /** Call after mutating `current` in place. Saves shortly after. */
     touch: () => void
     saveNow: () => Promise<void>
+    flushNow: () => { ok: boolean; error?: string }
     rename: (id: string, title: string) => Promise<void>
     remove: (id: string) => Promise<void>
 }
@@ -39,9 +41,29 @@ const MIGRATED_KEY = 'kalynt-agent-sessions-imported'
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 
 const api = () => window.electronAPI?.agent
+const pending = new Map<string, AgentSession>()
+const writes = new Map<string, Promise<void>>()
+const epochs = new Map<string, number>()
 
 async function persist(session: AgentSession) {
-    await api()?.saveSession(session)
+    const snapshot = JSON.parse(JSON.stringify(session)) as AgentSession
+    pending.set(session.id, snapshot)
+    const epoch = epochs.get(session.id) ?? 0
+    const operation = (writes.get(session.id) ?? Promise.resolve()).catch(() => undefined).then(async () => {
+        if (epoch !== (epochs.get(session.id) ?? 0)) return
+        const result = await api()?.saveSession(snapshot)
+        if (!result?.ok) throw new Error(result?.error ?? 'Conversation storage is unavailable.')
+        if (pending.get(session.id) === snapshot) pending.delete(session.id)
+    })
+    writes.set(session.id, operation)
+    try { await operation }
+    finally { if (writes.get(session.id) === operation) writes.delete(session.id) }
+}
+
+function reportError(error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error('[Agent] Conversation storage failed:', message)
+    useNotificationStore.getState().addNotification(`Conversation could not be saved: ${message}`, 'error')
 }
 
 /** One-time import of conversations kept by the old chat store. */
@@ -85,19 +107,21 @@ export const useAgentSessionStore = create<AgentSessionState>()((set, get) => ({
         if (!api()) return
         await importLegacy()
         const summaries = await api()!.listSessions(spaceId)
-        set({ summaries })
+        const combined = new Map((Array.isArray(summaries) ? summaries : []).map(summary => [summary.id, summary]))
+        for (const session of pending.values()) combined.set(session.id, session)
+        set({ summaries: [...combined.values()] })
     },
 
     open: async id => {
-        await get().saveNow()
-        const loaded = await api()?.loadSession(id) as AgentSession | null
-        if (!loaded) return
+        await get().saveNow().catch(reportError)
+        const loaded = pending.get(id) ?? await api()?.loadSession(id) as AgentSession | null
+        if (!loaded || typeof loaded.id !== 'string' || !Array.isArray(loaded.items)) return
         // Older files may miss newer fields.
         set(state => ({ current: { ...newSession(loaded.spaceId), ...loaded }, revision: state.revision + 1 }))
     },
 
     create: spaceId => {
-        void get().saveNow()
+        void get().saveNow().catch(reportError)
         const session = newSession(spaceId)
         set(state => ({ current: session, revision: state.revision + 1 }))
         return session
@@ -106,19 +130,39 @@ export const useAgentSessionStore = create<AgentSessionState>()((set, get) => ({
     touch: () => {
         set(state => ({ revision: state.revision + 1 }))
         if (saveTimer) clearTimeout(saveTimer)
-        saveTimer = setTimeout(() => { void get().saveNow() }, 800)
+        saveTimer = setTimeout(() => { void get().saveNow().catch(reportError) }, 800)
     },
 
     saveNow: async () => {
         if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
         const session = get().current
-        if (!session || session.items.length === 0) return
-        await persist(session)
-        const summary: SessionSummary = {
-            id: session.id, title: session.title, spaceId: session.spaceId, provider: session.provider,
-            model: session.model, updatedAt: session.updatedAt, createdAt: session.createdAt
-        }
-        set(state => ({ summaries: [summary, ...state.summaries.filter(s => s.id !== session.id)] }))
+        const candidates = new Map(pending)
+        if (session?.items.length) candidates.set(session.id, session)
+        await Promise.all([...candidates.values()].map(async candidate => {
+            await persist(candidate)
+            const summary: SessionSummary = {
+                id: candidate.id, title: candidate.title, spaceId: candidate.spaceId, provider: candidate.provider,
+                model: candidate.model, updatedAt: candidate.updatedAt, createdAt: candidate.createdAt
+            }
+            set(state => ({ summaries: [summary, ...state.summaries.filter(s => s.id !== candidate.id)] }))
+        }))
+    },
+
+    flushNow: () => {
+        if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
+        const candidates = new Map(pending)
+        const current = get().current
+        if (current?.items.length) candidates.set(current.id, current)
+        try {
+            for (const session of candidates.values()) {
+                pending.set(session.id, session)
+                epochs.set(session.id, (epochs.get(session.id) ?? 0) + 1)
+                const result = api()?.flushSession(session)
+                if (!result?.ok) return { ok: false, error: result?.error ?? 'Save your conversations before closing.' }
+                pending.delete(session.id)
+            }
+            return { ok: true }
+        } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) } }
     },
 
     rename: async (id, title) => {
@@ -136,7 +180,10 @@ export const useAgentSessionStore = create<AgentSessionState>()((set, get) => ({
     },
 
     remove: async id => {
-        await api()?.deleteSession(id)
+        await writes.get(id)?.catch(() => undefined)
+        const result = await api()?.deleteSession(id)
+        if (!result?.ok) throw new Error(result?.error ?? 'The conversation could not be deleted.')
+        pending.delete(id)
         set(state => ({
             summaries: state.summaries.filter(s => s.id !== id),
             ...(state.current?.id === id ? { current: null } : {})

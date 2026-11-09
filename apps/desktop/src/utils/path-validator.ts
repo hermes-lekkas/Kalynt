@@ -52,11 +52,18 @@ export function validatePath(
         }
     }
 
+    const windows = /^[A-Za-z]:[\\/]/.test(workspacePath || targetPath) || /^(\\\\|\/\/)/.test(workspacePath || targetPath)
+    const normalize = (value: string) => {
+        const unc = windows && /^(\\\\|\/\/)/.test(value)
+        const result = path.normalize(windows ? value.replace(/\\/g, '/') : value)
+        return unc ? '/' + result : result
+    }
+
     // If no workspace is set, we can't validate bounds
     // This allows file operations before workspace is opened
     if (!workspacePath) {
         // Still normalize the path for consistency
-        const normalized = path.normalize(targetPath)
+        const normalized = normalize(targetPath)
         return {
             valid: true,
             normalizedPath: normalized
@@ -65,36 +72,25 @@ export function validatePath(
 
     try {
         // Normalize both paths to handle different separators and relative segments
-        const normalizedTarget = path.normalize(targetPath)
-        const normalizedWorkspace = path.normalize(workspacePath)
-
-        // Check for explicit path traversal patterns
-        const hasTraversal = normalizedTarget.includes('..') ||
-            normalizedTarget.includes('../') ||
-            normalizedTarget.includes('..\\')
-
-        if (hasTraversal) {
-            return {
-                valid: false,
-                error: 'Invalid path: path traversal detected (..) is not allowed'
-            }
-        }
+        const normalizedTarget = normalize(targetPath)
+        const normalizedWorkspace = normalize(workspacePath)
 
         // For relative paths, resolve against workspace
         // Use custom isAbsolutePath to properly handle Windows paths
         const resolvedPath = isAbsolutePath(normalizedTarget)
             ? normalizedTarget
-            : path.join(normalizedWorkspace, normalizedTarget)
+            : windows ? `${normalizedWorkspace}/${normalizedTarget}` : path.join(normalizedWorkspace, normalizedTarget)
 
         // Normalize the resolved path to remove any remaining relative segments
-        const finalPath = path.normalize(resolvedPath)
+        const finalPath = normalize(resolvedPath)
 
         // Check if the final path is within workspace bounds
         // Convert to forward slashes for consistent comparison
-        const finalPathForward = finalPath.toLowerCase().replace(/\\/g, '/')
-        const workspaceForward = normalizedWorkspace.toLowerCase().replace(/\\/g, '/')
+        const finalPathForward = windows ? finalPath.toLowerCase() : finalPath
+        const workspaceForward = (windows ? normalizedWorkspace.toLowerCase() : normalizedWorkspace).replace(/\/+$/, '') || '/'
+        const prefix = workspaceForward === '/' ? '/' : workspaceForward + '/'
 
-        if (!finalPathForward.startsWith(workspaceForward)) {
+        if (finalPathForward !== workspaceForward && !finalPathForward.startsWith(prefix)) {
             return {
                 valid: false,
                 error: `Access denied: path "${targetPath}" is outside workspace boundaries`

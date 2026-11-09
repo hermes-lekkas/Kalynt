@@ -10,6 +10,7 @@ import { nativeHelperService } from '../services/native-helper-service'
 import { validatePath } from '../utils/pathValidator'
 import { searchFolder } from './fs-search'
 import { copyFolder } from './fs-backup'
+import { writeTextFile } from './file-write'
 
 // Stateful maps for file watchers
 const watchers = new Map<string, chokidar.FSWatcher>()
@@ -38,21 +39,47 @@ export function registerFileSystemHandlers(
     dialog: Electron.Dialog,
     getMainWindow: () => BrowserWindowType | null,
     getCurrentWorkspacePath: () => string | null,
-    setCurrentWorkspacePath: (path: string) => void,
+    setCurrentWorkspacePath: (path: string | null) => void,
     getModelsDir: () => string
 ) {
     // Set workspace and clear all watchers
-    ipcMain.handle('fs:setWorkspace', async (_event, workspacePath: string) => {
-        setCurrentWorkspacePath(workspacePath)
+    const changeWorkspace = async (workspacePath: string | null) => {
+        try {
+            if (workspacePath !== null && (typeof workspacePath !== 'string' || !path.isAbsolute(workspacePath) || !(await fs.promises.stat(workspacePath)).isDirectory())) {
+                return { success: false, error: 'Choose an existing workspace folder' }
+            }
+        } catch (error) {
+            return { success: false, error: String(error) }
+        }
+        // Re-entering the same folder must not kill a watcher still used by
+        // mounted editor panels (for example when switching workspace tabs).
+        if (workspacePath === getCurrentWorkspacePath()) return { success: true }
         const closePromises: Promise<void>[] = []
         watchers.forEach((watcher) => {
             closePromises.push(watcher.close())
         })
         await Promise.all(closePromises)
         watchers.clear()
+        for (const id of nativeWatchers) {
+            if (nativeHelperService.isAvailable()) {
+                await nativeHelperService.request('watch-stop', { watcherId: id }).catch(error => console.warn('[FS] Failed to stop native watcher:', error))
+            }
+        }
+        nativeWatchers.clear()
+        setCurrentWorkspacePath(workspacePath)
         console.log('[Main] Workspace set to:', workspacePath)
         return { success: true }
-    })
+    }
+    // Folder validation and watcher disposal are asynchronous. Serialize them
+    // so rapid workspace switches finish in the order the renderer requested.
+    let pendingWorkspaceChange: Promise<void> = Promise.resolve()
+    const activateWorkspace = (workspacePath: string | null) => {
+        const result = pendingWorkspaceChange.then(() => changeWorkspace(workspacePath))
+            .catch(error => ({ success: false, error: String(error) }))
+        pendingWorkspaceChange = result.then(() => undefined)
+        return result
+    }
+    ipcMain.handle('fs:setWorkspace', (_event, workspacePath: string | null) => activateWorkspace(workspacePath))
 
     // Open folder dialog
     ipcMain.handle('fs:openFolder', async () => {
@@ -64,7 +91,8 @@ export function registerFileSystemHandlers(
         if (result.canceled || result.filePaths.length === 0) {
             return { success: false, canceled: true }
         }
-        setCurrentWorkspacePath(result.filePaths[0])
+        const activated = await activateWorkspace(result.filePaths[0])
+        if (!activated.success) return activated
         console.log('[Main] Workspace opened:', result.filePaths[0])
         return { success: true, path: result.filePaths[0] }
     })
@@ -210,16 +238,14 @@ export function registerFileSystemHandlers(
     })
 
     // Write file contents
-    ipcMain.handle('fs:writeFile', async (_event, options: { path: string, content: string, encoding?: BufferEncoding }) => {
+    ipcMain.handle('fs:writeFile', async (_event, options: { path: string, content: string, encoding?: BufferEncoding, expectedContent?: string | null }) => {
         try {
             const currentWorkspacePath = getCurrentWorkspacePath()
             if (!currentWorkspacePath) {
                 return { success: false, error: 'No workspace open' }
             }
             const safePath = validatePath(currentWorkspacePath, options.path)
-            await fs.promises.mkdir(path.dirname(safePath), { recursive: true })
-            await fs.promises.writeFile(safePath, options.content, options.encoding || 'utf-8')
-            return { success: true }
+            return await writeTextFile(safePath, options.content, options.encoding || 'utf-8', options.expectedContent)
         } catch (error) {
             return { success: false, error: String(error) }
         }

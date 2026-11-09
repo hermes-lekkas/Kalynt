@@ -4,7 +4,7 @@
  * Open editor tabs: reading, editing, saving and closing files, plus the
  * window events other regions use to open files or propose edits.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type SetStateAction } from 'react'
 import type { OpenFile } from '../../../types/ide'
 import { validatePath } from '../../../utils/path-validator'
 import { logger } from '../../../utils/logger'
@@ -13,6 +13,7 @@ import { useWorkspaceFolderStore } from '../../../stores/workspaceFolderStore'
 import { chooseAction } from '../../ui'
 import { baseName, languageFromFileName, samePath } from '../languages'
 import { useFolderChanges } from './folderWatcher'
+import { captureEditorState, readEditorState, flushEditorStates, onRecoveryError } from '../../../services/editorRecovery'
 
 export interface RevealRequest {
     path: string
@@ -31,10 +32,12 @@ interface Options {
 }
 
 const api = () => window.electronAPI
+const editorText = (text: string) => text.replace(/^\uFEFF/, '')
 
 export function useOpenFiles({ spaceId, folder, onRevealDirectory, onDisposeModel }: Options) {
-    const [files, setFiles] = useState<OpenFile[]>([])
-    const [activePath, setActivePath] = useState<string | null>(null)
+    const [files, setFilesState] = useState<OpenFile[]>([])
+    const [activePath, setActiveState] = useState<string | null>(null)
+    const [restoring, setRestoring] = useState(true)
     const [reveal, setReveal] = useState<RevealRequest | null>(null)
     const addNotification = useNotificationStore(s => s.addNotification)
     const setOpenFilesRecord = useWorkspaceFolderStore(s => s.setOpenFiles)
@@ -44,6 +47,22 @@ export function useOpenFiles({ spaceId, folder, onRevealDirectory, onDisposeMode
     filesRef.current = files
     const activeRef = useRef(activePath)
     activeRef.current = activePath
+    const generation = useRef(0)
+    const scope = useRef({ spaceId, folder })
+    const ready = useRef(false)
+    const saveQueues = useRef(new Map<string, Promise<boolean>>())
+    // Async saves/opens and multiple closes in one tick must see the latest
+    // buffer state, even before React commits the next render.
+    const setFiles = useCallback((update: SetStateAction<OpenFile[]>) => {
+        const next = typeof update === 'function' ? update(filesRef.current) : update
+        filesRef.current = next
+        setFilesState(next)
+    }, [])
+    const setActivePath = useCallback((update: SetStateAction<string | null>) => {
+        const next = typeof update === 'function' ? update(activeRef.current) : update
+        activeRef.current = next
+        setActiveState(next)
+    }, [])
 
     const validate = useCallback((path: string): string | null => {
         const result = validatePath(path, folder)
@@ -56,6 +75,7 @@ export function useOpenFiles({ spaceId, folder, onRevealDirectory, onDisposeMode
     }, [folder, addNotification])
 
     const openFile = useCallback(async (path: string, line?: number) => {
+        const openedIn = generation.current
         const target = validate(path)
         if (!target) return
         if (line) setReveal({ path: target, line, nonce: Date.now() })
@@ -66,8 +86,10 @@ export function useOpenFiles({ spaceId, folder, onRevealDirectory, onDisposeMode
         }
 
         const result = await api()?.fs?.readFile(target)
+        if (openedIn !== generation.current) return
         if (!result?.success) {
             const dir = await api()?.fs?.readDir(target)
+            if (openedIn !== generation.current) return
             if (dir?.success) {
                 onRevealDirectory(target)
                 return
@@ -79,29 +101,60 @@ export function useOpenFiles({ spaceId, folder, onRevealDirectory, onDisposeMode
         const name = baseName(target)
         setFiles(prev => prev.some(f => samePath(f.path, target))
             ? prev
-            : [...prev, { path: target, name, content: result.content ?? '', language: languageFromFileName(name), isDirty: false }])
+            : [...prev, { path: target, name, content: editorText(result.content ?? ''), diskContent: result.content ?? '', language: languageFromFileName(name), isDirty: false }])
         setActivePath(target)
     }, [validate, onRevealDirectory, addNotification])
 
     const updateContent = useCallback((path: string, content: string) => {
-        setFiles(prev => prev.map(f => (f.path === path && f.content !== content ? { ...f, content, isDirty: true } : f)))
+        setFiles(prev => prev.map(f => (f.path === path && f.content !== content ? { ...f, content, isDirty: f.diskContent === undefined || content !== editorText(f.diskContent) } : f)))
     }, [])
 
-    const writeFile = useCallback(async (file: OpenFile): Promise<boolean> => {
-        const result = await api()?.fs?.writeFile({ path: file.path, content: file.content })
-        if (!result?.success) {
-            addNotification(`Couldn't save ${file.name}: ${result?.error || 'unknown error'}`, 'error')
+    const writeFile = useCallback((file: OpenFile): Promise<boolean> => {
+        const savedIn = generation.current
+        const queued = saveQueues.current.get(file.path) ?? Promise.resolve(true)
+        const operation = queued.catch(() => false).then(async () => {
+            if (savedIn !== generation.current) return false
+            const latest = filesRef.current.find(f => f.path === file.path)
+            let result = await api()?.fs?.writeFile({ path: file.path, content: file.content, expectedContent: latest?.diskContent })
+            if (savedIn !== generation.current) return false
+            if (result?.conflict) {
+                const choice = await chooseAction({
+                    title: `${file.name} changed on disk`,
+                    message: 'Another tool changed this file. Overwrite the disk version with your editor text, or reload the disk version and discard your editor changes.',
+                    choices: [{ id: 'cancel', label: 'Cancel' }, { id: 'reload', label: 'Reload from disk' }, { id: 'overwrite', label: 'Overwrite', variant: 'primary' }]
+                })
+                if (savedIn !== generation.current) return false
+                if (choice === 'reload') {
+                    const disk = await api()?.fs?.readFile(file.path)
+                    if (disk?.success && savedIn === generation.current) setFiles(prev => prev.map(f => f.path === file.path ? { ...f, content: editorText(disk.content), diskContent: disk.content, isDirty: false } : f))
+                    return false
+                }
+                if (choice !== 'overwrite') return false
+                result = await api()?.fs?.writeFile({ path: file.path, content: file.content })
+            }
+            if (savedIn !== generation.current) return false
+            if (!result?.success) {
+                addNotification(`Couldn't save ${file.name}: ${result?.error || 'unknown error'}`, 'error')
+                return false
+            }
+            if (savedIn === generation.current) setFiles(prev => prev.map(f => f.path === file.path ? {
+                ...f, diskContent: (result.bom ? '\uFEFF' : '') + editorText(file.content), isDirty: f.content !== file.content
+            } : f))
+            return true
+        }).catch(error => {
+            addNotification(`Couldn't save ${file.name}: ${error instanceof Error ? error.message : String(error)}`, 'error')
             return false
-        }
-        setFiles(prev => prev.map(f => (f.path === file.path ? { ...f, isDirty: false } : f)))
-        return true
+        })
+        saveQueues.current.set(file.path, operation)
+        void operation.finally(() => { if (saveQueues.current.get(file.path) === operation) saveQueues.current.delete(file.path) })
+        return operation
     }, [addNotification])
 
     const forceClose = useCallback((path: string) => {
+        const index = filesRef.current.findIndex(f => f.path === path)
         const remaining = filesRef.current.filter(f => f.path !== path)
         setFiles(remaining)
         if (activeRef.current === path) {
-            const index = filesRef.current.findIndex(f => f.path === path)
             const next = remaining[Math.min(index, remaining.length - 1)]
             setActivePath(next?.path ?? null)
         }
@@ -109,12 +162,14 @@ export function useOpenFiles({ spaceId, folder, onRevealDirectory, onDisposeMode
     }, [onDisposeModel])
 
     const saveFile = useCallback(async (path?: string | null): Promise<boolean> => {
+        const savedIn = generation.current
         const target = path ?? activeRef.current
         const file = filesRef.current.find(f => f.path === target)
         if (!file) return false
         if (!validate(file.path)) return false
 
         const exists = await api()?.fileExists?.(file.path)
+        if (savedIn !== generation.current) return false
         if (exists === false && api()?.platform !== 'browser') {
             const choice = await chooseAction({
                 title: `${file.name} was deleted`,
@@ -124,6 +179,7 @@ export function useOpenFiles({ spaceId, folder, onRevealDirectory, onDisposeMode
                     { id: 'save', label: 'Save again', variant: 'primary' }
                 ]
             })
+            if (savedIn !== generation.current) return false
             if (choice === 'close') forceClose(file.path)
             if (choice !== 'save') return false
         }
@@ -131,10 +187,15 @@ export function useOpenFiles({ spaceId, folder, onRevealDirectory, onDisposeMode
     }, [validate, writeFile, forceClose])
 
     const saveAll = useCallback(async () => {
-        for (const file of filesRef.current.filter(f => f.isDirty)) await writeFile(file)
-    }, [writeFile])
+        const savedIn = generation.current
+        for (const file of filesRef.current.filter(f => f.isDirty)) {
+            if (savedIn !== generation.current) return
+            await saveFile(file.path)
+        }
+    }, [saveFile])
 
     const closeFile = useCallback(async (path: string) => {
+        const closedIn = generation.current
         const file = filesRef.current.find(f => f.path === path)
         if (!file) return
         if (file.isDirty) {
@@ -147,8 +208,11 @@ export function useOpenFiles({ spaceId, folder, onRevealDirectory, onDisposeMode
                     { id: 'save', label: 'Save', variant: 'primary' }
                 ]
             })
+            if (closedIn !== generation.current) return
             if (choice === 'save') {
                 if (!(await writeFile(file))) return
+                if (closedIn !== generation.current) return
+                if (filesRef.current.find(f => f.path === path)?.isDirty) return
             } else if (choice !== 'discard') {
                 return
             }
@@ -158,6 +222,7 @@ export function useOpenFiles({ spaceId, folder, onRevealDirectory, onDisposeMode
 
     /** Closes every tab except `keep`; asks once when any of them has unsaved changes. */
     const closeMany = useCallback(async (keep?: string): Promise<boolean> => {
+        const closedIn = generation.current
         const closing = filesRef.current.filter(f => f.path !== keep)
         const dirty = closing.filter(f => f.isDirty)
         if (dirty.length > 0) {
@@ -170,8 +235,13 @@ export function useOpenFiles({ spaceId, folder, onRevealDirectory, onDisposeMode
                     { id: 'save', label: dirty.length === 1 ? 'Save' : 'Save all', variant: 'primary' }
                 ]
             })
+            if (closedIn !== generation.current) return false
             if (choice === 'save') {
-                for (const file of dirty) if (!(await writeFile(file))) return false
+                for (const file of dirty) {
+                    if (closedIn !== generation.current || !(await writeFile(file))) return false
+                }
+                if (closedIn !== generation.current) return false
+                if (filesRef.current.some(f => f.path !== keep && f.isDirty)) return false
             } else if (choice !== 'discard') {
                 return false
             }
@@ -214,9 +284,10 @@ export function useOpenFiles({ spaceId, folder, onRevealDirectory, onDisposeMode
         if (change.event !== 'change') return
         const file = filesRef.current.find(f => samePath(f.path, change.path))
         if (!file || file.isDirty) return
+        const changedIn = generation.current
         const result = await api()?.fs?.readFile(file.path)
-        if (!result?.success || result.content == null) return
-        setFiles(prev => prev.map(f => (f.path === file.path && !f.isDirty && f.content !== result.content ? { ...f, content: result.content } : f)))
+        if (!result?.success || result.content == null || changedIn !== generation.current) return
+        setFiles(prev => prev.map(f => (f.path === file.path && !f.isDirty && f.content === file.content ? { ...f, content: editorText(result.content), diskContent: result.content } : f)))
     })
 
     const cycle = useCallback((delta: 1 | -1) => {
@@ -227,29 +298,71 @@ export function useOpenFiles({ spaceId, folder, onRevealDirectory, onDisposeMode
     }, [])
 
     // A new folder starts with no tabs; tabs from a previous session are restored.
-    const restoredFor = useRef<string | null>(null)
     useEffect(() => {
+        if (ready.current && scope.current.folder) captureEditorState(scope.current.spaceId, scope.current.folder, filesRef.current, activeRef.current)
+        const currentGeneration = ++generation.current
+        scope.current = { spaceId, folder }
+        ready.current = false
+        setRestoring(true)
         setFiles([])
         setActivePath(null)
-        if (!folder) return
-        const key = `${spaceId}:${folder}`
-        if (restoredFor.current === key) return
-        restoredFor.current = key
+        if (!folder) { setRestoring(false); return }
         const record = useWorkspaceFolderStore.getState().records[spaceId]
-        if (!record || record.folder !== folder) return
-        const toRestore = record.openFiles.slice(0, 20)
-        ;(async () => {
-            for (const path of toRestore) await openFile(path)
-            if (record.activeFile) setActivePath(prev => (filesRef.current.some(f => f.path === record.activeFile) ? record.activeFile : prev))
-        })()
+        void (async () => {
+            const recovered = await readEditorState(spaceId, folder)
+            if (generation.current !== currentGeneration) return
+            const paths = recovered?.paths ?? (record?.folder === folder ? record.openFiles : [])
+            const drafts = new Map(recovered?.files.map(file => [file.path, file]) ?? [])
+            for (const path of [...new Set([...paths, ...drafts.keys()])]) {
+                if (generation.current !== currentGeneration) return
+                const draft = drafts.get(path)
+                if (draft && validate(path)) {
+                    const disk = await api()?.fs?.readFile(path)
+                    if (generation.current !== currentGeneration) return
+                    const alreadySaved = disk?.success && editorText(disk.content) === draft.content
+                    setFiles(prev => [...prev, { ...draft, isDirty: !alreadySaved, ...(alreadySaved ? { diskContent: disk.content } : {}) }])
+                    setActivePath(path)
+                } else await openFile(path)
+            }
+            if (generation.current !== currentGeneration) return
+            const active = recovered?.activePath ?? record?.activeFile
+            if (active && filesRef.current.some(f => f.path === active)) setActivePath(active)
+            ready.current = true
+            setRestoring(false)
+        })().catch(error => {
+            if (generation.current !== currentGeneration) return
+            addNotification(`Couldn't restore editor tabs: ${error instanceof Error ? error.message : String(error)}`, 'error')
+            ready.current = true
+            setRestoring(false)
+        })
+        return () => {
+            if (ready.current) captureEditorState(spaceId, folder, filesRef.current, activeRef.current)
+            generation.current++
+        }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [spaceId, folder])
 
     // Remember which tabs were open for next time.
     useEffect(() => {
-        if (!folder || restoredFor.current !== `${spaceId}:${folder}`) return
+        if (!folder || restoring || !ready.current || scope.current.spaceId !== spaceId || scope.current.folder !== folder) return
+        captureEditorState(spaceId, folder, files, activePath)
         setOpenFilesRecord(spaceId, files.map(f => f.path), activePath)
-    }, [spaceId, folder, files, activePath, setOpenFilesRecord])
+    }, [spaceId, folder, files, activePath, restoring, setOpenFilesRecord])
+
+    useEffect(() => {
+        const off = onRecoveryError(message => addNotification(`Unsaved editor recovery failed: ${message}`, 'error'))
+        const flush = (event: BeforeUnloadEvent) => {
+            if (ready.current && scope.current.folder) captureEditorState(scope.current.spaceId, scope.current.folder, filesRef.current, activeRef.current)
+            const result = flushEditorStates()
+            if (!result.success) {
+                event.preventDefault()
+                event.returnValue = ''
+                addNotification(result.error ?? 'Save your files before closing.', 'error')
+            }
+        }
+        window.addEventListener('beforeunload', flush)
+        return () => { off(); window.removeEventListener('beforeunload', flush) }
+    }, [addNotification])
 
     // Other regions (agent tools, scan results, mentions) open files and propose fixes through window events.
     useEffect(() => {
