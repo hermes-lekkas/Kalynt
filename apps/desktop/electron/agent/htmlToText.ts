@@ -21,6 +21,27 @@ export function decodeEntities(text: string): string {
     })
 }
 
+/**
+ * Applies a removal until the text stops changing, so removed pieces can't
+ * join into a new match (as in `<scr<script></script>ipt>`).
+ */
+function removeAll(text: string, pattern: RegExp): string {
+    let previous: string
+    do {
+        previous = text
+        text = text.replace(pattern, '')
+    } while (text !== previous)
+    return text
+}
+
+/** Removes every tag, including one left unclosed at the end. */
+export function stripTags(html: string): string {
+    return removeAll(html, /<[^>]*>/g).replace(/<[^>]*$/, '')
+}
+
+/** Links to these schemes are kept as plain text. */
+const UNSAFE_SCHEME = /^\s*(javascript|data|vbscript):/i
+
 /** Elements whose content is never useful to read. */
 const DROP = /<(script|style|noscript|svg|template|iframe|canvas|form|select|button)\b[\s\S]*?<\/\1>/gi
 /** Page chrome, removed only when there is a <main> or <article> to fall back on. */
@@ -32,32 +53,32 @@ function absolutize(href: string, base: string): string {
 
 export function htmlToText(html: string, baseUrl: string): { title: string; text: string } {
     const title = decodeEntities((/<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1] ?? '').replace(/\s+/g, ' ').trim())
-    let body = html.replace(/<!--[\s\S]*?-->/g, '').replace(DROP, '')
+    let body = removeAll(removeAll(html, /<!--[\s\S]*?-->/g), DROP)
     const main = /<(main|article)\b[^>]*>([\s\S]*?)<\/\1>/i.exec(body)
-    body = main ? main[2] : (/<body[^>]*>([\s\S]*)<\/body>/i.exec(body)?.[1] ?? body).replace(CHROME, '')
+    body = main ? main[2] : removeAll(/<body[^>]*>([\s\S]*)<\/body>/i.exec(body)?.[1] ?? body, CHROME)
 
     // Code blocks first, so their whitespace survives.
     const codeBlocks: string[] = []
     body = body.replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (_m, inner: string) => {
-        codeBlocks.push(decodeEntities(inner.replace(/<[^>]+>/g, '')).replace(/\n+$/, ''))
+        codeBlocks.push(decodeEntities(stripTags(inner)).replace(/\n+$/, ''))
         return `\n\u0000CODE${codeBlocks.length - 1}\u0000\n`
     })
 
     body = body
-        .replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_m, level: string, inner: string) => `\n\n${'#'.repeat(Number(level))} ${inner.replace(/<[^>]+>/g, '').trim()}\n\n`)
+        .replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_m, level: string, inner: string) => `\n\n${'#'.repeat(Number(level))} ${stripTags(inner).trim()}\n\n`)
         .replace(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (_m, href: string, inner: string) => {
-            const text = inner.replace(/<[^>]+>/g, '').trim()
-            if (!text || href.startsWith('#') || href.startsWith('javascript:')) return text
-            return `[${text}](${absolutize(decodeEntities(href), baseUrl)})`
+            const text = stripTags(inner).trim()
+            const target = decodeEntities(href)
+            if (!text || target.startsWith('#') || UNSAFE_SCHEME.test(target)) return text
+            return `[${text}](${absolutize(target, baseUrl)})`
         })
-        .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, (_m, inner: string) => '`' + inner.replace(/<[^>]+>/g, '') + '`')
+        .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, (_m, inner: string) => '`' + stripTags(inner) + '`')
         .replace(/<li[^>]*>/gi, '\n- ')
         .replace(/<\/(p|div|section|ul|ol|table|tr|blockquote|li|dd|dt)>/gi, '\n')
         .replace(/<(br|hr)\s*\/?>/gi, '\n')
         .replace(/<t[dh][^>]*>/gi, ' | ')
-        .replace(/<[^>]+>/g, '')
 
-    let text = decodeEntities(body)
+    let text = decodeEntities(stripTags(body))
         .replace(/[ \t\f\v ]+/g, ' ')
         .replace(/ *\n */g, '\n')
         .replace(/\n{3,}/g, '\n\n')
