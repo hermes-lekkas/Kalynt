@@ -55,7 +55,6 @@ Kalynt is built on a "Trust No One" (Zero Trust) architecture. We assume that ne
 *   **"Stop all processes"** stops only processes Kalynt started.
 *   **Extensions** run in a separate process with a restricted environment, are downloaded only from Open VSX, and their archives can't write outside their folder.
 *   **Native helper (macOS)** runs as a child process and communicates only through JSON-RPC over stdin/stdout.
-*   **Mobile bridge** listens on the network only after you start pairing a phone, and each pairing must be approved on the desktop.
 
 ### 6. Updates
 *   Updates come from this repository's GitHub releases and download only after you agree. The updater never offers an older version.
@@ -86,7 +85,7 @@ We will acknowledge receipt within 48 hours and strive to provide a patch within
 *   **Git token handling:** tokens are no longer stored in `.git/config`, and existing ones are removed; clone rejects option-like and `file://` URLs.
 *   **Single path validator:** four diverging copies of `validatePath` were merged into one with symlink resolution.
 *   **Extension hardening:** Open VSX-only downloads, VSIX path-traversal guard, restricted extension-host environment.
-*   **Network exposure reduced:** the mobile bridge starts only when pairing; the signaling server binds to `127.0.0.1`.
+*   **Network exposure reduced:** the signaling server binds to `127.0.0.1`.
 *   **Secure storage:** atomic, owner-only writes with real error reporting.
 *   **No downgrade updates:** the updater could offer an older release as an update; downgrades are now disallowed.
 

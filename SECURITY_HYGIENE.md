@@ -135,11 +135,7 @@ GITHUB_TOKEN=your_token_here
 - Windows: Credential Manager
 - Linux: Secret Service API / kwallet
 
-### 3. Secure Storage (Mobile)
-- Android: EncryptedSharedPreferences + Keystore
-- iOS: Keychain
-
-### 4. GitHub Secrets (CI/CD)
+### 3. GitHub Secrets (CI/CD)
 Store in repository Settings → Secrets and variables → Actions
 
 ---

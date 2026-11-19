@@ -32,9 +32,6 @@ import { registerUpdateHandlers, initializeAutoUpdater, isInstallingUpdate } fro
 import { extensionHostManager } from './extensions/extensionHostManager'
 import { startSignalingServer } from './signalingServer'
 import type { SignalingServerHandle } from './signalingServer'
-import { startMobileBridge, generatePairingQR, getLocalIp } from './mobileBridge'
-import type { MobileBridgeHandle } from './mobileBridge'
-import { initializeAgentBridge, cleanupAgentBridge } from './mobileAgentBridge'
 import { stopEverything } from './services/shutdown'
 import { createAppWindow } from './appWindow'
 import { registerAiHandlers } from './ai'
@@ -47,9 +44,6 @@ let currentWorkspacePath: string | null = null
 
 // Built-in P2P signaling server handle
 let signalingServer: SignalingServerHandle | null = null
-
-// Mobile bridge server handle
-let mobileBridge: MobileBridgeHandle | null = null
 
 // SECURITY: Deep link validation to prevent URL-based attacks
 // Only allow safe paths that match expected patterns
@@ -229,9 +223,6 @@ function registerAllHandlers() {
     // Extension system
     registerExtensionHandlers()
 
-    // Mobile bridge handlers
-    registerMobileBridgeHandlers()
-
     // Window controls
     ipcMain.handle('minimize-window', () => {
         if (mainWindow && !mainWindow.isDestroyed()) {
@@ -263,34 +254,6 @@ function registerExtensionHandlers() {
     ipcMain.handle('dialog:showOpenDialog', async (_, options) => {
         if (!mainWindow) return { canceled: true }
         return dialog.showOpenDialog(mainWindow, options)
-    })
-}
-
-// Mobile bridge handlers
-function registerMobileBridgeHandlers() {
-    // Generate QR code for mobile pairing
-    ipcMain.handle('mobile:generate-qr', async () => {
-        if (!mobileBridge) {
-            mobileBridge = await startMobileBridge(8443)
-            initializeAgentBridge()
-            console.log(`[Main] Mobile bridge started for pairing at ${mobileBridge.url}`)
-        }
-        // Get local IP for the QR code
-        const localIp = getLocalIp()
-        const { qrData } = generatePairingQR(localIp)
-        return { qrData, localIp, port: mobileBridge.port }
-    })
-
-    // Get connected mobile devices
-    ipcMain.handle('mobile:get-connected-devices', async () => {
-        if (!mobileBridge) return []
-        return mobileBridge.getConnectedDevices()
-    })
-
-    // Set GitHub token for mobile proxy
-    ipcMain.handle('mobile:set-github-token', async (_, token: string) => {
-        if (!mobileBridge) throw new Error('Mobile bridge not started')
-        mobileBridge.setGitHubToken(token)
     })
 }
 
@@ -358,9 +321,6 @@ if (!gotTheLock) {
                 console.error('[Main] Failed to start signaling server:', err)
             })
 
-        // The mobile bridge listens on the network, so it starts only when
-        // someone pairs a phone (mobile:generate-qr), not on every launch.
-
         console.log('[Main] Creating window...');
         mainWindow = createAppWindow()
         mainWindow.on('closed', () => {
@@ -403,11 +363,6 @@ app.on('before-quit', event => {
     if (signalingServer) {
         signalingServer.close()
         signalingServer = null
-    }
-    if (mobileBridge) {
-        cleanupAgentBridge()
-        mobileBridge.close()
-        mobileBridge = null
     }
     if (cleanedUp) return
     cleanedUp = true

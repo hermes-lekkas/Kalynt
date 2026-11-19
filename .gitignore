@@ -87,7 +87,6 @@ SKILL.md
 *.md
 !/docs/adoption/*.md
 !README.MD
-!README_KALYNT_MOBILE.md
 !SECURITY.md
 !SECURITY_HYGIENE.md
 !CONTRIBUTING.md

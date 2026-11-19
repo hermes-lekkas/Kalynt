@@ -9,7 +9,6 @@ Kalynt is a local-first desktop IDE with an AI agent and peer-to-peer collaborat
 | Package | Purpose |
 |---|---|
 | `apps/desktop` | The Electron app: main process (`electron/`) and React renderer (`src/`) |
-| `apps/mobile` | Android companion app, built and shipped separately (see [README_KALYNT_MOBILE.md](./README_KALYNT_MOBILE.md)) |
 | `packages/crdt` | Shared Yjs CRDT helpers |
 | `packages/networking` | WebRTC connection helpers |
 | `packages/shared` | Common types and utilities |
@@ -72,7 +71,7 @@ Guards applied in the main process:
 | Git credentials | `handlers/git.ts` | Tokens are passed per command and never written to `.git/config`; clone rejects option-like and `file://` URLs |
 | Extensions | `extensions/` | Downloads only from Open VSX; VSIX entries can't write outside their folder; the host runs as a separate process with a restricted environment |
 | Deep links | `main.ts` | `kalynt://` links are validated before reaching the renderer |
-| Network listeners | `signalingServer.ts`, `mobileBridge.ts` | The signaling server binds to `127.0.0.1`; the mobile bridge starts only when a phone is paired |
+| Network listeners | `signalingServer.ts` | The signaling server binds to `127.0.0.1` |
 
 ## 3. Main process (`apps/desktop/electron`)
 
@@ -127,10 +126,9 @@ Every cloud model request goes through the main process, so keys are used only t
 
 `extensionHostManager.ts` forks `extensionHostProcess.ts`, which runs VS Code extensions against `vscodeApiShim.ts` (a subset of the VS Code API). `extensionInstaller.ts` downloads and unpacks VSIX files and `extensionRegistry.ts` tracks what is installed.
 
-### 3.6 Collaboration and mobile
+### 3.6 Collaboration
 
 - **`signalingServer.ts`**: a y-webrtc-compatible signaling server on `127.0.0.1:4444`. Peers on other machines meet through the public y-webrtc signaling fallback, which only relays connection offers; document data flows directly between peers.
-- **`mobileBridge.ts`**, **`mobilePairing.ts`**, **`mobileGithubProxy.ts`**, **`mobileAgentBridge.ts`**: the WebSocket bridge for the Android companion. It starts only when you pair a phone, and every pairing must be approved on the desktop.
 
 ## 4. Renderer (`apps/desktop/src`)
 

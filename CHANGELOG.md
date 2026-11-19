@@ -75,7 +75,7 @@ The whole renderer was rebuilt from scratch on a small design system, replacing 
 - Git: tokens are passed per command and old tokens stored in `.git/config` by earlier versions are removed; clone rejects option-like and `file://` URLs.
 - Secure storage writes are atomic and owner-only.
 - Extensions download only from Open VSX, VSIX archives cannot write outside their folder, and the extension host runs with a restricted environment.
-- The mobile companion bridge starts only when you pair a phone instead of listening on the network at every launch; the signaling server binds to `127.0.0.1`.
+- The signaling server binds to `127.0.0.1`.
 - Terminal: killing a terminal now reports its exit, and terminals kill their whole process tree.
 - Production builds keep `console.error` and `console.warn`, so failures on users' machines can be diagnosed.
 - Agent web requests stay on the public internet: hosts are resolved and every redirect is checked, and reading a local or private address needs your approval.
@@ -98,7 +98,6 @@ The whole renderer was rebuilt from scratch on a small design system, replacing 
 
 - Seven renderer files (for example `aimeService.ts` and `p2pService.ts`) are still over 500 lines.
 - The local-model tool protocol was verified with parser tests, not with a real model run.
-- The Android companion can't be paired yet: the desktop bridge exists, but the desktop app has no pairing screen (this was also true in 1.0.5).
 - There is no unit-test suite in the repository yet; 2.0.0 was verified with end-to-end checks against the built app, and the provider adapters against a mock server that speaks each provider's protocol.
 
 ## [v1.0.5-beta] - 2026-02-27

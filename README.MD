@@ -153,18 +153,13 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for how the pieces fit together.
 
 ### Monorepo structure
 
-> This repository contains **two separate projects** that are built and distributed separately:
-> - **Kalynt Desktop**, the Electron IDE (this README)
-> - **Kalynt Mobile Companion**, an Android app for remote management ([README_KALYNT_MOBILE.md](./README_KALYNT_MOBILE.md))
-
 ```text
 kalynt/
 ├── apps/
-│   ├── desktop/                 # Kalynt Desktop (Electron)
-│   │   ├── electron/            # Main process: IPC handlers, services, terminal, extensions
-│   │   ├── src/                 # Renderer: React UI, stores, services
-│   │   └── scripts/             # Build hooks (after-pack.cjs)
-│   └── mobile/                  # Android companion app (separate project)
+│   └── desktop/                 # Kalynt Desktop (Electron)
+│       ├── electron/            # Main process: IPC handlers, services, terminal, extensions
+│       ├── src/                 # Renderer: React UI, stores, services
+│       └── scripts/             # Build hooks (after-pack.cjs)
 │
 ├── packages/
 │   ├── crdt/                    # Shared Yjs CRDT logic
@@ -173,8 +168,6 @@ kalynt/
 │   └── native-macos/            # Swift native helper (FSEvents, CoreML, memory)
 └── ...
 ```
-
-The desktop and mobile apps don't include each other's code. They talk over a local WebSocket bridge when you pair a phone.
 
 ---
 

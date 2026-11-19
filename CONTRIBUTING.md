@@ -9,11 +9,10 @@ Kalynt is a monorepo managed by npm workspaces.
 ```text
 kalynt/
 ├── apps/
-│   ├── desktop/              # The Electron application
-│   │   ├── electron/         # Main process: IPC handlers, services, terminal, extensions, preload
-│   │   ├── src/              # Renderer: React components, stores, services, styles
-│   │   └── scripts/          # Build hooks (electron-builder afterPack)
-│   └── mobile/               # Android companion app (built separately)
+│   └── desktop/              # The Electron application
+│       ├── electron/         # Main process: IPC handlers, services, terminal, extensions, preload
+│       ├── src/              # Renderer: React components, stores, services, styles
+│       └── scripts/          # Build hooks (electron-builder afterPack)
 ├── packages/
 │   ├── crdt/                 # Shared CRDT logic (Yjs wrappers)
 │   ├── networking/           # P2P networking layer

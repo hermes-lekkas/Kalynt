@@ -5,7 +5,7 @@ module.exports = {
     parserOptions: { ecmaVersion: 'latest', sourceType: 'module', ecmaFeatures: { jsx: true } },
     plugins: ['react-hooks', '@typescript-eslint', 'security'],
     extends: ['eslint:recommended'],
-    ignorePatterns: ['**/node_modules/**', '**/dist/**', '**/dist-electron/**', '**/release/**', '**/build/**', '**/bin/**', 'apps/mobile/**', '.claude/**'],
+    ignorePatterns: ['**/node_modules/**', '**/dist/**', '**/dist-electron/**', '**/release/**', '**/build/**', '**/bin/**', '.claude/**'],
     rules: {
         // TypeScript checks declarations and unused symbols in these sources.
         'no-undef': 'off',
