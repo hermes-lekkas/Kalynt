@@ -135,22 +135,25 @@ export async function pauseDownload(modelId: string): Promise<void> {
 /**
  * Resume a paused download
  */
-export async function resumeDownload(modelId: string): Promise<void> {
+export async function resumeDownload(modelId: string): Promise<boolean> {
+    const store = useModelStore.getState()
+    if (store.activeDownloads[modelId]?.status === 'downloading') {
+        console.warn('[ModelDownload] Already downloading:', modelId)
+        return false
+    }
+
     console.log('[ModelDownload] Resuming:', modelId)
 
-    // Update UI state to show resuming
-    useModelStore.getState().resumeDownload(modelId)
-
-    // Trigger actual download (main process will use Range header for partial download)
+    // Do not pre-set status to 'downloading' before downloadModel(), which guards
+    // against duplicate active downloads and transitions paused -> downloading itself.
     const success = await downloadModel(modelId)
 
-    if (!success) {
-        // If resume failed, revert to paused status
-        useModelStore.getState().pauseDownload(modelId)
-        console.error('[ModelDownload] Resume failed for:', modelId)
-    } else {
+    if (success) {
         console.log('[ModelDownload] Successfully resumed:', modelId)
+    } else {
+        console.warn('[ModelDownload] Resume did not complete for:', modelId)
     }
+    return success
 }
 
 /**

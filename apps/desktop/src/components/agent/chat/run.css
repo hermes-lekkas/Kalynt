@@ -44,7 +44,7 @@
 }
 
 .agent-reasoning__peek {
-    color: var(--text-4);
+    color: var(--text-3);
     font-style: italic;
 }
 
@@ -144,7 +144,7 @@
 
 .tool-card__chevron {
     flex: none;
-    color: var(--text-4);
+    color: var(--text-3);
     transition: transform var(--dur-1) var(--ease);
 }
 
@@ -173,7 +173,7 @@
 }
 
 .tool-command span {
-    color: var(--text-4);
+    color: var(--text-3);
 }
 
 .tool-output {
@@ -258,8 +258,8 @@
     color: var(--text-3);
 }
 
-/* Diffs */
-.diff-view {
+/* Diffs (scoped to agent cards so Git DiffDialog .diff-view is unaffected) */
+.agent-diff {
     max-height: 340px;
     overflow: auto;
     border-radius: var(--r-1);
@@ -269,39 +269,40 @@
     line-height: 1.55;
 }
 
-.diff-view__line {
+.agent-diff__line {
     display: grid;
     grid-template-columns: 34px 34px 14px max-content;
     min-width: 100%;
     white-space: pre;
 }
 
-.diff-view__line.is-add { background: var(--diff-add); }
-.diff-view__line.is-remove { background: var(--diff-remove); }
+.agent-diff__line.is-add { background: var(--diff-add); }
+.agent-diff__line.is-remove { background: var(--diff-remove); }
 
-.diff-view__num {
+.agent-diff__num {
     padding-right: var(--sp-3);
     text-align: right;
-    color: var(--text-4);
+    color: var(--text-3);
+    font-variant-numeric: tabular-nums;
     user-select: none;
 }
 
-.diff-view__sign {
+.agent-diff__sign {
     color: var(--text-3);
     user-select: none;
 }
 
-.diff-view__line.is-add .diff-view__sign { color: var(--success); }
-.diff-view__line.is-remove .diff-view__sign { color: var(--danger); }
+.agent-diff__line.is-add .agent-diff__sign { color: var(--success); }
+.agent-diff__line.is-remove .agent-diff__sign { color: var(--danger); }
 
-.diff-view__text {
+.agent-diff__text {
     padding-right: var(--sp-5);
     color: var(--text);
 }
 
-.diff-view__gap {
+.agent-diff__gap {
     padding: var(--sp-1) var(--sp-5);
-    color: var(--text-4);
+    color: var(--text-3);
     background: var(--surface);
     font-family: var(--font-ui);
 }
@@ -380,7 +381,7 @@
 }
 
 .agent-divider {
-    color: var(--text-4);
+    color: var(--text-3);
     font-size: var(--fs-xs);
     text-align: center;
     border-top: 1px dashed var(--line-strong);

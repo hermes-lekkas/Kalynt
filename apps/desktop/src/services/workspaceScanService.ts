@@ -44,6 +44,8 @@ export class WorkspaceScanService {
     private static instance: WorkspaceScanService
     private isScanning = false
     private shouldStop = false
+    private abortController: AbortController | null = null
+    private activeScan: Promise<ScanResult> | null = null
 
     private constructor() {}
 
@@ -56,10 +58,13 @@ export class WorkspaceScanService {
 
     async stopScan() {
         this.shouldStop = true
-        if (offlineLLMService) {
+        this.abortController?.abort()
+        if (offlineLLMService?.isGenerating()) {
             await offlineLLMService.cancelGeneration()
         }
-        aiService.cancelStream()
+        if (this.activeScan) {
+            await this.activeScan.catch(() => undefined)
+        }
     }
 
     async scanWorkspace(
@@ -75,7 +80,31 @@ export class WorkspaceScanService {
         if (this.isScanning) return { issues: [], errors: [], stats: { totalFiles: 0, analyzedFiles: 0, duration: 0 } }
         this.isScanning = true
         this.shouldStop = false
+        const controller = new AbortController()
+        this.abortController = controller
 
+        const run = this.executeScan(workspacePath, options, controller.signal)
+        this.activeScan = run
+        try {
+            return await run
+        } finally {
+            if (this.abortController === controller) this.abortController = null
+            if (this.activeScan === run) this.activeScan = null
+            this.isScanning = false
+        }
+    }
+
+    private async executeScan(
+        workspacePath: string,
+        options: {
+            aiMode: 'cloud' | 'offline',
+            provider: AIProvider,
+            cloudModel?: string,
+            loadedModelId?: string | null,
+            onProgress: (progress: ScanProgress) => void
+        },
+        signal: AbortSignal
+    ): Promise<ScanResult> {
         const startTime = Date.now()
         const errors: ScanError[] = []
 
@@ -84,7 +113,7 @@ export class WorkspaceScanService {
 
             const allCodeFiles = await this.collectFiles(workspacePath)
 
-            if (this.shouldStop) return { issues: [], errors: [], stats: { totalFiles: allCodeFiles.length, analyzedFiles: 0, duration: Date.now() - startTime } }
+            if (this.shouldStop || signal.aborted) return { issues: [], errors: [], stats: { totalFiles: allCodeFiles.length, analyzedFiles: 0, duration: Date.now() - startTime } }
 
             const filesToAnalyze = this.prioritizeFiles(allCodeFiles).slice(0, 25)
 
@@ -99,16 +128,18 @@ export class WorkspaceScanService {
             let analyzedFiles = 0
 
             for (let i = 0; i < filesToAnalyze.length; i++) {
-                if (this.shouldStop) break
+                if (this.shouldStop || signal.aborted) break
 
                 const file = filesToAnalyze[i]
                 options.onProgress({ current: i + 1, total: filesToAnalyze.length, currentFile: file.name, status: 'analyzing' })
 
                 try {
-                    const issues = await this.analyzeFile(file, options)
+                    const issues = await this.analyzeFile(file, options, signal)
+                    if (this.shouldStop || signal.aborted) break
                     allIssues.push(...issues)
                     analyzedFiles++
                 } catch (e) {
+                    if (this.shouldStop || signal.aborted) break
                     const reason = e instanceof Error ? e.message : 'Unknown error'
                     errors.push({ file: file.name, path: file.path, reason })
                     console.error(`Failed to analyze ${file.name}:`, reason)
@@ -139,14 +170,12 @@ export class WorkspaceScanService {
             console.error('Scan error:', error)
             options.onProgress({ current: 0, total: 0, currentFile: 'Error occurred', status: 'error' })
             throw error
-        } finally {
-            this.isScanning = false
         }
     }
 
     private async collectFiles(dirPath: string): Promise<{ name: string; path: string; size?: number }[]> {
         const codeExtensions = /\.(ts|tsx|js|jsx|json|md|css|scss|html|py|rs|go|java|c|cpp|h|hpp|yaml|yml|xml|sql|sh|bash|ps1|rb|php|swift|kt|scala|vue|svelte|lua|r|m|mm|zig|nim|ex|exs|clj|hs|fs|dart|toml|ini|cfg|conf)$/i
-        const ignoreDirs = ['node_modules', '.git', 'dist', 'build', '.next', '__pycache__', 'venv', '.venv', 'target', 'coverage', '.cache', '.turbo', '.vercel', 'vendor', 'packages', '.idea', '.vscode']
+        const ignoreDirs = ['node_modules', '.git', 'dist', 'build', '.next', '__pycache__', 'venv', '.venv', 'target', 'coverage', '.cache', '.turbo', '.vercel', 'vendor', '.idea', '.vscode']
         const allCodeFiles: { name: string; path: string; size?: number }[] = []
 
         const collect = async (path: string, depth = 0) => {
@@ -184,7 +213,8 @@ export class WorkspaceScanService {
 
     private async analyzeFile(
         file: { name: string; path: string },
-        options: { aiMode: 'cloud' | 'offline', provider: AIProvider, cloudModel?: string, loadedModelId?: string | null }
+        options: { aiMode: 'cloud' | 'offline', provider: AIProvider, cloudModel?: string, loadedModelId?: string | null },
+        signal: AbortSignal
     ): Promise<ScanIssue[]> {
         const content = await globalThis.window.electronAPI?.fs.readFile(file.path)
         if (!content?.success || !content.content) return []
@@ -209,6 +239,7 @@ export class WorkspaceScanService {
             await offlineLLMService.cancelGeneration().catch((error) => {
                 console.warn('[WorkspaceScan] Failed to cancel previous generation:', error)
             })
+            if (signal.aborted) return []
 
             const timeoutMs = 60000 // 60s per file for offline - small models should be fast
             let timeoutId: ReturnType<typeof setTimeout> | undefined
@@ -236,26 +267,33 @@ export class WorkspaceScanService {
             }
         } else {
             const timeoutMs = 120000 // 120s for cloud APIs
-            let timeoutId: ReturnType<typeof setTimeout> | undefined
+            const fileController = new AbortController()
+            let timedOut = false
+            const onScanAbort = () => fileController.abort()
+            if (signal.aborted) return []
+            signal.addEventListener('abort', onScanAbort, { once: true })
+            const timeoutId = setTimeout(() => {
+                timedOut = true
+                fileController.abort()
+            }, timeoutMs)
 
             try {
-                const chatPromise = aiService.chat([
+                const cloudResponse = await aiService.chat([
                     { role: 'system', content: `You are a senior ${language} code reviewer. Find bugs, security issues, and improvements. Output valid JSON only.` },
                     { role: 'user', content: prompt }
-                ], options.provider, { temperature: 0.1, maxTokens: 1200, model: options.cloudModel })
-
-                const timeoutPromise = new Promise<any>((_, reject) => {
-                    timeoutId = setTimeout(() => {
-                        reject(new Error('Analysis timeout'))
-                        aiService.cancelStream()
-                    }, timeoutMs)
+                ], options.provider, {
+                    temperature: 0.1,
+                    maxTokens: 1200,
+                    model: options.cloudModel,
+                    signal: fileController.signal
                 })
-
-                const cloudResponse = await Promise.race([chatPromise, timeoutPromise])
+                if (signal.aborted) return []
+                if (timedOut) throw new Error('Analysis timeout')
                 if (cloudResponse.error) throw new Error('Cloud AI error: ' + cloudResponse.error)
                 response = cloudResponse.content
             } finally {
-                if (timeoutId) clearTimeout(timeoutId)
+                clearTimeout(timeoutId)
+                signal.removeEventListener('abort', onScanAbort)
             }
         }
 

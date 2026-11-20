@@ -83,7 +83,7 @@ export const diagnosticsTool: AgentTool = {
         if (!ctx.workspace) return fail('Open a folder first.')
         const path = resolvePath(ctx.workspace, args.path)
         try {
-            const result = await checkFile(path, ctx.workspace)
+            const result = await checkFile(path, ctx.workspace, ctx.signal)
             if (!result) return { content: 'No checker is available for this file type here; run the project\'s own build or tests instead.' }
             if (result.ok) return { content: `No errors found (${result.checker}).`, display: { type: 'text', text: `No errors found (${result.checker}).` } }
             return { content: `${result.checker} found problems:\n${result.output}`, isError: true, display: { type: 'text', text: result.output } }

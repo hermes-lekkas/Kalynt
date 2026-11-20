@@ -6,9 +6,13 @@
  *   agent:web-search  { query, count? }  -> { ok, results: [{ title, url, snippet }] }
  * Search needs no API key: DuckDuckGo's lite page, with Bing as a fallback.
  */
+import http from 'node:http'
+import https from 'node:https'
+import { isIP } from 'node:net'
+import zlib from 'node:zlib'
 import type { IpcMain } from 'electron'
 import { htmlToText, decodeEntities } from './htmlToText'
-import { assertPublicUrl } from './netGuard'
+import { resolvePublicUrl, type ResolvedPublicHost } from './netGuard'
 
 const USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36 Kalynt'
 const MAX_BYTES = 5_000_000
@@ -16,45 +20,115 @@ const TIMEOUT_MS = 20_000
 
 const MAX_REDIRECTS = 8
 
+interface PinnedResponse {
+    status: number
+    headers: http.IncomingHttpHeaders
+    body: Buffer
+}
+
+function requestOnce(url: URL, pinned: ResolvedPublicHost, headers: Record<string, string>, signal: AbortSignal): Promise<PinnedResponse> {
+    return new Promise((resolve, reject) => {
+        if (signal.aborted) {
+            reject(new Error('Aborted'))
+            return
+        }
+        const host = url.hostname.replace(/^\[|\]$/g, '')
+        const transport = url.protocol === 'https:' ? https : http
+        const lookup = (_hostname: string, opts: unknown, cb: (...args: any[]) => void) => {
+            const callback = typeof opts === 'function' ? opts as (...args: any[]) => void : cb
+            if (typeof opts === 'object' && opts !== null && (opts as { all?: boolean }).all) {
+                callback(null, [{ address: pinned.address, family: pinned.family }])
+            } else {
+                callback(null, pinned.address, pinned.family)
+            }
+        }
+        const req = transport.request(url, {
+            method: 'GET',
+            headers: {
+                'User-Agent': USER_AGENT,
+                'Accept-Language': 'en-US,en;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br',
+                ...headers
+            },
+            lookup: lookup as http.RequestOptions['lookup'],
+            ...(url.protocol === 'https:' && !isIP(host) ? { servername: host } : {}),
+            signal
+        }, res => {
+            const status = res.statusCode ?? 0
+            // Do not read redirect response bodies; drain and return headers immediately.
+            if (status >= 300 && status < 400 && res.headers.location) {
+                res.resume()
+                resolve({ status, headers: res.headers, body: Buffer.alloc(0) })
+                return
+            }
+
+            const encoding = String(res.headers['content-encoding'] ?? '').toLowerCase()
+            const stream: NodeJS.ReadableStream = encoding === 'gzip'
+                ? res.pipe(zlib.createGunzip())
+                : encoding === 'deflate'
+                    ? res.pipe(zlib.createInflate())
+                    : encoding === 'br'
+                        ? res.pipe(zlib.createBrotliDecompress())
+                        : res
+
+            const chunks: Buffer[] = []
+            let size = 0
+            let settled = false
+            const finish = () => {
+                if (settled) return
+                settled = true
+                resolve({ status, headers: res.headers, body: Buffer.concat(chunks) })
+            }
+            stream.on('data', (chunk: Buffer | string) => {
+                if (settled) return
+                const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+                size += buf.byteLength
+                if (size > MAX_BYTES) {
+                    const remaining = MAX_BYTES - (size - buf.byteLength)
+                    if (remaining > 0) chunks.push(buf.subarray(0, remaining))
+                    res.destroy()
+                    finish()
+                    return
+                }
+                chunks.push(buf)
+            })
+            stream.on('end', finish)
+            stream.on('error', err => {
+                if (settled) return
+                settled = true
+                reject(err)
+            })
+        })
+        req.on('error', reject)
+        req.end()
+    })
+}
+
 /**
- * GET with a size cap and timeout. Unless allowPrivate is set, every hop of a
- * redirect chain must be a public address.
+ * GET with IP pinning (blocks DNS rebinding), size cap, and timeout.
+ * Every hop of a redirect chain must use http/https and resolve to a public address.
  */
-async function fetchText(url: string, init: RequestInit = {}, allowPrivate = true): Promise<{ text: string; contentType: string; finalUrl: string }> {
+async function fetchText(url: string, headers: Record<string, string> = {}): Promise<{ text: string; contentType: string; finalUrl: string }> {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
     try {
-        let current = url
-        let response: Response
+        let current = new URL(url)
+        let response: PinnedResponse
         for (let hop = 0; ; hop++) {
-            if (!allowPrivate) await assertPublicUrl(new URL(current))
-            response = await fetch(current, {
-                redirect: allowPrivate ? 'follow' : 'manual',
-                ...init,
-                headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'en-US,en;q=0.8', ...(init.headers ?? {}) },
-                signal: controller.signal
-            })
-            const location = response.headers.get('location')
-            if (allowPrivate || response.status < 300 || response.status >= 400 || !location) break
-            if (hop >= MAX_REDIRECTS) throw new Error('The site redirected too many times.')
-            await response.body?.cancel()
-            current = new URL(location, current).href
-        }
-        if (!response.ok) throw new Error(`The site answered with HTTP ${response.status}.`)
-        const reader = response.body?.getReader()
-        const chunks: Uint8Array[] = []
-        let size = 0
-        if (reader) {
-            for (;;) {
-                const { done, value } = await reader.read()
-                if (done) break
-                size += value.byteLength
-                chunks.push(value)
-                if (size > MAX_BYTES) { await reader.cancel(); break }
+            if (current.protocol !== 'http:' && current.protocol !== 'https:') {
+                throw new Error('Only http and https URLs can be fetched.')
             }
+            const pinned = await resolvePublicUrl(current)
+            response = await requestOnce(current, pinned, headers, controller.signal)
+            const location = typeof response.headers.location === 'string' ? response.headers.location : undefined
+            if (response.status < 300 || response.status >= 400 || !location) break
+            if (hop >= MAX_REDIRECTS) throw new Error('The site redirected too many times.')
+            current = new URL(location, current)
         }
-        const text = new TextDecoder().decode(Buffer.concat(chunks.map(c => Buffer.from(c))))
-        return { text, contentType: response.headers.get('content-type') ?? '', finalUrl: response.url || current }
+        if (response.status < 200 || response.status >= 300) throw new Error(`The site answered with HTTP ${response.status}.`)
+        const text = new TextDecoder().decode(response.body)
+        const contentType = String(response.headers['content-type'] ?? '')
+        return { text, contentType, finalUrl: current.href }
     } catch (error) {
         if (controller.signal.aborted) throw new Error('The site took too long to answer.')
         throw error
@@ -128,11 +202,11 @@ export async function webSearch(query: string, count = 8): Promise<SearchResult[
     return []
 }
 
-export async function webFetch(rawUrl: string, maxChars = 40_000, allowPrivate = false): Promise<{ url: string; title: string; content: string; contentType: string; truncated: boolean }> {
+export async function webFetch(rawUrl: string, maxChars = 40_000): Promise<{ url: string; title: string; content: string; contentType: string; truncated: boolean }> {
     let url: URL
     try { url = new URL(rawUrl) } catch { throw new Error('That is not a valid URL.') }
     if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Only http and https URLs can be fetched.')
-    const { text, contentType, finalUrl } = await fetchText(url.toString(), { headers: { Accept: 'text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.5' } }, allowPrivate)
+    const { text, contentType, finalUrl } = await fetchText(url.toString(), { Accept: 'text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.5' })
     let title = ''
     let content = text
     if (/html|xml/.test(contentType) || /^\s*<(!doctype|html)/i.test(text)) {
@@ -162,7 +236,8 @@ export function registerAgentWebHandlers(ipcMain: IpcMain): void {
     ipcMain.handle('agent:web-fetch', async (_event, options: { url: string; maxChars?: number; allowPrivate?: boolean }) => {
         try {
             const maxChars = Math.min(Math.max(options?.maxChars ?? 40_000, 1000), 200_000)
-            return { ok: true, ...(await webFetch(String(options?.url ?? ''), maxChars, options?.allowPrivate === true)) }
+            // Always ignore renderer-supplied allowPrivate to prevent SSRF from untrusted IPC callers.
+            return { ok: true, ...(await webFetch(String(options?.url ?? ''), maxChars)) }
         } catch (error) {
             return { ok: false, error: error instanceof Error ? error.message : String(error) }
         }

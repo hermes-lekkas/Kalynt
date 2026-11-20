@@ -80,7 +80,8 @@ export interface AnthropicOptions {
 }
 
 export async function streamAnthropic(request: ChatRequest, options: AnthropicOptions): Promise<ChatResult> {
-    const client = new Anthropic({ apiKey: options.apiKey, baseURL: options.baseURL, maxRetries: 2 })
+    // Outer chatWithRetry already handles transient pre-stream retries.
+    const client = new Anthropic({ apiKey: options.apiKey, baseURL: options.baseURL, maxRetries: 0 })
     const fallback = FALLBACK_MODELS.test(request.model)
     const betas = [BETAS.binding, ...(fallback ? [BETAS.fallback] : [])]
 
@@ -106,9 +107,11 @@ export async function streamAnthropic(request: ChatRequest, options: AnthropicOp
         } : {})
     } as Anthropic.Beta.MessageCreateParamsStreaming
 
-    // A tool input that can't be parsed at all rejects finalMessage(); re-issue
-    // the turn (at most twice). API errors are never retried here.
+    // Re-issue only if nothing was emitted yet; retrying after partial chunks would
+    // duplicate already-streamed text and tool calls in the UI.
     for (let attempt = 0; ; attempt++) {
+        let emitted = false
+        const emit = (ev: StreamEvent) => { emitted = true; options.emit(ev) }
         const toolIds = new Map<number, string>()
         const stream = client.beta.messages.stream(params, { signal: options.signal })
         try {
@@ -117,18 +120,18 @@ export async function streamAnthropic(request: ChatRequest, options: AnthropicOp
                     const block = event.content_block
                     if (block.type === 'tool_use') {
                         toolIds.set(event.index, block.id)
-                        options.emit({ type: 'tool-call-start', id: block.id, name: block.name })
+                        emit({ type: 'tool-call-start', id: block.id, name: block.name })
                     } else if ((block.type as string) === 'fallback') {
                         const to = (block as unknown as { to?: { model?: string } }).to?.model
-                        options.emit({ type: 'notice', message: to ? `Continued on ${to} after a safety check.` : 'Continued on another model after a safety check.' })
+                        emit({ type: 'notice', message: to ? `Continued on ${to} after a safety check.` : 'Continued on another model after a safety check.' })
                     }
                 } else if (event.type === 'content_block_delta') {
                     const delta = event.delta
-                    if (delta.type === 'text_delta') options.emit({ type: 'text', delta: delta.text })
-                    else if (delta.type === 'thinking_delta') options.emit({ type: 'reasoning', delta: delta.thinking })
+                    if (delta.type === 'text_delta') emit({ type: 'text', delta: delta.text })
+                    else if (delta.type === 'thinking_delta') emit({ type: 'reasoning', delta: delta.thinking })
                     else if (delta.type === 'input_json_delta') {
                         const id = toolIds.get(event.index)
-                        if (id) options.emit({ type: 'tool-call-delta', id, delta: delta.partial_json })
+                        if (id) emit({ type: 'tool-call-delta', id, delta: delta.partial_json })
                     }
                 }
             }
@@ -138,11 +141,11 @@ export async function streamAnthropic(request: ChatRequest, options: AnthropicOp
             if (options.signal.aborted) throw error
             if (error instanceof Anthropic.APIError) {
                 const status = typeof error.status === 'number' ? error.status : undefined
-                const retryable = error instanceof Anthropic.RateLimitError || error instanceof Anthropic.InternalServerError || error instanceof Anthropic.APIConnectionError
+                const retryable = !emitted && (error instanceof Anthropic.RateLimitError || error instanceof Anthropic.InternalServerError || error instanceof Anthropic.APIConnectionError)
                 throw new ProviderError(cleanApiMessage(error), status, retryable)
             }
-            if (attempt >= 2) throw error
-            console.warn('[AI] Claude sent tool input that was not valid JSON; re-issuing the turn')
+            if (emitted || attempt >= 2) throw error
+            console.warn('[AI] Claude stream failed before emitting content; re-issuing the turn')
         }
     }
 }

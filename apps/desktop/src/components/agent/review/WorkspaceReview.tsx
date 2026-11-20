@@ -4,7 +4,7 @@
  * Reviews every code file in the workspace with the selected model and lists
  * bugs, security problems and improvements it finds.
  */
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { ChevronRight, ScanSearch, Square } from 'lucide-react'
 import {
     workspaceScanService, type IssueType, type ScanError, type ScanIssue, type ScanProgress, type ScanResult
@@ -26,12 +26,14 @@ function duration(ms: number): string {
 
 export function WorkspaceReview({ folder, model }: { folder: string | null; model: ModelChoiceApi }) {
     const [running, setRunning] = useState(false)
+    const [stopping, setStopping] = useState(false)
     const [progress, setProgress] = useState<ScanProgress | null>(null)
     const [issues, setIssues] = useState<ScanIssue[]>([])
     const [errors, setErrors] = useState<ScanError[]>([])
     const [stats, setStats] = useState<ScanResult['stats'] | null>(null)
     const [filter, setFilter] = useState<IssueType | 'all'>('all')
     const [showErrors, setShowErrors] = useState(false)
+    const scanGenRef = useRef(0)
 
     const counts = useMemo(() => ({
         all: issues.length,
@@ -45,8 +47,10 @@ export function WorkspaceReview({ folder, model }: { folder: string | null; mode
         .slice().sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]), [issues, filter])
 
     const start = async () => {
-        if (!folder || !model.ready) return
+        if (!folder || !model.ready || running) return
+        const gen = ++scanGenRef.current
         setRunning(true)
+        setStopping(false)
         setIssues([])
         setErrors([])
         setStats(null)
@@ -58,25 +62,33 @@ export function WorkspaceReview({ folder, model }: { folder: string | null; mode
                 provider: model.choice.provider,
                 cloudModel: model.choice.cloudModel,
                 loadedModelId: model.loadedModelId,
-                onProgress: setProgress
+                onProgress: p => {
+                    if (scanGenRef.current === gen) setProgress(p)
+                }
             })
-            setIssues(result.issues)
-            setErrors(result.errors)
-            setStats(result.stats)
+            if (scanGenRef.current === gen) {
+                setIssues(result.issues)
+                setErrors(result.errors)
+                setStats(result.stats)
+            }
         } catch (e) {
-            setErrors([{ file: 'Review', path: '', reason: e instanceof Error ? e.message : String(e) }])
+            if (scanGenRef.current === gen) {
+                setErrors([{ file: 'Review', path: '', reason: e instanceof Error ? e.message : String(e) }])
+            }
         } finally {
-            setRunning(false)
-            setProgress(null)
-            useAgentStatusStore.getState().setActivity('idle')
+            if (scanGenRef.current === gen) {
+                setRunning(false)
+                setStopping(false)
+                setProgress(null)
+                useAgentStatusStore.getState().setActivity('idle')
+            }
         }
     }
 
-    const stop = () => {
-        workspaceScanService.stopScan()
-        setRunning(false)
-        setProgress(null)
-        useAgentStatusStore.getState().setActivity('idle')
+    const stop = async () => {
+        if (!running || stopping) return
+        setStopping(true)
+        await workspaceScanService.stopScan()
     }
 
     if (!folder) return <EmptyState title="No folder open" description="Open a folder to review its code." />
@@ -85,10 +97,10 @@ export function WorkspaceReview({ folder, model }: { folder: string | null; mode
         const fraction = progress && progress.total > 0 ? progress.current / progress.total : undefined
         return (
             <div className="review review--running">
-                <p className="review__title">Reviewing {progress?.total ? `${progress.current} of ${progress.total} files` : 'files'}</p>
+                <p className="review__title">{stopping ? 'Stopping review…' : `Reviewing ${progress?.total ? `${progress.current} of ${progress.total} files` : 'files'}`}</p>
                 <ProgressBar value={fraction} tone="agent" label="Review progress" />
                 {progress?.currentFile && <p className="review__file mono truncate">{relativePath(progress.currentFile, folder)}</p>}
-                <Button size="sm" icon={<Square size={11} />} onClick={stop}>Stop review</Button>
+                <Button size="sm" icon={<Square size={11} />} disabled={stopping} onClick={() => void stop()}>{stopping ? 'Stopping…' : 'Stop review'}</Button>
             </div>
         )
     }

@@ -45,6 +45,18 @@ const pending = new Map<string, AgentSession>()
 const writes = new Map<string, Promise<void>>()
 const epochs = new Map<string, number>()
 
+function toSummary(session: AgentSession): SessionSummary {
+    return {
+        id: session.id,
+        title: session.title,
+        spaceId: session.spaceId,
+        provider: session.provider,
+        model: session.model,
+        updatedAt: session.updatedAt,
+        createdAt: session.createdAt
+    }
+}
+
 async function persist(session: AgentSession) {
     const snapshot = JSON.parse(JSON.stringify(session)) as AgentSession
     pending.set(session.id, snapshot)
@@ -107,9 +119,14 @@ export const useAgentSessionStore = create<AgentSessionState>()((set, get) => ({
         if (!api()) return
         await importLegacy()
         const summaries = await api()!.listSessions(spaceId)
-        const combined = new Map((Array.isArray(summaries) ? summaries : []).map(summary => [summary.id, summary]))
-        for (const session of pending.values()) combined.set(session.id, session)
-        set({ summaries: [...combined.values()] })
+        const matching = (Array.isArray(summaries) ? summaries : []).filter(s => !s.spaceId || s.spaceId === spaceId)
+        const combined = new Map<string, SessionSummary>(matching.map(summary => [summary.id, summary]))
+        for (const session of pending.values()) {
+            if (!session.spaceId || session.spaceId === spaceId) {
+                combined.set(session.id, toSummary(session))
+            }
+        }
+        set({ summaries: [...combined.values()].sort((a, b) => b.updatedAt - a.updatedAt) })
     },
 
     open: async id => {
@@ -140,10 +157,7 @@ export const useAgentSessionStore = create<AgentSessionState>()((set, get) => ({
         if (session?.items.length) candidates.set(session.id, session)
         await Promise.all([...candidates.values()].map(async candidate => {
             await persist(candidate)
-            const summary: SessionSummary = {
-                id: candidate.id, title: candidate.title, spaceId: candidate.spaceId, provider: candidate.provider,
-                model: candidate.model, updatedAt: candidate.updatedAt, createdAt: candidate.createdAt
-            }
+            const summary = toSummary(candidate)
             set(state => ({ summaries: [summary, ...state.summaries.filter(s => s.id !== candidate.id)] }))
         }))
     },

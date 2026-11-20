@@ -105,6 +105,7 @@ export function registerLLMInferenceHandlers(
                     await engine.unloadModel()
                     memoryGuard.stop()
                     nativeModelId = options.modelId
+                    broadcast?.('llm:loaded', { modelId: options.modelId, native: true })
                     return { success: true, native: true }
                 }
             }
@@ -164,12 +165,17 @@ export function registerLLMInferenceHandlers(
         modelId: engine.draftModelId()
     }))
 
-    ipcMain.handle('get-model-status', async () => ({
-        success: true,
-        loaded: engine.currentModelId() !== null,
-        modelId: engine.currentModelId(),
-        generating: engine.isGenerating()
-    }))
+    ipcMain.handle('get-model-status', async () => {
+        const activeModelId = nativeModelId ?? engine.currentModelId()
+        return {
+            success: true,
+            loaded: activeModelId !== null,
+            modelId: activeModelId,
+            nativeModelId,
+            native: nativeModelId !== null,
+            generating: engine.isGenerating()
+        }
+    })
 
     const nativeGenerate = async (prompt: string, maxTokens?: number) => {
         const result = await nativeHelperService.request('llm-predict', { prompt, maxTokens })
@@ -215,6 +221,7 @@ export function registerLLMInferenceHandlers(
 
 /** Frees the loaded model; called when the app quits. */
 export const unloadLocalModel = () => {
+    nativeModelId = null
     memoryGuard.stop()
     return engine.unloadModel()
 }

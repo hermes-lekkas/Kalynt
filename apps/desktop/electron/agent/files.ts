@@ -69,13 +69,90 @@ async function walkFiles(root: string): Promise<string[]> {
     return out
 }
 
+const MAX_PATTERN_LENGTH = 500
+const STAT_BATCH_SIZE = 64
+
+function isInsideReal(realRoot: string, realTarget: string): boolean {
+    const rel = path.relative(realRoot, realTarget)
+    return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel))
+}
+
+/** Rejects regexes with nested quantifiers or catastrophic backtracking shapes. */
+function isUnsafeRegex(pattern: string): boolean {
+    if (pattern.length > MAX_PATTERN_LENGTH) return true
+    const stack: Array<{ hasQuantifier: boolean; hasAlternation: boolean }> = []
+    let inClass = false
+    let quantifiers = 0
+    for (let i = 0; i < pattern.length; i++) {
+        const ch = pattern[i]
+        if (ch === '\\') {
+            const next = pattern[i + 1]
+            if (next && next >= '1' && next <= '9') {
+                // Backreference inside/followed by repetition can backtrack exponentially.
+                if (stack.length > 0 || /[+*?{]/.test(pattern[i + 2] ?? '')) return true
+            }
+            i++
+            continue
+        }
+        if (inClass) {
+            if (ch === ']') inClass = false
+            continue
+        }
+        if (ch === '[') { inClass = true; continue }
+        if (ch === '(') {
+            stack.push({ hasQuantifier: false, hasAlternation: false })
+            continue
+        }
+        if (ch === '|') {
+            if (stack.length) stack[stack.length - 1].hasAlternation = true
+            continue
+        }
+        if (ch === ')') {
+            const frame = stack.pop()
+            if (!frame) continue
+            const after = pattern[i + 1]
+            const groupQuantified = after === '+' || after === '*' || after === '{'
+            if (groupQuantified && (frame.hasQuantifier || frame.hasAlternation)) return true
+            if (stack.length && (frame.hasQuantifier || groupQuantified)) {
+                stack[stack.length - 1].hasQuantifier = true
+            }
+            continue
+        }
+        if (ch === '+' || ch === '*' || ch === '{') {
+            quantifiers++
+            if (quantifiers > 24) return true
+            if (stack.length) stack[stack.length - 1].hasQuantifier = true
+        }
+    }
+    return false
+}
+
+async function filterExistingFiles(root: string, files: string[]): Promise<string[]> {
+    const capped = files.slice(0, MAX_FILES)
+    const existing: string[] = []
+    for (let i = 0; i < capped.length; i += STAT_BATCH_SIZE) {
+        const batch = capped.slice(i, i + STAT_BATCH_SIZE)
+        const results = await Promise.all(batch.map(async f => {
+            try {
+                await fs.promises.access(path.join(root, f))
+                return f
+            } catch {
+                return null
+            }
+        }))
+        for (const f of results) if (f !== null) existing.push(f)
+    }
+    return existing
+}
+
 /** Files under `base` (relative to the workspace root), most recently changed first. */
 async function listFiles(root: string, base: string): Promise<string[]> {
     const relBase = path.relative(root, base).split(path.sep).join('/')
     let files = await gitFiles(root)
+    const fromGit = files !== null
     if (!files) files = await walkFiles(root)
-    files = files.filter(f => fs.existsSync(path.join(root, f)))
-    return relBase ? files.filter(f => f === relBase || f.startsWith(`${relBase}/`)) : files
+    if (relBase) files = files.filter(f => f === relBase || f.startsWith(`${relBase}/`))
+    return fromGit ? filterExistingFiles(root, files) : files
 }
 
 function resolveBase(workspace: string | null, target?: string): { root: string; base: string } {
@@ -110,10 +187,18 @@ export function registerAgentFileHandlers(ipcMain: IpcMain, getWorkspace: () => 
     ipcMain.handle('agent:grep', async (_event, options: { pattern: string; path?: string; glob?: string; caseSensitive?: boolean; context?: number; maxResults?: number; filesOnly?: boolean }) => {
         try {
             const { root, base } = resolveBase(getWorkspace(), options?.path)
+            const rawPattern = typeof options?.pattern === 'string' ? options.pattern : ''
+            if (!rawPattern.trim()) {
+                return { ok: false, error: 'Search pattern cannot be empty.' }
+            }
+            if (isUnsafeRegex(rawPattern)) {
+                return { ok: false, error: 'Search pattern is too complex or unsafe. Simplify nested quantifiers and try again.' }
+            }
             let regex: RegExp
-            try { regex = new RegExp(String(options?.pattern ?? ''), options?.caseSensitive ? '' : 'i') } catch (e) {
+            try { regex = new RegExp(rawPattern, options?.caseSensitive ? '' : 'i') } catch (e) {
                 return { ok: false, error: `Invalid regular expression: ${e instanceof Error ? e.message : String(e)}` }
             }
+            const realRoot = await fs.promises.realpath(root)
             const fileFilter = options?.glob ? globToRegExp(options.glob) : null
             const context = Math.min(Math.max(options?.context ?? 0, 0), 5)
             const maxResults = Math.min(options?.maxResults ?? 100, 500)
@@ -125,9 +210,12 @@ export function registerAgentFileHandlers(ipcMain: IpcMain, getWorkspace: () => 
                 const full = path.join(root, file)
                 let content: string
                 try {
-                    const stat = await fs.promises.stat(full)
-                    if (stat.size > MAX_FILE_BYTES) continue
-                    content = await fs.promises.readFile(full, 'utf8')
+                    // Per-file symlink containment check so tracked symlinks cannot read outside the workspace.
+                    const realFull = await fs.promises.realpath(full)
+                    if (!isInsideReal(realRoot, realFull)) continue
+                    const stat = await fs.promises.stat(realFull)
+                    if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue
+                    content = await fs.promises.readFile(realFull, 'utf8')
                 } catch { continue }
                 if (content.includes('\u0000')) continue
                 const lines = content.split(/\r?\n/)

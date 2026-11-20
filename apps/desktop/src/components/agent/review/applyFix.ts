@@ -42,13 +42,22 @@ export async function proposeFix(issue: ScanIssue, mode: 'cloud' | 'offline', pr
             if (timer) clearTimeout(timer)
         }
     } else {
-        const response = await aiService.chat([{ role: 'system', content: system }, { role: 'user', content: prompt }], provider, { temperature: 0.1, maxTokens: 2048, model: cloudModel })
+        const response = await aiService.chat(
+            [{ role: 'system', content: system }, { role: 'user', content: prompt }],
+            provider,
+            { temperature: 0.1, maxTokens: 2048, model: cloudModel, preserveWhitespace: true }
+        )
         if (response.error) throw new Error(response.error)
         fixed = response.content
     }
 
-    fixed = fixed.replace(/^```[\w]*\n?/, '').replace(/\n?```\s*$/, '').trim()
-    if (fixed.length < 5) throw new Error('The model returned an empty fix.')
+    // Strip only outer markdown fences and surrounding blank lines; preserve leading indentation on line 1.
+    fixed = fixed
+        .replace(/^\s*```[\w+-]*\r?\n/, '')
+        .replace(/\r?\n?```\s*$/, '')
+        .replace(/^(?:\r?\n)+/, '')
+        .replace(/(?:\r?\n)+$/, '')
+    if (fixed.trim().length < 5) throw new Error('The model returned an empty fix.')
 
     const next = [...lines]
     next.splice(start, end - start, ...fixed.split('\n'))

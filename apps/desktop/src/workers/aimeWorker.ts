@@ -9,47 +9,55 @@
 let isIndexing = false
 let shouldCancel = false
 
-// Simple regex-based parsers for supported languages
-const PARSERS: Record<string, {
-    functionPattern: RegExp
-    classPattern: RegExp
-}> = {
-    javascript: {
-        // eslint-disable-next-line security/detect-unsafe-regex
-        functionPattern: /(?:async\s+)?function\s+(\w+)|(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?(?:\([^)]*\)\s*=>|function\s*\()/g,
-        // eslint-disable-next-line security/detect-unsafe-regex
-        classPattern: /class\s+(\w+)(?:\s+extends\s+(\w+))?/g
-    },
-    typescript: {
-        // eslint-disable-next-line security/detect-unsafe-regex
-        functionPattern: /(?:async\s+)?function\s+(\w+)|(?:const|let|var)\s+(\w+)\s*:\s*[^=]+=\s*(?:async\s*)?(?:\([^)]*\)\s*=>|function\s*\()/g,
-        // eslint-disable-next-line security/detect-unsafe-regex
-        classPattern: /class\s+(\w+)(?:\s+extends\s+(\w+))?/g
-    },
-    python: {
-        // eslint-disable-next-line security/detect-unsafe-regex
-        functionPattern: /def\s+(\w+)\s*\(/g,
-        // eslint-disable-next-line security/detect-unsafe-regex
-        classPattern: /class\s+(\w+)(?:\([^)]*\))?\s*:/g
-    },
-    rust: {
-        // eslint-disable-next-line security/detect-unsafe-regex
-        functionPattern: /(?:pub\s+)?fn\s+(\w+)\s*\(/g,
-        // eslint-disable-next-line security/detect-unsafe-regex
-        classPattern: /(?:pub\s+)?struct\s+(\w+)|(?:pub\s+)?enum\s+(\w+)/g
-    },
-    go: {
-        functionPattern: /func\s+(?:\([^)]*\)\s*)?(\w+)\s*\(/g,
-        classPattern: /type\s+(\w+)\s+struct/g
-    }
+// Linear-time per-line regex patterns (no nested quantifiers / ReDoS, no stale /g lastIndex)
+interface LinePattern {
+    type: 'function' | 'class' | 'interface'
+    regex: RegExp
+}
+
+const JS_PATTERNS: LinePattern[] = [
+    { type: 'function', regex: /^\s*(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*[<(]/ },
+    { type: 'class', regex: /^\s*(?:export\s+(?:default\s+)?)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)\b/ }
+]
+
+const TS_PATTERNS: LinePattern[] = [
+    ...JS_PATTERNS,
+    { type: 'interface', regex: /^\s*(?:export\s+)?interface\s+([A-Za-z_$][\w$]*)\b/ },
+    { type: 'interface', regex: /^\s*(?:export\s+)?type\s+([A-Za-z_$][\w$]*)\s*(?:<[^>\n]{1,80}>)?\s*=/ }
+]
+
+// Matches `const/let/var foo = ...` declarations to check for arrow/function initializers without backtracking.
+const JS_VAR_DECL = /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\b/
+
+const LINE_PARSERS: Record<string, LinePattern[]> = {
+    javascript: JS_PATTERNS,
+    typescript: TS_PATTERNS,
+    python: [
+        { type: 'function', regex: /^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(/ },
+        { type: 'class', regex: /^\s*class\s+([A-Za-z_]\w*)\b/ }
+    ],
+    rust: [
+        { type: 'function', regex: /^\s*(?:pub(?:\([^)\n]*\))?\s+)?(?:async\s+)?fn\s+([A-Za-z_]\w*)\b/ },
+        { type: 'class', regex: /^\s*(?:pub(?:\([^)\n]*\))?\s+)?(?:struct|enum)\s+([A-Za-z_]\w*)\b/ },
+        { type: 'interface', regex: /^\s*(?:pub(?:\([^)\n]*\))?\s+)?trait\s+([A-Za-z_]\w*)\b/ }
+    ],
+    go: [
+        { type: 'function', regex: /^\s*func\s+(?:\([^)\n]*\)\s*)?([A-Za-z_]\w*)\s*[([<]/ },
+        { type: 'class', regex: /^\s*type\s+([A-Za-z_]\w*)\s+struct\b/ },
+        { type: 'interface', regex: /^\s*type\s+([A-Za-z_]\w*)\s+interface\b/ }
+    ]
 }
 
 // File extensions to language mapping
 const EXTENSION_MAP: Record<string, string> = {
     '.js': 'javascript',
     '.jsx': 'javascript',
+    '.mjs': 'javascript',
+    '.cjs': 'javascript',
     '.ts': 'typescript',
     '.tsx': 'typescript',
+    '.mts': 'typescript',
+    '.cts': 'typescript',
     '.py': 'python',
     '.rs': 'rust',
     '.go': 'go'
@@ -58,7 +66,7 @@ const EXTENSION_MAP: Record<string, string> = {
 // Index storage
 interface CodeSymbol {
     name: string
-    type: 'function' | 'class' | 'variable'
+    type: 'function' | 'class' | 'interface' | 'variable'
     filePath: string
     line: number
     context: string
@@ -75,49 +83,77 @@ interface FileIndex {
 
 const fileIndex = new Map<string, FileIndex>()
 
-// Parse file content and extract symbols
-function parseFile(filePath: string, content: string, relativePath: string, lastModified = 0): FileIndex {
-    const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase()
-    const language = EXTENSION_MAP[ext] || 'unknown'
-    const parser = PARSERS[language]
-    
-    const symbols: CodeSymbol[] = []
-    
-    if (parser) {
-        const lines = content.split('\n')
-        
-        // Extract functions
-        let match
-        while ((match = parser.functionPattern.exec(content)) !== null) {
-            const name = match[1] || match[2]
-            if (name) {
-                const line = content.substring(0, match.index).split('\n').length
-                symbols.push({
-                    name,
-                    type: 'function',
-                    filePath,
-                    line,
-                    context: lines[line - 1]?.trim() || ''
-                })
-            }
+function isJsFunctionInitializer(lines: string[], index: number, eqPos: number): boolean {
+    const rhs = lines[index].slice(eqPos + 1).trim()
+    if (!rhs) return false
+    if (rhs.startsWith('function') || rhs.startsWith('async function')) return true
+    if (rhs.includes('=>')) return true
+    // Multi-line arrow function header: `const Foo = (\n ... \n) =>`
+    if (/^(?:async\s+)?(?:<[^>\n]*>\s*)?\(/.test(rhs)) {
+        const limit = Math.min(lines.length, index + 6)
+        for (let j = index + 1; j < limit; j++) {
+            if (lines[j].includes('=>')) return true
+            if (lines[j].includes(';')) return false
         }
-        
-        // Extract classes
-        while ((match = parser.classPattern.exec(content)) !== null) {
-            const name = match[1]
-            if (name) {
-                const line = content.substring(0, match.index).split('\n').length
-                symbols.push({
-                    name,
-                    type: 'class',
-                    filePath,
-                    line,
-                    context: lines[line - 1]?.trim() || ''
-                })
+    }
+    return false
+}
+
+// Parse file content line-by-line in O(N) time and extract symbols
+function parseFile(filePath: string, content: string, relativePath: string, lastModified = 0): FileIndex {
+    const dot = filePath.lastIndexOf('.')
+    const ext = dot >= 0 ? filePath.substring(dot).toLowerCase() : ''
+    const language = EXTENSION_MAP[ext] || 'unknown'
+    const patterns = LINE_PARSERS[language]
+
+    const symbols: CodeSymbol[] = []
+
+    if (patterns) {
+        const lines = content.split('\n')
+        const isJsLike = language === 'javascript' || language === 'typescript'
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i]
+            const trimmed = line.trim()
+            if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.startsWith('*') || trimmed.startsWith('#')) {
+                continue
+            }
+
+            let matched = false
+            for (const pattern of patterns) {
+                pattern.regex.lastIndex = 0
+                const match = pattern.regex.exec(line)
+                if (match?.[1]) {
+                    symbols.push({
+                        name: match[1],
+                        type: pattern.type,
+                        filePath,
+                        line: i + 1,
+                        context: trimmed
+                    })
+                    matched = true
+                    break
+                }
+            }
+
+            if (!matched && isJsLike) {
+                const varMatch = JS_VAR_DECL.exec(line)
+                if (varMatch?.[1]) {
+                    const eqPos = line.indexOf('=', varMatch[0].length)
+                    if (eqPos !== -1 && line[eqPos + 1] !== '=' && isJsFunctionInitializer(lines, i, eqPos)) {
+                        symbols.push({
+                            name: varMatch[1],
+                            type: 'function',
+                            filePath,
+                            line: i + 1,
+                            context: trimmed
+                        })
+                    }
+                }
             }
         }
     }
-    
+
     return {
         path: filePath,
         relativePath,
@@ -222,6 +258,7 @@ async function handleIndexWorkspace(message: any) {
     
     isIndexing = true
     shouldCancel = false
+    fileIndex.clear()
     
     let processed = 0
     let failed = 0
