@@ -11,6 +11,7 @@ export interface PackageManagerConfig {
     command: string                 // Binary command
     installArgs: string[]           // Args for install (e.g., ['install'])
     installDevArgs?: string[]       // Args for dev dependency install
+    globalInstallArgs?: string[]    // Full args prefix for global install when flag order differs (e.g. yarn global add)
     uninstallArgs: string[]         // Args for uninstall
     updateArgs: string[]            // Args for update
     listArgs: string[]              // Args for listing installed packages
@@ -41,6 +42,7 @@ export interface PackageInfo {
 // Operation result
 export interface DependencyResult {
     success: boolean
+    operationId?: string
     output?: string
     error?: string
     exitCode?: number
@@ -69,6 +71,7 @@ export const PACKAGE_MANAGERS: Record<string, PackageManagerConfig> = {
         command: 'yarn',
         installArgs: ['add'],
         installDevArgs: ['add', '--dev'],
+        globalInstallArgs: ['global', 'add'],
         uninstallArgs: ['remove'],
         updateArgs: ['upgrade'],
         listArgs: ['list', '--json', '--depth=0'],
@@ -141,7 +144,7 @@ export const PACKAGE_MANAGERS: Record<string, PackageManagerConfig> = {
         installArgs: ['add'],
         uninstallArgs: ['remove'],
         updateArgs: ['update'],
-        listArgs: ['metadata', '--format-version=1', '--no-deps'],
+        listArgs: ['metadata', '--format-version=1'],
         manifestFile: 'Cargo.toml',
         lockFile: 'Cargo.lock',
         languageId: 'rust',
@@ -286,26 +289,19 @@ export function getEnhancedPATH(): string {
     const appData = process.env.APPDATA || `${userProfile}\\AppData\\Roaming`
 
     const additionalPaths = [
-        // Python
         `${userProfile}\\AppData\\Local\\Programs\\Python\\Python313`,
         `${userProfile}\\AppData\\Local\\Programs\\Python\\Python313\\Scripts`,
         `${userProfile}\\AppData\\Local\\Programs\\Python\\Python312`,
         `${userProfile}\\AppData\\Local\\Programs\\Python\\Python312\\Scripts`,
-        // Rust/Cargo
         `${userProfile}\\.cargo\\bin`,
-        // Node.js / npm
         `${programFiles}\\nodejs`,
         `${appData}\\npm`,
-        // Go
         `${userProfile}\\go\\bin`,
         `${programFiles}\\Go\\bin`,
-        // Ruby
         `${programFiles}\\Ruby32-x64\\bin`,
-        // .NET
         `${programFiles}\\dotnet`,
         `${userProfile}\\.dotnet\\tools`,
-        // Git
-        `${programFiles}\\Git\\cmd`,
+        `${programFiles}\\Git\\cmd`
     ]
 
     let enhancedPath = currentPath
@@ -319,15 +315,15 @@ export function getEnhancedPATH(): string {
 }
 
 /**
- * Get Python command, preferring virtual environment if available
+ * Get Python pip command, preferring virtual environment if available
  */
 export function getPythonCommand(cwd: string): string {
     const venvPaths = [
-        path.join(cwd, 'venv', 'Scripts', 'pip.exe'),    // Windows
-        path.join(cwd, 'venv', 'bin', 'pip'),             // Unix
+        path.join(cwd, 'venv', 'Scripts', 'pip.exe'),
+        path.join(cwd, 'venv', 'bin', 'pip'),
         path.join(cwd, '.venv', 'Scripts', 'pip.exe'),
         path.join(cwd, '.venv', 'bin', 'pip'),
-        path.join(cwd, 'env', 'Scripts', 'pip.exe'),      // Alternative names
+        path.join(cwd, 'env', 'Scripts', 'pip.exe'),
         path.join(cwd, 'env', 'bin', 'pip')
     ]
 
@@ -338,7 +334,7 @@ export function getPythonCommand(cwd: string): string {
         }
     }
 
-    return 'pip' // fallback to system pip
+    return 'pip'
 }
 
 /**
@@ -365,6 +361,22 @@ export function getInstallInstructions(command: string): string {
     return instructions[command] || `Please install ${command} to continue`
 }
 
+/**
+ * Build install arguments for a package manager, respecting global/dev flag ordering.
+ */
+export function buildInstallArgs(
+    manager: PackageManagerConfig,
+    options: { global?: boolean; dev?: boolean }
+): string[] {
+    if (options.global && manager.globalInstallArgs) {
+        return [...manager.globalInstallArgs]
+    }
+    const args = [...(options.dev && manager.installDevArgs ? manager.installDevArgs : manager.installArgs)]
+    if (options.global && manager.globalFlag) {
+        args.push(manager.globalFlag)
+    }
+    return args
+}
 
 /**
  * Parse package list output based on manager
@@ -372,15 +384,54 @@ export function getInstallInstructions(command: string): string {
 export function parsePackageList(managerName: string, output: string): PackageInfo[] {
     try {
         switch (managerName) {
-            case 'npm':
-            case 'yarn':
-            case 'pnpm': {
+            case 'npm': {
                 const data = JSON.parse(output)
                 const deps = data.dependencies || {}
                 return Object.entries(deps).map(([name, info]: [string, any]) => ({
                     name,
-                    version: info.version || info
+                    version: typeof info === 'string' ? info : (info?.version || '')
                 }))
+            }
+            case 'pnpm': {
+                const parsed = JSON.parse(output)
+                const root = Array.isArray(parsed) ? parsed[0] : parsed
+                if (!root) return []
+                const result: PackageInfo[] = []
+                for (const [name, info] of Object.entries<any>(root.dependencies || {})) {
+                    result.push({ name, version: typeof info === 'string' ? info : (info?.version || ''), isDev: false })
+                }
+                for (const [name, info] of Object.entries<any>(root.devDependencies || {})) {
+                    result.push({ name, version: typeof info === 'string' ? info : (info?.version || ''), isDev: true })
+                }
+                return result
+            }
+            case 'yarn': {
+                // Yarn v1 emits NDJSON lines where one entry has { type: 'tree', data: { trees: [...] } }
+                const lines = output.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+                for (const line of lines) {
+                    try {
+                        const msg = JSON.parse(line)
+                        if (msg.type === 'tree' && Array.isArray(msg.data?.trees)) {
+                            return msg.data.trees.map((t: any) => {
+                                const raw = String(t.name || '')
+                                const at = raw.lastIndexOf('@')
+                                if (at > 0) {
+                                    return { name: raw.slice(0, at), version: raw.slice(at + 1) }
+                                }
+                                return { name: raw, version: '' }
+                            })
+                        }
+                        if (msg.dependencies) {
+                            return Object.entries(msg.dependencies).map(([name, info]: [string, any]) => ({
+                                name,
+                                version: typeof info === 'string' ? info : (info?.version || '')
+                            }))
+                        }
+                    } catch {
+                        // Try next line
+                    }
+                }
+                return []
             }
             case 'pip':
             case 'pip3': {
@@ -392,13 +443,63 @@ export function parsePackageList(managerName: string, output: string): PackageIn
             }
             case 'cargo': {
                 const data = JSON.parse(output)
-                return (data.packages || []).map((pkg: any) => ({
+                const allPackages: any[] = Array.isArray(data.packages) ? data.packages : []
+                const workspaceIds = new Set<string>(Array.isArray(data.workspace_members) ? data.workspace_members : [])
+
+                // Build version lookup for all resolved external packages
+                const resolvedByName = new Map<string, { version: string; description?: string }>()
+                for (const pkg of allPackages) {
+                    if (!workspaceIds.has(pkg.id)) {
+                        resolvedByName.set(pkg.name, { version: pkg.version, description: pkg.description })
+                    }
+                }
+
+                // Collect declared dependencies of workspace members (works for both full metadata and --no-deps)
+                const workspacePkgs = workspaceIds.size > 0
+                    ? allPackages.filter(pkg => workspaceIds.has(pkg.id))
+                    : allPackages
+                const seen = new Map<string, PackageInfo>()
+                for (const wsPkg of workspacePkgs) {
+                    const deps: any[] = Array.isArray(wsPkg.dependencies) ? wsPkg.dependencies : []
+                    for (const dep of deps) {
+                        if (!dep?.name) continue
+                        const resolved = resolvedByName.get(dep.name)
+                        const existing = seen.get(dep.name)
+                        const isDev = dep.kind === 'dev'
+                        if (!existing || (existing.isDev && !isDev)) {
+                            seen.set(dep.name, {
+                                name: dep.name,
+                                version: resolved?.version || dep.req || '',
+                                isDev,
+                                description: resolved?.description
+                            })
+                        }
+                    }
+                }
+
+                if (seen.size > 0) {
+                    return Array.from(seen.values())
+                }
+
+                // Fallback: non-workspace packages if dependencies arrays were empty
+                return allPackages
+                    .filter(pkg => !workspaceIds.has(pkg.id))
+                    .map(pkg => ({
+                        name: pkg.name,
+                        version: pkg.version,
+                        description: pkg.description
+                    }))
+            }
+            case 'composer': {
+                const data = JSON.parse(output)
+                const installed = Array.isArray(data.installed) ? data.installed : []
+                return installed.map((pkg: any) => ({
                     name: pkg.name,
-                    version: pkg.version
+                    version: pkg.version,
+                    description: pkg.description
                 }))
             }
             default:
-                // For managers without JSON output, return empty
                 return []
         }
     } catch {

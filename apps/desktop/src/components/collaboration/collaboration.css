@@ -4,8 +4,10 @@
 
 .collab {
     flex: 1;
+    min-width: 0;
     min-height: 0;
     display: flex;
+    overflow: hidden;
 }
 
 .collab__nav {
@@ -27,9 +29,11 @@
     border-radius: var(--r-2);
     color: var(--text-2);
     text-align: left;
+    white-space: nowrap;
 }
 
 .collab__nav-item svg {
+    flex-shrink: 0;
     color: var(--text-3);
 }
 
@@ -55,10 +59,12 @@
     min-height: 0;
     display: flex;
     overflow-y: auto;
+    overflow-x: hidden;
 }
 
 .collab-pane {
     flex: 1;
+    min-width: 0;
     max-width: 640px;
     padding: var(--sp-8) var(--sp-9);
     display: flex;
@@ -82,15 +88,18 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: var(--sp-4);
 }
 
 .collab-copy {
     display: flex;
+    flex-wrap: wrap;
     gap: var(--sp-4);
 }
 
 .collab-copy .k-input {
-    flex: 1;
+    flex: 1 1 200px;
+    min-width: 0;
 }
 
 .collab-callout {
@@ -129,12 +138,14 @@
 /* Members */
 .collab-members {
     flex: 1;
+    min-width: 0;
     min-height: 0;
     display: flex;
+    overflow: hidden;
 }
 
 .member-list {
-    width: 320px;
+    width: clamp(220px, 34%, 300px);
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
@@ -210,12 +221,15 @@
 .collab-members__detail {
     flex: 1;
     min-width: 0;
+    min-height: 0;
     overflow-y: auto;
+    overflow-x: hidden;
     display: flex;
 }
 
 .member-detail {
     flex: 1;
+    min-width: 0;
     padding: var(--sp-8);
     display: flex;
     flex-direction: column;
@@ -225,16 +239,20 @@
 .member-detail__head {
     display: flex;
     align-items: center;
-    gap: var(--sp-5);
+    flex-wrap: wrap;
+    gap: var(--sp-4) var(--sp-5);
 }
 
 .member-detail__titles {
-    flex: 1;
+    flex: 1 1 160px;
     min-width: 0;
 }
 
 .member-detail__titles h3 {
     font-size: var(--fs-lg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .member-detail__titles p {
@@ -247,6 +265,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--sp-4);
+    min-width: 0;
 }
 
 .member-detail__section h4 {
@@ -270,6 +289,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: var(--sp-4);
     padding: var(--sp-4) 0;
     border-bottom: 1px solid var(--line);
 }
@@ -282,11 +302,14 @@
 .member-detail__actions,
 .member-detail__ban {
     display: flex;
-    gap: var(--sp-4);
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-3);
 }
 
 .member-detail__ban .k-input {
-    flex: 1;
+    flex: 1 1 180px;
+    min-width: 0;
 }
 
 /* Activity */
@@ -306,6 +329,7 @@
 }
 
 .activity__icon {
+    flex-shrink: 0;
     color: var(--text-3);
     transform: translateY(2px);
 }
@@ -329,4 +353,88 @@
     font-size: var(--fs-xs);
     color: var(--text-3);
     white-space: nowrap;
+}
+
+/* Responsive layout: keep nav, member list, and member detail crisp at 800-1024px */
+@media (max-width: 1024px) {
+    .collab__nav {
+        width: 168px;
+        padding: var(--sp-4) var(--sp-3);
+    }
+
+    .member-list {
+        width: 240px;
+    }
+
+    .member-detail {
+        padding: var(--sp-6);
+        gap: var(--sp-6);
+    }
+
+    .collab-pane {
+        padding: var(--sp-6) var(--sp-7);
+    }
+}
+
+@media (max-width: 900px) {
+    .collab {
+        flex-direction: column;
+    }
+
+    .collab__nav {
+        width: 100%;
+        flex-direction: row;
+        align-items: center;
+        overflow-x: auto;
+        gap: var(--sp-2);
+        padding: var(--sp-3) var(--sp-5);
+        border-right: none;
+        border-bottom: 1px solid var(--line);
+    }
+
+    .collab__nav-item {
+        flex-shrink: 0;
+        gap: var(--sp-3);
+        padding: 0 var(--sp-4);
+    }
+
+    .collab__count {
+        margin-left: var(--sp-2);
+    }
+
+    .member-list {
+        width: 236px;
+    }
+
+    .member-list__tools {
+        padding: var(--sp-4);
+    }
+
+    .member-detail {
+        padding: var(--sp-6);
+        gap: var(--sp-5);
+    }
+
+    .collab-pane {
+        max-width: none;
+        padding: var(--sp-6);
+    }
+}
+
+@media (max-width: 680px) {
+    .collab-members {
+        flex-direction: column;
+        overflow-y: auto;
+    }
+
+    .member-list {
+        width: 100%;
+        max-height: 220px;
+        border-right: none;
+        border-bottom: 1px solid var(--line);
+    }
+
+    .collab-members__detail {
+        overflow-y: visible;
+    }
 }

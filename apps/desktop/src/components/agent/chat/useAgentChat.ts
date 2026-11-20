@@ -14,7 +14,47 @@ import { buildSystemPrompt } from '../../../services/agent/systemPrompt'
 import { composeMessage, promptEnvironment } from '../../../services/agent/messageContext'
 import { restore } from '../../../services/agent/checkpoints'
 import { titleFrom, type AgentSession } from '../../../services/agent/session'
+import { resolvePath } from '../../../services/agent/tools/paths'
 import type { ModelChoiceApi } from './useModelChoice'
+
+const ATTACHED_FILE_RE = /<attached_file path="([^"]+)">/g
+
+function hydrateKnownFiles(session: AgentSession, workspace: string | null): Set<string> {
+    const known = new Set<string>()
+    const all = [...(session.archive ?? []), ...session.items]
+    const errored = new Set<string>()
+    for (const item of all) {
+        if (item.role === 'tool' && item.isError) errored.add(item.callId)
+    }
+    const safeResolve = (p: unknown): string | null => {
+        if (typeof p !== 'string' || !p.trim()) return null
+        try { return resolvePath(workspace, p) } catch { return null }
+    }
+    for (const item of all) {
+        if (item.role === 'user') {
+            for (const match of item.content.matchAll(ATTACHED_FILE_RE)) {
+                const resolved = safeResolve(match[1])
+                if (resolved) known.add(resolved)
+            }
+        } else if (item.role === 'assistant') {
+            for (const call of item.toolCalls) {
+                if (errored.has(call.id)) continue
+                if (call.name === 'read_file' || call.name === 'edit_file' || call.name === 'write_file') {
+                    const resolved = safeResolve(call.arguments.path)
+                    if (resolved) known.add(resolved)
+                } else if (call.name === 'delete_path') {
+                    const resolved = safeResolve(call.arguments.path)
+                    if (resolved) known.delete(resolved)
+                } else if (call.name === 'move_path') {
+                    const from = safeResolve(call.arguments.from)
+                    const to = safeResolve(call.arguments.to)
+                    if (from && known.delete(from) && to) known.add(to)
+                }
+            }
+        }
+    }
+    return known
+}
 
 const MODE_KEY = 'kalynt-agent-mode'
 
@@ -60,8 +100,11 @@ export function useAgentChat(spaceId: string, folder: string | null, model: Mode
     const [approval, setApproval] = useState<{ request: ApprovalRequest; decide: (d: ApprovalDecision) => void } | null>(null)
     const [mode, setModeState] = useState<AgentMode>(loadMode)
     const abortRef = useRef<AbortController | null>(null)
+    const approvalRef = useRef<{ request: ApprovalRequest; decide: (d: ApprovalDecision) => void } | null>(null)
+    approvalRef.current = approval
     const memories = useRef(new Map<string, ApprovalMemory>())
     const knownFiles = useRef(new Map<string, Set<string>>())
+    const backgroundIds = useRef(new Map<string, Set<string>>())
     const modelRef = useRef(model)
     modelRef.current = model
     const modeRef = useRef(mode)
@@ -70,7 +113,7 @@ export function useAgentChat(spaceId: string, folder: string | null, model: Mode
     const session = store.current && (!store.current.spaceId || store.current.spaceId === spaceId) ? store.current : null
     const sessions = useMemo(() => store.summaries.filter(s => !s.spaceId || s.spaceId === spaceId), [store.summaries, spaceId])
 
-    // Each workspace opens on its most recent conversation.
+    // Each workspace opens on its most recent conversation; abort any running turn when switching workspaces.
     useEffect(() => {
         let cancelled = false
         void useAgentSessionStore.getState().loadList(spaceId).then(() => {
@@ -81,7 +124,11 @@ export function useAgentChat(spaceId: string, folder: string | null, model: Mode
             if (latest) void state.open(latest.id)
             else state.create(spaceId)
         })
-        return () => { cancelled = true }
+        return () => {
+            cancelled = true
+            abortRef.current?.abort()
+            approvalRef.current?.decide({ allow: false })
+        }
     }, [spaceId])
 
     useEffect(() => {
@@ -107,9 +154,17 @@ export function useAgentChat(spaceId: string, folder: string | null, model: Mode
         if (!memory) { memory = new ApprovalMemory(); memories.current.set(id, memory) }
         return memory
     }
-    const knownFor = (id: string) => {
-        let set = knownFiles.current.get(id)
-        if (!set) { set = new Set(); knownFiles.current.set(id, set) }
+    const knownFor = (target: AgentSession) => {
+        let set = knownFiles.current.get(target.id)
+        if (!set) {
+            set = hydrateKnownFiles(target, folder)
+            knownFiles.current.set(target.id, set)
+        }
+        return set
+    }
+    const backgroundIdsFor = (id: string) => {
+        let set = backgroundIds.current.get(id)
+        if (!set) { set = new Set(); backgroundIds.current.set(id, set) }
         return set
     }
 
@@ -132,7 +187,8 @@ export function useAgentChat(spaceId: string, folder: string | null, model: Mode
                 mode: modeRef.current,
                 memory: memoryFor(target.id),
                 signal: controller.signal,
-                knownFiles: knownFor(target.id),
+                knownFiles: knownFor(target),
+                backgroundIds: backgroundIdsFor(target.id),
                 hooks: {
                     onChange: () => useAgentSessionStore.getState().touch(),
                     onLive: turn => {
@@ -175,7 +231,7 @@ export function useAgentChat(spaceId: string, folder: string | null, model: Mode
         let target = state.current && state.current.spaceId === spaceId ? state.current : state.create(spaceId)
         if (!target.system) target.system = buildSystemPrompt(await promptEnvironment(folder))
         const message = await composeMessage(text.trim(), folder, spaceId)
-        message.attached.forEach(path => knownFor(target.id).add(path))
+        message.attached.forEach(path => knownFor(target).add(path))
         target.items.push({ role: 'user', content: message.content, display: message.display })
         if (target.title === 'New conversation') target.title = titleFrom(message.display)
         target.provider = m.choice.mode === 'offline' ? 'local' : m.choice.provider
@@ -188,9 +244,10 @@ export function useAgentChat(spaceId: string, folder: string | null, model: Mode
     }, [running, spaceId, folder, run])
 
     const stop = useCallback(() => {
-        approval?.decide({ allow: false })
+        // Abort FIRST so waitForApproval sees signal.aborted=true and records 'stopped' rather than 'denied'.
         abortRef.current?.abort()
-    }, [approval])
+        approvalRef.current?.decide({ allow: false })
+    }, [])
 
     const undoRun = useCallback(async (runId: string) => {
         const current = useAgentSessionStore.getState().current
@@ -198,7 +255,7 @@ export function useAgentChat(spaceId: string, folder: string | null, model: Mode
         if (!current || !checkpoint || checkpoint.undone) return
         const failed = await restore(checkpoint)
         // Files were reverted, so their content in the conversation is stale.
-        knownFor(current.id).clear()
+        knownFor(current).clear()
         current.notes = [...(current.notes ?? []), {
             at: current.items.length,
             text: failed.length ? `Undid the changes, except ${failed.length} file${failed.length === 1 ? '' : 's'} that couldn't be restored.` : 'Undid the changes from this run.',
@@ -232,9 +289,15 @@ export function useAgentChat(spaceId: string, folder: string | null, model: Mode
         newChat: () => { if (!running) useAgentSessionStore.getState().create(spaceId) },
         selectSession: (id: string) => { if (!running) void useAgentSessionStore.getState().open(id) },
         deleteSession: (id: string) => {
+            if (running) return
             void useAgentSessionStore.getState().remove(id).then(() => {
+                memories.current.delete(id)
+                knownFiles.current.delete(id)
+                backgroundIds.current.delete(id)
                 const state = useAgentSessionStore.getState()
                 if (!state.current) state.create(spaceId)
+            }).catch(error => {
+                addNotification(`Could not delete conversation: ${error instanceof Error ? error.message : String(error)}`, 'error')
             })
         },
         renameSession: (id: string, title: string) => void useAgentSessionStore.getState().rename(id, title)

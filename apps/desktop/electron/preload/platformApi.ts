@@ -5,6 +5,7 @@
  */
 import { ipcRenderer, type IpcRendererEvent } from 'electron'
 import { subscribe } from './subscribe'
+import type { PerformanceAPI, PerformanceModeValue, SafeStorageAPI } from './types'
 
 export const platformApi = {
 
@@ -13,11 +14,12 @@ export const platformApi = {
     // ==========================================
     safeStorage: {
         isAvailable: () => ipcRenderer.invoke('safeStorage:isAvailable'),
-        set: (options: any) => ipcRenderer.invoke('safeStorage:set', options),
+        set: (options: { key: string; value: string }) => ipcRenderer.invoke('safeStorage:set', options),
         get: (key: string) => ipcRenderer.invoke('safeStorage:get', key),
+        hasKey: (key: string) => ipcRenderer.invoke('safeStorage:hasKey', key),
         delete: (key: string) => ipcRenderer.invoke('safeStorage:delete', key),
         listKeys: () => ipcRenderer.invoke('safeStorage:listKeys')
-    },
+    } as SafeStorageAPI,
 
     // ==========================================
     // Runtime Management APIs
@@ -101,6 +103,12 @@ export const platformApi = {
         stopHost: () => ipcRenderer.invoke('extensions:stop-host'),
         download: (url: string, targetPath: string) => ipcRenderer.invoke('extensions:download', url, targetPath),
         // Events
+        onActivated: (callback: (data: { id: string }) => void) => {
+            return subscribe('extension:activated', callback)
+        },
+        onDeactivated: (callback: (data: { id: string }) => void) => {
+            return subscribe('extension:deactivated', callback)
+        },
         onExtensionActivated: (callback: (data: { id: string }) => void) => {
             return subscribe('extension:activated', callback)
         },
@@ -117,15 +125,33 @@ export const platformApi = {
         }
     },
 
+    // ==========================================
+    // Performance Acceleration APIs
+    // ==========================================
+    performance: {
+        setMode: (mode: PerformanceModeValue) => ipcRenderer.invoke('performance:set-mode', mode),
+        getStatus: () => ipcRenderer.invoke('performance:get-status'),
+        requestGc: () => ipcRenderer.invoke('performance:request-gc'),
+        scanWorkspace: (dirPath?: string) => ipcRenderer.invoke('performance:scan-workspace', dirPath),
+        prewarmCache: (dirPath?: string) => ipcRenderer.invoke('performance:prewarm-cache', dirPath),
+        testDiskSpeed: () => ipcRenderer.invoke('performance:test-disk-speed'),
+        getBootTime: () => ipcRenderer.invoke('performance:get-boot-time'),
+        getInferenceConfig: () => ipcRenderer.invoke('performance:get-inference-config'),
+        onRequestGc: (callback: () => void) => subscribe('performance:request-gc', () => callback()),
+        onSuspendBackgroundTasks: (callback: () => void) => subscribe('performance:suspend-background-tasks', () => callback()),
+        onOptimizeMonaco: (callback: (options: Record<string, unknown>) => void) => subscribe('performance:optimize-monaco', callback),
+        onDisposeWorkers: (callback: () => void) => subscribe('performance:dispose-workers', () => callback())
+    } as PerformanceAPI,
 
     // ==========================================
-    // Generic IPC listener for deep links
+    // Generic IPC listener for allowlisted events
     // ==========================================
     on: (channel: string, callback: (...args: any[]) => void) => {
         const validChannels = [
-            'deep-link', 
-            'extension:activated', 
-            'extension:deactivated', 
+            'deep-link',
+            'window:maximized-changed',
+            'extension:activated',
+            'extension:deactivated',
             'extension:show-message',
             'performance:request-gc',
             'performance:suspend-background-tasks',
@@ -154,23 +180,5 @@ export const platformApi = {
     // ==========================================
     app: {
         getPath: (name: string) => ipcRenderer.invoke('app:getPath', name)
-    },
-
-    // ==========================================
-    // IPC Renderer for custom channels
-    // ==========================================
-    ipcRenderer: {
-        invoke: (channel: string, ...args: any[]) => ipcRenderer.invoke(channel, ...args),
-        // The real IpcRendererEvent is not passed on: its sender would expose ipcRenderer to page code.
-        on: (channel: string, callback: (event: Record<string, never>, ...args: any[]) => void) => {
-            const listener = (_event: IpcRendererEvent, ...args: any[]) => callback({}, ...args)
-            ipcRenderer.on(channel, listener)
-            return () => {
-                ipcRenderer.removeListener(channel, listener)
-            }
-        },
-        removeAllListeners: (channel: string) => {
-            ipcRenderer.removeAllListeners(channel)
-        }
     }
 }

@@ -3,7 +3,7 @@
  * Provides access to the Open VSX registry for downloading VS Code extensions
  */
 
-import { ExtensionGallery, ExtensionQueryOptions } from '../../types/extensions'
+import { ExtensionGallery, ExtensionQueryOptions, ExtensionVersion } from '../../types/extensions'
 
 const OPENVSX_API_URL = 'https://open-vsx.org/api'
 const DEFAULT_PAGE_SIZE = 20
@@ -22,6 +22,11 @@ interface OpenVSXSearchResult {
     tags?: string[]
     releaseDate?: string
     lastUpdatedDate?: string
+    timestamp?: string
+    files?: {
+      download?: string
+      icon?: string
+    }
   }>
 }
 
@@ -29,7 +34,7 @@ interface OpenVSXExtensionDetails {
   namespace: string
   name: string
   version: string
-  publishedBy: {
+  publishedBy?: {
     loginName: string
   }
   displayName?: string
@@ -38,6 +43,8 @@ interface OpenVSXExtensionDetails {
   tags?: string[]
   releaseDate?: string
   lastUpdatedDate?: string
+  timestamp?: string
+  allVersions?: Record<string, string>
   versions?: Array<{
     version: string
     lastUpdated?: string
@@ -64,7 +71,7 @@ class MarketplaceService {
       searchText = '',
       categories = [],
       sortBy = 'relevance',
-      sortOrder = 'desc',
+      sortOrder = 'descending',
       pageSize = DEFAULT_PAGE_SIZE,
       pageNumber = 1
     } = options
@@ -75,11 +82,10 @@ class MarketplaceService {
       if (categories.length > 0) params.set('category', categories.join(','))
       params.set('size', String(pageSize))
       params.set('offset', String((pageNumber - 1) * pageSize))
-      
-      // Sort options
+
       const sortMap: Record<string, string> = {
         'none': 'relevance',
-        'lastUpdated': 'updatedDate',
+        'lastUpdated': 'timestamp',
         'title': 'name',
         'publisherName': 'namespace',
         'installCount': 'downloadCount',
@@ -92,13 +98,13 @@ class MarketplaceService {
 
       const cacheKey = `search:${params.toString()}`
       const cached = this.getFromCache<OpenVSXSearchResult>(cacheKey)
-      
+
       if (cached) {
         return this.mapSearchResults(cached)
       }
 
       const response = await fetch(`${OPENVSX_API_URL}/-/search?${params.toString()}`)
-      
+
       if (!response.ok) {
         throw new Error(`Marketplace search failed: ${response.status} ${response.statusText}`)
       }
@@ -114,29 +120,47 @@ class MarketplaceService {
   }
 
   /**
+   * Fetches raw Open VSX metadata for an extension (latest or specific version), cached.
+   */
+  private async fetchRawExtensionDetails(
+    namespace: string,
+    name: string,
+    version?: string
+  ): Promise<OpenVSXExtensionDetails> {
+    const isSpecific = version && version !== 'latest'
+    const cacheKey = isSpecific
+      ? `version:${namespace}.${name}:${version}`
+      : `details:${namespace}.${name}`
+    const cached = this.getFromCache<OpenVSXExtensionDetails>(cacheKey)
+    if (cached) return cached
+
+    const url = isSpecific
+      ? `${OPENVSX_API_URL}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/${encodeURIComponent(version)}`
+      : `${OPENVSX_API_URL}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`
+
+    const response = await fetch(url)
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error(
+          isSpecific
+            ? `Extension version not found: ${namespace}.${name}@${version}`
+            : `Extension not found: ${namespace}.${name}`
+        )
+      }
+      throw new Error(`Failed to get extension details: ${response.status}`)
+    }
+
+    const details: OpenVSXExtensionDetails = await response.json()
+    this.setCache(cacheKey, details)
+    return details
+  }
+
+  /**
    * Get extension details
    */
   async getExtensionDetails(namespace: string, name: string): Promise<ExtensionGallery> {
     try {
-      const cacheKey = `details:${namespace}.${name}`
-      const cached = this.getFromCache<OpenVSXExtensionDetails>(cacheKey)
-      
-      if (cached) {
-        return this.mapExtensionDetails(cached)
-      }
-
-      const response = await fetch(`${OPENVSX_API_URL}/${namespace}/${name}`)
-      
-      if (!response.ok) {
-        if (response.status === 404) {
-          throw new Error(`Extension not found: ${namespace}.${name}`)
-        }
-        throw new Error(`Failed to get extension details: ${response.status}`)
-      }
-
-      const details: OpenVSXExtensionDetails = await response.json()
-      this.setCache(cacheKey, details)
-
+      const details = await this.fetchRawExtensionDetails(namespace, name)
       return this.mapExtensionDetails(details)
     } catch (error) {
       console.error('[Marketplace] Get details failed:', error)
@@ -149,25 +173,7 @@ class MarketplaceService {
    */
   async getExtensionVersion(namespace: string, name: string, version: string): Promise<ExtensionGallery> {
     try {
-      const cacheKey = `version:${namespace}.${name}:${version}`
-      const cached = this.getFromCache<OpenVSXExtensionDetails>(cacheKey)
-      
-      if (cached) {
-        return this.mapExtensionDetails(cached)
-      }
-
-      const response = await fetch(`${OPENVSX_API_URL}/${namespace}/${name}/${version}`)
-      
-      if (!response.ok) {
-        if (response.status === 404) {
-          throw new Error(`Extension version not found: ${namespace}.${name}@${version}`)
-        }
-        throw new Error(`Failed to get extension version: ${response.status}`)
-      }
-
-      const details: OpenVSXExtensionDetails = await response.json()
-      this.setCache(cacheKey, details)
-
+      const details = await this.fetchRawExtensionDetails(namespace, name, version)
       return this.mapExtensionDetails(details)
     } catch (error) {
       console.error('[Marketplace] Get version failed:', error)
@@ -176,7 +182,7 @@ class MarketplaceService {
   }
 
   /**
-   * Download extension VSIX file
+   * Download extension VSIX file using Open VSX's canonical `files.download` URL.
    */
   async downloadExtension(
     namespace: string,
@@ -185,19 +191,19 @@ class MarketplaceService {
     onProgress?: (downloaded: number, total: number) => void
   ): Promise<Blob> {
     try {
-      const response = await fetch(`${OPENVSX_API_URL}/${namespace}/${name}/${version}/file/${namespace}.${name}-${version}.vsix`)
-      
+      const downloadUrl = await this.getActualDownloadUrl(namespace, name, version)
+      const response = await fetch(downloadUrl)
+
       if (!response.ok) {
         throw new Error(`Failed to download extension: ${response.status}`)
       }
 
       const total = parseInt(response.headers.get('content-length') || '0', 10)
-      
+
       if (!onProgress || !response.body) {
         return await response.blob()
       }
 
-      // Track download progress
       const reader = response.body.getReader()
       const chunks: Uint8Array[] = []
       let downloaded = 0
@@ -206,13 +212,12 @@ class MarketplaceService {
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-        
+
         chunks.push(value)
         downloaded += value.length
         onProgress(downloaded, total)
       }
 
-      // Combine chunks
       const allChunks = new Uint8Array(downloaded)
       let position = 0
       for (const chunk of chunks) {
@@ -228,42 +233,36 @@ class MarketplaceService {
   }
 
   /**
-   * Get download URL for an extension
+   * Get fallback download URL for an extension
    */
   getDownloadUrl(namespace: string, name: string, version: string): string {
-    // Use the file endpoint which redirects to the actual download
     return `${OPENVSX_API_URL}/${namespace}/${name}/${version}/file/${namespace}.${name}-${version}.vsix`
   }
 
   /**
-   * Get the actual download URL (resolves 'latest' to actual version)
+   * Resolves the canonical Open VSX VSIX download URL from `details.files.download`
+   * (properly supporting platform-specific packages and resolving `'latest'`).
    */
   async getActualDownloadUrl(namespace: string, name: string, version: string): Promise<string> {
     console.log(`[Marketplace] Resolving download URL for ${namespace}.${name}@${version}`)
-    
+
     try {
-      let actualVersion: string
-      
-      if (version === 'latest') {
-        // Get the main extension details to find the latest version
-        const details = await this.getExtensionDetails(namespace, name)
-        actualVersion = details.versions[0]?.version
-        
-        if (!actualVersion) {
-          throw new Error('Could not determine latest version from extension details')
-        }
-        
-        console.log(`[Marketplace] Resolved 'latest' to version: ${actualVersion}`)
-      } else {
-        // Use the specified version
-        actualVersion = version
+      const details = await this.fetchRawExtensionDetails(namespace, name, version)
+
+      // Prefer the authoritative Open VSX `files.download` URL when present
+      if (details.files?.download) {
+        console.log('[Marketplace] Resolved download URL from details.files.download:', details.files.download)
+        return details.files.download
       }
-      
-      // Return the file URL with actual version
-      // Open VSX uses: /api/{namespace}/{name}/{version}/file/{filename}
-      const url = `${OPENVSX_API_URL}/${namespace}/${name}/${actualVersion}/file/${namespace}.${name}-${actualVersion}.vsix`
-      console.log('[Marketplace] Resolved download URL:', url)
-      return url
+
+      const actualVersion = version === 'latest' ? details.version : version
+      if (!actualVersion) {
+        throw new Error('Could not determine version from extension details')
+      }
+
+      const fallbackUrl = this.getDownloadUrl(namespace, name, actualVersion)
+      console.log('[Marketplace] Resolved fallback download URL:', fallbackUrl)
+      return fallbackUrl
     } catch (error) {
       console.error('[Marketplace] Failed to resolve download URL:', error)
       throw new Error(`Failed to get download URL for ${namespace}.${name}: ${error instanceof Error ? error.message : 'Unknown error'}`)
@@ -309,7 +308,6 @@ class MarketplaceService {
    * Get recommended extensions (based on installed extensions)
    */
   async getRecommendedExtensions(installedIds: string[], limit: number = 10): Promise<ExtensionGallery[]> {
-    // Simple recommendation based on similar categories
     try {
       const recommendations: ExtensionGallery[] = []
       const seenIds = new Set(installedIds)
@@ -320,8 +318,7 @@ class MarketplaceService {
 
         try {
           const extension = await this.getExtensionDetails(namespace, name)
-          
-          // Search for similar extensions
+
           if (extension.categories && extension.categories.length > 0) {
             const similar = await this.searchExtensions({
               categories: extension.categories.slice(0, 2),
@@ -354,37 +351,109 @@ class MarketplaceService {
   private mapSearchResults(result: OpenVSXSearchResult): ExtensionGallery[] {
     if (!result.extensions) return []
 
-    return result.extensions.map(ext => ({
-      id: `${ext.namespace}.${ext.name}`,
-      name: ext.name,
-      displayName: ext.displayName || ext.name,
-      shortDescription: ext.description || '',
-      publisher: {
-        displayName: ext.publishedBy?.loginName || ext.namespace,
-        publisherId: ext.namespace,
-        publisherName: ext.namespace
-      },
-      versions: [{
-        version: ext.version,
-        lastUpdated: ext.lastUpdatedDate || new Date().toISOString(),
-        assetUri: `${OPENVSX_API_URL}/${ext.namespace}/${ext.name}/${ext.version}`,
-        fallbackAssetUri: `${OPENVSX_API_URL}/${ext.namespace}/${ext.name}`,
-        files: []
-      }],
-      categories: ext.categories || [],
-      tags: ext.tags || [],
-      releaseDate: ext.releaseDate || new Date().toISOString(),
-      publishedDate: ext.releaseDate || new Date().toISOString(),
-      lastUpdated: ext.lastUpdatedDate || new Date().toISOString()
-    }))
+    return result.extensions.map(ext => {
+      const updated = ext.lastUpdatedDate || ext.timestamp || new Date().toISOString()
+      const files: ExtensionVersion['files'] = []
+      if (ext.files?.download) {
+        files.push({ assetType: 'Microsoft.VisualStudio.Services.VSIXPackage', source: ext.files.download })
+      }
+      if (ext.files?.icon) {
+        files.push({ assetType: 'Microsoft.VisualStudio.Services.Icons.Default', source: ext.files.icon })
+      }
+
+      return {
+        id: `${ext.namespace}.${ext.name}`,
+        name: ext.name,
+        displayName: ext.displayName || ext.name,
+        shortDescription: ext.description || '',
+        publisher: {
+          displayName: ext.publishedBy?.loginName || ext.namespace,
+          publisherId: ext.namespace,
+          publisherName: ext.namespace
+        },
+        versions: [{
+          version: ext.version,
+          lastUpdated: updated,
+          assetUri: `${OPENVSX_API_URL}/${ext.namespace}/${ext.name}/${ext.version}`,
+          fallbackAssetUri: `${OPENVSX_API_URL}/${ext.namespace}/${ext.name}`,
+          files
+        }],
+        categories: ext.categories || [],
+        tags: ext.tags || [],
+        releaseDate: ext.releaseDate || updated,
+        publishedDate: ext.releaseDate || updated,
+        lastUpdated: updated
+      }
+    })
   }
 
   private mapExtensionDetails(details: OpenVSXExtensionDetails): ExtensionGallery {
-    // If versions array is empty or missing, use the main version from the response
-    const versions = (details.versions || []).length > 0 
-      ? details.versions! 
-      : [{ version: details.version, lastUpdated: details.lastUpdatedDate || new Date().toISOString() }]
-    
+    const defaultTimestamp = details.lastUpdatedDate || details.timestamp || new Date().toISOString()
+    const mappedVersions: ExtensionVersion[] = []
+    const seen = new Set<string>()
+
+    // Primary version returned by Open VSX (includes authoritative `files` URLs)
+    if (details.version) {
+      const primaryFiles: ExtensionVersion['files'] = []
+      if (details.files?.download) {
+        primaryFiles.push({
+          assetType: 'Microsoft.VisualStudio.Services.VSIXPackage',
+          source: details.files.download
+        })
+      }
+      if (details.files?.manifest) {
+        primaryFiles.push({
+          assetType: 'Microsoft.VisualStudio.Code.Manifest',
+          source: details.files.manifest
+        })
+      }
+      if (details.files?.icon) {
+        primaryFiles.push({
+          assetType: 'Microsoft.VisualStudio.Services.Icons.Default',
+          source: details.files.icon
+        })
+      }
+
+      mappedVersions.push({
+        version: details.version,
+        lastUpdated: defaultTimestamp,
+        assetUri: `${OPENVSX_API_URL}/${details.namespace}/${details.name}/${details.version}`,
+        fallbackAssetUri: `${OPENVSX_API_URL}/${details.namespace}/${details.name}`,
+        files: primaryFiles
+      })
+      seen.add(details.version)
+    }
+
+    // Open VSX returns `allVersions` as a `{ [version]: versionApiUrl }` map
+    if (details.allVersions && typeof details.allVersions === 'object') {
+      for (const [ver, url] of Object.entries(details.allVersions)) {
+        if (!ver || ver === 'latest' || ver === 'pre-release' || seen.has(ver)) continue
+        seen.add(ver)
+        mappedVersions.push({
+          version: ver,
+          lastUpdated: defaultTimestamp,
+          assetUri: typeof url === 'string' && url ? url : `${OPENVSX_API_URL}/${details.namespace}/${details.name}/${ver}`,
+          fallbackAssetUri: `${OPENVSX_API_URL}/${details.namespace}/${details.name}`,
+          files: []
+        })
+      }
+    }
+
+    // Backwards compatibility if a proxy/fixture provides a `versions` array
+    if (Array.isArray(details.versions)) {
+      for (const v of details.versions) {
+        if (!v?.version || seen.has(v.version)) continue
+        seen.add(v.version)
+        mappedVersions.push({
+          version: v.version,
+          lastUpdated: v.lastUpdated || defaultTimestamp,
+          assetUri: `${OPENVSX_API_URL}/${details.namespace}/${details.name}/${v.version}`,
+          fallbackAssetUri: `${OPENVSX_API_URL}/${details.namespace}/${details.name}`,
+          files: []
+        })
+      }
+    }
+
     return {
       id: `${details.namespace}.${details.name}`,
       name: details.name,
@@ -395,18 +464,12 @@ class MarketplaceService {
         publisherId: details.namespace,
         publisherName: details.namespace
       },
-      versions: versions.map(v => ({
-        version: v.version,
-        lastUpdated: v.lastUpdated || new Date().toISOString(),
-        assetUri: `${OPENVSX_API_URL}/${details.namespace}/${details.name}/${v.version}`,
-        fallbackAssetUri: `${OPENVSX_API_URL}/${details.namespace}/${details.name}`,
-        files: []
-      })),
+      versions: mappedVersions,
       categories: details.categories || [],
       tags: details.tags || [],
-      releaseDate: details.releaseDate || new Date().toISOString(),
-      publishedDate: details.releaseDate || new Date().toISOString(),
-      lastUpdated: details.lastUpdatedDate || new Date().toISOString()
+      releaseDate: details.releaseDate || defaultTimestamp,
+      publishedDate: details.releaseDate || defaultTimestamp,
+      lastUpdated: defaultTimestamp
     }
   }
 

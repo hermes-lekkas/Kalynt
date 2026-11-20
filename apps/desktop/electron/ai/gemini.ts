@@ -62,8 +62,20 @@ function toContents(items: ConversationItem[]): Content[] {
     return contents
 }
 
-/** Thinking levels exist on Gemini 3.x; other models think dynamically. */
-function thinkingConfig(model: string, effort?: Effort): Record<string, unknown> {
+/** Gemini 2.5+, 3.x, 4.x and explicit thinking models support thinkingConfig. */
+function supportsThinking(model: string): boolean {
+    return /^gemini-(?:2\.5|[3-9](?:[.-]|$)|\d{2,})|thinking/i.test(model)
+}
+
+/** Legacy 1.x / 2.0 Gemini models reject output limits above 8192 tokens. */
+function maxOutputCap(model: string): number {
+    if (/^gemini-(?:1\.|2\.0)/i.test(model)) return 8192
+    return 64000
+}
+
+/** Thinking levels exist on Gemini 3.x; other thinking models think dynamically. */
+function thinkingConfig(model: string, effort?: Effort): Record<string, unknown> | undefined {
+    if (!supportsThinking(model)) return undefined
     const config: Record<string, unknown> = { includeThoughts: true }
     if (effort && /^gemini-3\./.test(model)) config.thinkingLevel = effort === 'low' ? 'low' : effort === 'medium' ? 'medium' : 'high'
     return config
@@ -79,12 +91,15 @@ export interface GeminiOptions {
 }
 
 export async function streamGemini(request: ChatRequest, options: GeminiOptions): Promise<ChatResult> {
+    const cap = maxOutputCap(request.model)
+    const maxOutputTokens = Math.min(request.maxTokens ?? cap, cap)
+    const thinking = thinkingConfig(request.model, request.effort)
     const body = {
         systemInstruction: { parts: [{ text: request.system }] },
         contents: toContents(request.items),
         generationConfig: {
-            maxOutputTokens: request.maxTokens ?? 64000,
-            thinkingConfig: thinkingConfig(request.model, request.effort)
+            maxOutputTokens,
+            ...(thinking ? { thinkingConfig: thinking } : {})
         },
         ...(request.tools?.length ? {
             tools: [{ functionDeclarations: request.tools.map(t => ({ name: t.name, description: t.description, parameters: toGeminiSchema(t.parameters) })) }]

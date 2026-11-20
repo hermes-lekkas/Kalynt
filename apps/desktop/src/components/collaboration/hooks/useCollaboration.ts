@@ -4,13 +4,14 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useMemberStore } from '../../../stores/memberStore'
 import { useAppStore } from '../../../stores/appStore'
-import { p2pService } from '../../../services/p2pService'
+import { p2pService, normalizeRoomId } from '../../../services/p2pService'
 import { memberSyncService } from '../../../services/memberSyncService'
-import { setRoomPassword } from '../../../services/roomPasswordStore'
-import { collabEngine } from '../../../services/collabEngine'
+import { getRoomPassword, setRoomPassword } from '../../../services/roomPasswordStore'
+import { initializeRoomEncryption } from '../../../services/encryptedProvider'
+import { getSpaceDocument } from '../../../hooks/useYjs'
 import type { ActivityItem, ConnectionDiagnostics, CollaborationTab } from '../types'
 import type { WorkspaceRole, MemberPermissions } from '../../../types/permissions'
-import { canKick, canBan } from '../../../types/permissions'
+import { DEFAULT_PERMISSIONS, canKick, canBan } from '../../../types/permissions'
 
 const MAX_ACTIVITY_ITEMS = 100
 
@@ -20,7 +21,7 @@ export function useCollaboration(spaceId: string | undefined) {
   const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [showOfflineMembers, setShowOfflineMembers] = useState(true)
-  
+
   // Connection State
   const [connectionStatus, setConnectionStatus] = useState<ConnectionDiagnostics>({
     status: 'disconnected',
@@ -32,78 +33,70 @@ export function useCollaboration(spaceId: string | undefined) {
     bytesReceived: 0,
     bytesSent: 0
   })
-  
+
   // Activity Feed
   const [activities, setActivities] = useState<ActivityItem[]>([])
   const activityIdRef = useRef(0)
-  
+  const recentJoinTimestampsRef = useRef<Map<string, number>>(new Map())
+
   // Join State
   const [isJoining, setIsJoining] = useState(false)
   const [joinError, setJoinError] = useState<string | null>(null)
 
-  // Get store data
-  const {
-    getMembers,
-    getMyRole,
-    getMyPermissions,
-    userId: currentUserId,
-    displayName: currentUserName
-  } = useMemberStore()
+  // Subscribe reactively to `spaceMembers[spaceId]` state (not stable action refs)
+  const spaceInfo = useMemberStore(s => (spaceId ? s.spaceMembers[spaceId] : undefined))
+  const currentUserId = useMemberStore(s => s.userId)
+  const currentUserName = useMemberStore(s => s.displayName)
 
-  const { connectedPeers, currentSpace, spaces } = useAppStore()
+  const connectedPeers = useAppStore(s => s.connectedPeers)
+  const currentSpace = useAppStore(s => s.currentSpace)
+  const spaces = useAppStore(s => s.spaces)
 
-  // Memoized data
-  const members = useMemo(() => {
-    if (!spaceId) return []
-    return getMembers(spaceId)
-  }, [spaceId, getMembers])
+  const members = useMemo(() => spaceInfo?.members ?? [], [spaceInfo])
 
-  const myRole = useMemo(() => {
-    if (!spaceId) return 'member' as WorkspaceRole
-    return getMyRole(spaceId)
-  }, [spaceId, getMyRole])
+  const myRole = useMemo<WorkspaceRole>(() => {
+    if (!spaceId || !spaceInfo) return 'member'
+    if (spaceInfo.ownerId === currentUserId) return 'owner'
+    return spaceInfo.members.find(m => m.userId === currentUserId)?.role ?? 'member'
+  }, [spaceId, spaceInfo, currentUserId])
 
-  const myPermissions = useMemo(() => {
+  const myPermissions = useMemo<MemberPermissions | null>(() => {
     if (!spaceId) return null
-    return getMyPermissions(spaceId)
-  }, [spaceId, getMyPermissions])
+    if (!spaceInfo) return DEFAULT_PERMISSIONS.member
+    return spaceInfo.members.find(m => m.userId === currentUserId)?.permissions ?? DEFAULT_PERMISSIONS[myRole]
+  }, [spaceId, spaceInfo, currentUserId, myRole])
 
   const isAdmin = myRole === 'owner' || myRole === 'admin'
 
-  // Filter members based on search query
   const filteredMembers = useMemo(() => {
     let result = members
-    
-    // Filter by search query
+
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase()
-      result = result.filter(m => 
+      result = result.filter(m =>
         m.displayName.toLowerCase().includes(query) ||
         m.userId.toLowerCase().includes(query)
       )
     }
-    
-    // Filter offline members
+
     if (!showOfflineMembers) {
       result = result.filter(m => m.isOnline)
     }
-    
+
     return result
   }, [members, searchQuery, showOfflineMembers])
 
-  // Get selected member details
   const selectedMember = useMemo(() => {
     if (!selectedMemberId) return null
     return members.find(m => m.userId === selectedMemberId) || null
   }, [selectedMemberId, members])
 
-  // Connection status updates
   const updateConnectionStatus = useCallback(() => {
     if (!spaceId || !currentSpace) return
-    
+
     const info = p2pService.getConnectionInfo(spaceId)
     const stats = p2pService.getStats(spaceId)
-    
+
     setConnectionStatus({
       status: info.connected ? 'connected' : 'disconnected',
       peerCount: info.peerCount,
@@ -116,37 +109,33 @@ export function useCollaboration(spaceId: string | undefined) {
     })
   }, [spaceId, currentSpace])
 
-  // Poll connection status
   useEffect(() => {
     if (!spaceId) return
-    
+
     updateConnectionStatus()
     const interval = setInterval(updateConnectionStatus, 2000)
-    
+
     return () => clearInterval(interval)
   }, [spaceId, updateConnectionStatus])
 
-  // Activity logging
   const addActivity = useCallback((activity: Omit<ActivityItem, 'id'>) => {
     setActivities(prev => {
       const newActivity: ActivityItem = {
         ...activity,
         id: `activity-${++activityIdRef.current}`
       }
-      const updated = [newActivity, ...prev].slice(0, MAX_ACTIVITY_ITEMS)
-      return updated
+      return [newActivity, ...prev].slice(0, MAX_ACTIVITY_ITEMS)
     })
   }, [])
 
-  // Clear activities
   const clearActivities = useCallback(() => {
     setActivities([])
+    recentJoinTimestampsRef.current.clear()
   }, [])
 
-  // Member actions
   const handleRoleChange = useCallback(async (targetUserId: string, role: WorkspaceRole) => {
     if (!spaceId) return false
-    
+
     try {
       const success = memberSyncService.updateMemberRole(spaceId, targetUserId, role)
       if (success) {
@@ -167,11 +156,11 @@ export function useCollaboration(spaceId: string | undefined) {
   }, [spaceId, currentUserId, currentUserName, addActivity])
 
   const handlePermissionChange = useCallback(async (
-    targetUserId: string, 
+    targetUserId: string,
     permissions: Partial<MemberPermissions>
   ) => {
     if (!spaceId) return false
-    
+
     try {
       return memberSyncService.updateMemberPermissions(spaceId, targetUserId, permissions)
     } catch (error) {
@@ -182,10 +171,10 @@ export function useCollaboration(spaceId: string | undefined) {
 
   const handleKick = useCallback(async (targetUserId: string) => {
     if (!spaceId) return false
-    
+
     const target = members.find(m => m.userId === targetUserId)
     if (!target || !canKick(myRole, target.role)) return false
-    
+
     try {
       const success = await memberSyncService.kickMember(spaceId, targetUserId)
       if (success) {
@@ -207,10 +196,10 @@ export function useCollaboration(spaceId: string | undefined) {
 
   const handleBan = useCallback(async (targetUserId: string, reason?: string) => {
     if (!spaceId) return false
-    
+
     const target = members.find(m => m.userId === targetUserId)
     if (!target || !canBan(myRole, target.role)) return false
-    
+
     try {
       const success = await memberSyncService.banMember(spaceId, targetUserId, reason)
       if (success) {
@@ -232,7 +221,7 @@ export function useCollaboration(spaceId: string | undefined) {
 
   const handleUnban = useCallback(async (targetUserId: string) => {
     if (!spaceId) return false
-    
+
     try {
       return await memberSyncService.unbanMember(spaceId, targetUserId)
     } catch (error) {
@@ -241,58 +230,54 @@ export function useCollaboration(spaceId: string | undefined) {
     }
   }, [spaceId])
 
-  // Invite actions
+  // Invite actions — use consistent normalized room code matching JoinSection and p2pService
   const generateInviteLink = useCallback(() => {
     if (!spaceId || !currentSpace) return null
-    
-    const link = p2pService.generateRoomLink(spaceId, undefined, currentSpace.name)
+
+    const normalizedCode = normalizeRoomId(spaceId)
+    const link = p2pService.generateRoomLink(normalizedCode, undefined, currentSpace.name)
     return {
       url: link,
-      code: spaceId.toUpperCase(),
+      code: normalizedCode,
       useCount: 0
     }
   }, [spaceId, currentSpace])
 
-  // Join workspace
+  // Join workspace (supports both invite links and room codes with consistent normalization)
   const handleJoin = useCallback(async (input: string, password?: string) => {
     setIsJoining(true)
     setJoinError(null)
-    
+
     try {
-      const parsed = p2pService.parseRoomLink(input)
-      
+      const trimmed = input.trim()
+      const parsed = p2pService.parseRoomLink(trimmed)
+
+      let roomId: string
+      let spaceName = 'Shared Space'
+      let effectivePassword = password
+
       if (parsed) {
-        if (password) {
-          await setRoomPassword(parsed.roomId, password)
-        }
-        
-        const existing = spaces.find(s => s.id === parsed.roomId)
-        if (existing) {
-          useAppStore.getState().setCurrentSpace(existing)
-        } else {
-          const spaceName = parsed.spaceName || 'Shared Space'
-          const newSpace = useAppStore.getState().createSpace(spaceName, parsed.roomId)
-          useAppStore.getState().setCurrentSpace(newSpace)
-        }
-        
-        return
+        roomId = normalizeRoomId(parsed.roomId)
+        spaceName = parsed.spaceName || 'Shared Space'
+        effectivePassword = password ?? parsed.password
+      } else if (trimmed.length > 0 && trimmed.length <= 50 && !/\s/.test(trimmed)) {
+        roomId = normalizeRoomId(trimmed)
+      } else {
+        throw new Error('Invalid link or code')
       }
-      
-      // Try as room code
-      if (input.trim().length > 0 && input.trim().length <= 50) {
-        const roomId = input.trim().toLowerCase()
-        const existing = spaces.find(s => s.id === roomId)
-        if (existing) {
-          useAppStore.getState().setCurrentSpace(existing)
-          return
-        }
-        
-        const newSpace = useAppStore.getState().createSpace('Shared Space', roomId)
+
+      if (effectivePassword) {
+        await setRoomPassword(roomId, effectivePassword)
+        await initializeRoomEncryption(roomId, effectivePassword)
+      }
+
+      const existing = spaces.find(s => normalizeRoomId(s.id) === roomId)
+      if (existing) {
+        useAppStore.getState().setCurrentSpace(existing)
+      } else {
+        const newSpace = useAppStore.getState().createSpace(spaceName, roomId)
         useAppStore.getState().setCurrentSpace(newSpace)
-        return
       }
-      
-      throw new Error('Invalid link or code')
     } catch (error) {
       setJoinError(error instanceof Error ? error.message : 'Failed to join')
       throw error
@@ -301,65 +286,51 @@ export function useCollaboration(spaceId: string | undefined) {
     }
   }, [spaces])
 
-  // Test connection
   const testConnection = useCallback(async () => {
     try {
-      const result = await p2pService.testConnectivity()
-      return result
+      return await p2pService.testConnectivity()
     } catch (error) {
       console.error('[Collaboration] Connection test failed:', error)
       throw error
     }
   }, [])
 
-  // Reconnect
-  const reconnect = useCallback(() => {
+  // Reconnect while preserving the active Y.Doc, room password, user awareness, and room listeners
+  const reconnect = useCallback(async () => {
     if (!spaceId) return
-    
-    // Disconnect and reconnect
-    p2pService.disconnect(spaceId)
-    
-    // Get Yjs doc and reconnect
-    const doc = collabEngine.getDocument(spaceId)
-    if (doc) {
-      p2pService.connect(spaceId, doc)
-    }
-    
+
+    const password = (await getRoomPassword(spaceId)) ?? undefined
+    const doc = getSpaceDocument(spaceId)
+    await p2pService.reconnect(spaceId, password, doc)
     updateConnectionStatus()
   }, [spaceId, updateConnectionStatus])
 
-  // Listen for peer join/leave
+  // Subscribe via multi-subscriber `addRoomListener` so we never clobber `useYjs` or other listeners
   useEffect(() => {
     if (!spaceId) return
-    
+    recentJoinTimestampsRef.current.clear()
+
     const handlePeersChange = (peers: { id: string; name: string; color: string }[]) => {
-      // Add activity for new peers
+      const now = Date.now()
       peers.forEach(peer => {
-        const isNew = !activities.some(a => 
-          a.type === 'join' && a.userId === peer.id && 
-          Date.now() - a.timestamp < 60000
-        )
-        
-        if (isNew) {
+        const lastJoined = recentJoinTimestampsRef.current.get(peer.id)
+        if (!lastJoined || now - lastJoined >= 60000) {
+          recentJoinTimestampsRef.current.set(peer.id, now)
           addActivity({
             type: 'join',
             userId: peer.id,
             userName: peer.name,
-            timestamp: Date.now(),
+            timestamp: now,
             details: 'Joined the workspace'
           })
         }
       })
     }
-    
-    p2pService.setRoomCallbacks(spaceId, {
+
+    return p2pService.addRoomListener(spaceId, {
       onPeers: handlePeersChange
     })
-    
-    return () => {
-      p2pService.setRoomCallbacks(spaceId, {})
-    }
-  }, [spaceId, addActivity, activities])
+  }, [spaceId, addActivity])
 
   return {
     // State
@@ -380,7 +351,7 @@ export function useCollaboration(spaceId: string | undefined) {
     isAdmin,
     currentUserId,
     currentUserName,
-    
+
     // Actions
     setActiveTab,
     setSelectedMemberId,
@@ -388,20 +359,20 @@ export function useCollaboration(spaceId: string | undefined) {
     setShowOfflineMembers,
     addActivity,
     clearActivities,
-    
+
     // Member actions
     handleRoleChange,
     handlePermissionChange,
     handleKick,
     handleBan,
     handleUnban,
-    
+
     // Invite
     generateInviteLink,
-    
+
     // Join
     handleJoin,
-    
+
     // Connection
     testConnection,
     reconnect,

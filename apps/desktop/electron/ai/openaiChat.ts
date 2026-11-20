@@ -10,8 +10,8 @@
 import type { AssistantItem, ChatRequest, ChatResult, ConversationItem, Effort, ProviderId, StreamEvent } from '../../src/types/aiProtocol'
 import { parseArguments, postJson, ProviderError, readSse } from './http'
 
-/** These providers accept low / high / max; "medium" maps to their default. */
-const EFFORT: Record<Effort, string> = { low: 'low', medium: 'high', high: 'high', max: 'max' }
+/** Reasoning effort mapping for OpenAI-compatible reasoning providers. */
+const EFFORT: Record<Effort, string> = { low: 'low', medium: 'medium', high: 'high', max: 'max' }
 
 /** Per-provider request fields. Sampling parameters are left out: all three ignore or reject them while thinking. */
 function providerParams(provider: ProviderId, request: ChatRequest): Record<string, unknown> {
@@ -39,11 +39,12 @@ function toMessages(system: string, items: ConversationItem[], provider: Provide
         if (item.role === 'user') messages.push({ role: 'user', content: item.content })
         else if (item.role === 'assistant') {
             const sameProvider = item.provider === provider
-            const reasoning = sameProvider ? (item.raw as RawTurn | undefined)?.reasoning_content ?? item.reasoning ?? '' : ''
+            const rawReasoning = sameProvider ? (item.raw as RawTurn | undefined)?.reasoning_content ?? item.reasoning : undefined
+            const includeReasoning = provider !== 'local-server' && sameProvider && typeof rawReasoning === 'string' && rawReasoning.length > 0
             messages.push({
                 role: 'assistant',
                 content: item.text,
-                ...(provider === 'local-server' ? {} : { reasoning_content: reasoning }),
+                ...(includeReasoning ? { reasoning_content: rawReasoning } : {}),
                 ...(item.toolCalls.length ? {
                     tool_calls: item.toolCalls.map(call => ({
                         id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments) }
@@ -94,10 +95,28 @@ export async function streamChatCompletions(request: ChatRequest, options: ChatC
     const response = await postJson(`${options.baseUrl}/chat/completions`, body, options.apiKey ? { Authorization: `Bearer ${options.apiKey}` } : {}, options.signal, request.provider === 'local-server' ? 'error' : 'follow')
     let text = ''
     let reasoning = ''
+    let sawReasoning = false
     let finish = null as string | null
     let usage = null as { prompt_tokens?: number; completion_tokens?: number; prompt_cache_hit_tokens?: number; cached_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } | null
     let model = request.model
     const calls = new Map<number, PartialCall>()
+
+    const resolveCallIndex = (part: { index?: unknown; id?: unknown; function?: { name?: unknown } }): number => {
+        if (typeof part.index === 'number') return part.index
+        if (typeof part.id === 'string' && part.id) {
+            for (const [idx, existing] of calls.entries()) {
+                if (existing.id === part.id) return idx
+            }
+            return calls.size
+        }
+        if (calls.size === 0) return 0
+        const lastIndex = calls.size - 1
+        const lastCall = calls.get(lastIndex)
+        if (typeof part.function?.name === 'string' && part.function.name && lastCall?.name) {
+            return calls.size
+        }
+        return lastIndex
+    }
 
     await readSse(response, ({ data }) => {
         if (data.trim() === '[DONE]') return
@@ -111,6 +130,7 @@ export async function streamChatCompletions(request: ChatRequest, options: ChatC
         const delta = choice.delta ?? {}
         const thought = delta.reasoning_content ?? delta.reasoning
         if (typeof thought === 'string' && thought) {
+            sawReasoning = true
             reasoning += thought
             options.emit({ type: 'reasoning', delta: thought })
         }
@@ -119,7 +139,7 @@ export async function streamChatCompletions(request: ChatRequest, options: ChatC
             options.emit({ type: 'text', delta: delta.content })
         }
         for (const part of delta.tool_calls ?? []) {
-            const index = typeof part.index === 'number' ? part.index : calls.size
+            const index = resolveCallIndex(part)
             let call = calls.get(index)
             if (!call) {
                 call = { id: part.id || `call_${index}_${Date.now().toString(36)}`, name: part.function?.name ?? '', args: '' }
@@ -154,7 +174,7 @@ export async function streamChatCompletions(request: ChatRequest, options: ChatC
             role: 'assistant', text, toolCalls,
             reasoning: reasoning.trim() || undefined,
             provider: request.provider, model,
-            raw: { reasoning_content: reasoning } satisfies RawTurn
+            ...(sawReasoning ? { raw: { reasoning_content: reasoning } satisfies RawTurn } : {})
         },
         stopReason: finish === 'length' ? 'max_tokens'
             : finish === 'content_filter' || finish === 'sensitive' ? 'refusal'

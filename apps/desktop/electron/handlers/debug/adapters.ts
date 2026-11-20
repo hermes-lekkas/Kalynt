@@ -8,6 +8,7 @@ import * as path from 'path'
 import { spawn, execFile } from 'child_process'
 import type { DebugConfiguration } from '../../../src/types/debug'
 import { binaryManager } from '../../services/binary-manager'
+import { validatePath } from '../../utils/pathValidator'
 import { findBinary, safeEnv } from '../code-exec/binaries'
 import { DapConnection, connectWithRetry, freePort } from './transport'
 
@@ -57,10 +58,15 @@ const run = (file: string, args: string[]) => new Promise<{ ok: boolean; out: st
 async function socketAdapter(command: string, args: string[], port: number, cwd: string, env: NodeJS.ProcessEnv): Promise<DapConnection> {
     const proc = spawn(command, args, { cwd, env, windowsHide: true })
     let early = ''
+    let spawnError: Error | null = null
+    proc.on('error', err => { spawnError = err })
     proc.stderr?.on('data', d => { early += d.toString() })
-    const socket = await connectWithRetry(port, 12, 500, () => proc.exitCode === null).catch(err => {
-        proc.kill()
-        throw new Error(`${err.message}${early ? `\n${early.trim()}` : ''}`)
+    const socket = await connectWithRetry(port, 12, 500, () => proc.exitCode === null && !spawnError).catch(err => {
+        try { proc.kill() } catch { /* already gone */ }
+        const message = spawnError
+            ? `Failed to start debug adapter '${path.basename(command)}': ${spawnError.message}`
+            : `${err.message}${early ? `\n${early.trim()}` : ''}`
+        throw new Error(message)
     })
     const conn = new DapConnection()
     conn.attach(proc, socket)
@@ -69,7 +75,8 @@ async function socketAdapter(command: string, args: string[], port: number, cwd:
 
 function stdioAdapter(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): DapConnection {
     const conn = new DapConnection()
-    conn.attach(spawn(command, args, { cwd, env, windowsHide: true }))
+    const proc = spawn(command, args, { cwd, env, windowsHide: true })
+    conn.attach(proc)
     return conn
 }
 
@@ -135,7 +142,15 @@ async function launchNative(config: DebugConfiguration, cwd: string, env: NodeJS
 }
 
 export async function launchAdapter(config: DebugConfiguration, workspacePath: string): Promise<DapConnection> {
-    const cwd = typeof config.cwd === 'string' && fs.existsSync(config.cwd) ? config.cwd : workspacePath
+    let cwd = workspacePath
+    if (typeof config.cwd === 'string' && config.cwd.trim()) {
+        try {
+            const candidate = validatePath(workspacePath, config.cwd)
+            if (fs.existsSync(candidate)) cwd = candidate
+        } catch {
+            console.warn('[Debug] Ignored launch cwd outside workspace; using workspace root')
+        }
+    }
     const env = debugEnv(config.env as Record<string, unknown> | undefined)
 
     switch (config.type) {

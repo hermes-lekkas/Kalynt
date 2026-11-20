@@ -78,7 +78,7 @@ export function TeamChat({ team, files, folder }: TeamChatProps) {
                                     {m.encrypted && <Lock size={10} className="team-msg__lock" aria-label="Encrypted" />}
                                 </header>
                             )}
-                            {m.replyToId && (
+                            {m.replyToId && (m.replyToSender || m.replyToContent) && (
                                 <button type="button" className="team-msg__quote" onClick={() => document.getElementById(`team-${m.replyToId}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })}>
                                     <span>{m.replyToSender}</span> {m.replyToContent}
                                 </button>

@@ -8,6 +8,8 @@
  */
 import { useEffect, useState } from 'react'
 import { hardwareService } from '../../services/hardwareService'
+import { useModelStore } from '../../stores/modelStore'
+import { getModelById, OFFLINE_MODELS } from '../../types/offlineModels'
 import type { AIMEConfig, HardwareInfo, OffloadingStrategy } from '../../types/aime'
 import { AIME_PRESETS, DEFAULT_AIME_CONFIG, calculateAIMERAMUsage, recommendAIMESettings } from '../../types/aime'
 import { Button, Select, Spinner, Switch, confirmAction } from '../ui'
@@ -27,6 +29,8 @@ function loadConfig(): AIMEConfig | null {
 }
 
 export function AimeSettings() {
+    const loadedModelId = useModelStore(s => s.loadedModelId)
+    const downloadedModels = useModelStore(s => s.downloadedModels)
     const [hardware, setHardware] = useState<HardwareInfo | null>(null)
     const [config, setConfig] = useState<AIMEConfig>(() => loadConfig() ?? DEFAULT_AIME_CONFIG)
     const [loading, setLoading] = useState(true)
@@ -73,7 +77,21 @@ export function AimeSettings() {
 
     if (loading) return <SettingsSection title="Local model memory"><Spinner label="Detecting hardware" /></SettingsSection>
 
-    const estimate = calculateAIMERAMUsage(7700, config.maxContextTokens, config.flashAttention)
+    const downloadedList = Object.values(downloadedModels)
+    const largestDownloaded = downloadedList.length
+        ? downloadedList.reduce((best, item) => (item.sizeBytes > best.sizeBytes ? item : best))
+        : null
+    const referenceModel = (loadedModelId ? getModelById(loadedModelId) : undefined)
+        ?? (largestDownloaded ? getModelById(largestDownloaded.id) : undefined)
+        ?? getModelById('qwen2.5-coder-7b-q4')
+        ?? OFFLINE_MODELS[0]
+    const referenceBytes = (loadedModelId && downloadedModels[loadedModelId]?.sizeBytes)
+        || (referenceModel && downloadedModels[referenceModel.id]?.sizeBytes)
+        || referenceModel?.sizeBytes
+        || 4_680_000_000
+    const referenceSizeMB = Math.max(256, Math.round(referenceBytes / (1024 * 1024)))
+    const referenceLabel = referenceModel?.name ?? 'the selected local model'
+    const estimate = calculateAIMERAMUsage(referenceSizeMB, config.maxContextTokens, config.flashAttention)
 
     return (
         <SettingsSection
@@ -121,7 +139,7 @@ export function AimeSettings() {
             )}
             <SettingRow
                 label={`Context window: ${config.maxContextTokens.toLocaleString()} tokens`}
-                description={`Estimated memory for a 7B model at Q8: ${estimate.toLocaleString()} MB.`}
+                description={`Estimated memory for ${referenceLabel} (${(referenceSizeMB / 1024).toFixed(1)} GB): ${estimate.toLocaleString()} MB.`}
                 htmlFor="aime-context"
                 control={<input id="aime-context" className="set-range" type="range" min={1024} max={32768} step={1024} value={config.maxContextTokens} onChange={e => set({ maxContextTokens: Number(e.target.value) })} />}
             />

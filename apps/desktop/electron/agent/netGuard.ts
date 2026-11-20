@@ -33,13 +33,38 @@ export function isPrivateAddress(raw: string): boolean {
         const hi = parseInt(mapped[2], 16), lo = parseInt(mapped[3], 16)
         return privateV4(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`)
     }
-    return address === '::' || address === '::1' || /^f[cd]/.test(address) || /^fe[89ab]/.test(address) || /^ff/.test(address)
+    return address === '::' || address === '::1' || /^f[cd]/.test(address) || /^fe[89ab]/.test(address) || /^ff/.test(address) || /^64:ff9b:/.test(address)
+}
+
+export interface ResolvedPublicHost {
+    address: string
+    family: 4 | 6
+}
+
+/**
+ * Validates that the URL's host is public and returns a single pinned IP address
+ * so the caller can connect directly without a DNS-rebinding TOCTOU race.
+ */
+export async function resolvePublicUrl(url: URL): Promise<ResolvedPublicHost> {
+    const host = url.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase()
+    if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal')) {
+        throw new PrivateAddressError(url.href)
+    }
+    const ipVersion = isIP(host)
+    if (ipVersion === 4 || ipVersion === 6) {
+        if (isPrivateAddress(host)) throw new PrivateAddressError(url.href)
+        return { address: host, family: ipVersion }
+    }
+    const records = await lookup(host, { all: true, verbatim: true })
+    if (!records.length || records.some(r => isPrivateAddress(r.address))) {
+        throw new PrivateAddressError(url.href)
+    }
+    const first = records[0]
+    const family = first.family === 6 ? 6 : 4
+    return { address: first.address, family }
 }
 
 /** Throws PrivateAddressError when the URL's host is, or resolves to, a private address. */
 export async function assertPublicUrl(url: URL): Promise<void> {
-    const host = url.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase()
-    if (host === 'localhost' || host.endsWith('.localhost')) throw new PrivateAddressError(url.href)
-    const addresses = isIP(host) ? [host] : (await lookup(host, { all: true, verbatim: true })).map(r => r.address)
-    if (addresses.some(isPrivateAddress)) throw new PrivateAddressError(url.href)
+    await resolvePublicUrl(url)
 }

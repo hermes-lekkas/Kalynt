@@ -11,6 +11,7 @@
  *   turn, including when the user declines or stops.
  */
 import type { ChatRequest, ChatResult, Effort, ProviderId, StreamEvent, ToolCall } from '../../types/aiProtocol'
+import { useAgentStatusStore } from '../../stores/agentStatusStore'
 import { chat as cloudChat, AiRequestError } from './aiClient'
 import { localChat } from './localModel'
 import { AGENT_TOOLS, getTool, runTool, toolSpecs, type AgentTool, type ToolDisplay, type ToolOutcome } from './tools'
@@ -62,6 +63,7 @@ export interface RunOptions {
     signal: AbortSignal
     hooks: RunHooks
     knownFiles: Set<string>
+    backgroundIds?: Set<string>
     maxSteps?: number
 }
 
@@ -86,16 +88,20 @@ export async function runAgent(session: AgentSession, target: RunTarget, options
     session.checkpoints.push(checkpoint)
     session.paused = false
     const maxSteps = options.maxSteps ?? 60
+    const backgroundIds = options.backgroundIds ?? new Set<string>()
+    const statusStore = useAgentStatusStore.getState()
 
     try {
         for (let step = 0; step < maxSteps; step++) {
             if (signal.aborted) return 'stopped'
-            if (target.provider !== 'local' && await compactIfNeeded(session, target, chatFn, signal)) hooks.onChange()
+            statusStore.setStep({ current: step + 1, max: maxSteps })
 
             const live: LiveTurn = { text: '', reasoning: '', calls: [] }
-            hooks.onLive({ ...live })
             let result: ChatResult
             try {
+                if (target.provider !== 'local' && await compactIfNeeded(session, target, chatFn, signal)) hooks.onChange()
+                if (signal.aborted) return 'stopped'
+                hooks.onLive({ ...live })
                 result = await chatFn({
                     provider: target.provider === 'local' ? 'anthropic' : target.provider,
                     model: target.model,
@@ -144,7 +150,7 @@ export async function runAgent(session: AgentSession, target: RunTarget, options
                 continue
             }
 
-            const outcome = await executeCalls(session, calls, checkpoint, tools, options)
+            const outcome = await executeCalls(session, calls, checkpoint, tools, { ...options, backgroundIds })
             hooks.onChange()
             if (outcome !== 'ok') return outcome
         }
@@ -152,6 +158,7 @@ export async function runAgent(session: AgentSession, target: RunTarget, options
         note(session, `Paused after ${maxSteps} steps. Continue if you want the agent to keep going.`)
         return 'paused'
     } finally {
+        statusStore.setStep(null)
         if (Object.keys(checkpoint.files).length === 0) session.checkpoints = session.checkpoints.filter(c => c !== checkpoint)
         session.updatedAt = Date.now()
         hooks.onChange()
@@ -185,10 +192,11 @@ function recordTool(session: AgentSession, call: ToolCall, patch: Partial<ToolRe
 
 /** Read-only calls that never need approval can run side by side. */
 const isParallelSafe = (tool: AgentTool | undefined, call: ToolCall, options: RunOptions) =>
-    !!tool && !call.argumentsError && ['read', 'search', 'web'].includes(tool.kind) && tool.name !== 'command_output'
+    !!tool && !call.argumentsError && ['read', 'search', 'web'].includes(tool.kind)
+    && tool.name !== 'command_output' && tool.name !== 'stop_command'
     && !needsApproval(tool, call.arguments, options.mode, options.memory)
 
-async function executeCalls(session: AgentSession, calls: ToolCall[], checkpoint: RunCheckpoint, tools: AgentTool[], options: RunOptions): Promise<'ok' | 'stopped' | 'declined'> {
+async function executeCalls(session: AgentSession, calls: ToolCall[], checkpoint: RunCheckpoint, tools: AgentTool[], options: RunOptions & { backgroundIds: Set<string> }): Promise<'ok' | 'stopped' | 'declined'> {
     const { hooks, signal } = options
     const results = new Map<string, ToolOutcome>()
     let stopReason: 'stopped' | 'declined' | null = null
@@ -198,6 +206,7 @@ async function executeCalls(session: AgentSession, calls: ToolCall[], checkpoint
         signal,
         callId: call.id,
         knownFiles: options.knownFiles,
+        backgroundIds: options.backgroundIds,
         checkpoint: (path: string) => snapshot(checkpoint, path),
         onOutput: (chunk: string) => hooks.onOutput(call.id, chunk),
         plan: {

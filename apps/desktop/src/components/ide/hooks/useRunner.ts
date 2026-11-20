@@ -99,7 +99,7 @@ export function useRunner({ folder, activeFile, saveFile }: Options) {
     }, [])
 
     const sendInput = useCallback((data: string) => {
-        if (executionId.current) api()?.ipcRenderer.invoke('code:write-input', executionId.current, data)
+        if (executionId.current) api()?.code?.writeInput?.(executionId.current, data)
     }, [])
 
     const build = useCallback(async () => {

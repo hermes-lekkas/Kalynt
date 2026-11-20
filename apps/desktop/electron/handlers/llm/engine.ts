@@ -154,74 +154,76 @@ export function fitContextToBudget(
 export function loadModel(options: LoadOptions): Promise<LoadResult> {
     for (const controller of active.values()) controller.abort()
     return exclusive(async () => {
-        await disposeModel()
-        engineLog.length = 0
-        const { getLlama } = await importEngine()
-        if (!llama) {
-            const { LlamaLogLevel } = await importEngine()
-            llama = await getLlama({ logLevel: LlamaLogLevel.warn, logger: rememberLog })
-            const vram = await llama.getVramState().catch(() => null)
-            console.log(`[LLM] Backend: ${llama.gpu || 'cpu'}${vram ? `, VRAM free ${(vram.free / 2 ** 30).toFixed(1)} of ${(vram.total / 2 ** 30).toFixed(1)} GiB` : ''}`)
-        }
-        const gpuLayers = options.gpuLayers ?? 0
-        model = await llama.loadModel({ modelPath: options.modelPath, gpuLayers, useMmap: options.useMemoryMapping ?? true })
-
-        const tiny = /1\.5b|\b1b|0\.5b/i.test(options.modelId)
-        const small = tiny || /\b3b|\b4b/i.test(options.modelId)
-        const wanted = Math.min(options.contextLength || 8192, tiny ? 8192 : small ? 16384 : Infinity)
-        const max = Math.max(24, Math.min(wanted, model.trainContextSize || wanted))
-        const minimumContext = Math.min(512, max)
-        const insights = model.fileInsights
-        const flashAttention = options.flashAttention ?? true
-        const useFlash = flashAttention && insights.flashAttentionSupported
-
-        const modelReq = insights.estimateModelResourceRequirements({ gpuLayers, useMmap: options.useMemoryMapping ?? true })
-        let contextSize = max
-        let capped = false
-        if (options.autoContextCap !== false) {
-            const reserved = Math.max(0, options.reservedMB ?? 512) * 1024 * 1024
-            const budget = Math.max(64 * 1024 * 1024, readMemorySnapshot().available - reserved)
-            const totalFor = (ctx: number) => modelReq.cpuRam + insights.estimateContextResourceRequirements({
-                contextSize: ctx, modelGpuLayers: gpuLayers, batchSize: options.batchSize || (tiny ? 64 : small ? 128 : 256), flashAttention: useFlash
-            }).cpuRam
-            if (totalFor(minimumContext) > budget) {
-                await disposeModel()
-                const needMB = Math.round(totalFor(minimumContext) / 1048576)
-                const freeMB = Math.round(readMemorySnapshot().available / 1048576)
-                throw new Error(`Not enough memory for this model: it needs at least ${needMB} MB even with the smallest context, and only ${freeMB} MB is free. Close other apps or pick a smaller model.`)
-            }
-            const fit = fitContextToBudget(ctx => ({ cpuRam: insights.estimateContextResourceRequirements({
-                contextSize: ctx, modelGpuLayers: gpuLayers, batchSize: options.batchSize || (tiny ? 64 : small ? 128 : 256), flashAttention: useFlash
-            }).cpuRam }), budget - modelReq.cpuRam, max, minimumContext)
-            contextSize = fit.contextSize
-            capped = fit.capped
-            if (capped) console.warn(`[LLM] Context capped to ${contextSize} tokens (from ${max}) to fit ${(budget / 1048576).toFixed(0)} MB of free memory`)
-        }
-
-        const base = {
-            contextSize: { min: minimumContext, max: contextSize },
-            failedCreationRemedy: { retries: 3, autoContextSizeShrink: 0.75 },
-            batchSize: options.batchSize || (tiny ? 64 : small ? 128 : 256),
-            ...(options.threads && options.threads > 0 ? { threads: options.threads } : {})
-        }
         try {
-            context = await model.createContext({ ...base, flashAttention: useFlash })
-        } catch (err) {
-            if (!useFlash) throw err
-            // Some backends can't do flash attention; try once without it.
-            context = await model.createContext(base)
-        }
-        loadedModelId = options.modelId
+            await disposeModel()
+            engineLog.length = 0
+            const { getLlama } = await importEngine()
+            if (!llama) {
+                const { LlamaLogLevel } = await importEngine()
+                llama = await getLlama({ logLevel: LlamaLogLevel.warn, logger: rememberLog })
+                const vram = await llama.getVramState().catch(() => null)
+                console.log(`[LLM] Backend: ${llama.gpu || 'cpu'}${vram ? `, VRAM free ${(vram.free / 2 ** 30).toFixed(1)} of ${(vram.total / 2 ** 30).toFixed(1)} GiB` : ''}`)
+            }
+            const gpuLayers = options.gpuLayers ?? 0
+            model = await llama.loadModel({ modelPath: options.modelPath, gpuLayers, useMmap: options.useMemoryMapping ?? true })
 
-        const totalRam = modelReq.cpuRam + insights.estimateContextResourceRequirements({
-            contextSize, modelGpuLayers: gpuLayers, batchSize: base.batchSize, flashAttention: useFlash
-        }).cpuRam
-        console.log(`[LLM] Loaded ${options.modelId}: context ${context.contextSize} tokens, ~${Math.round(totalRam / 1048576)} MB estimated`)
-        memoryGuard.touch()
-        return { contextSize: context.contextSize, estimatedRamMB: Math.round(totalRam / 1048576), contextCapped: capped && contextSize < max }
-    }).catch(async err => {
-        await disposeModel()
-        throw explainLoadFailure(err)
+            const tiny = /1\.5b|\b1b|0\.5b/i.test(options.modelId)
+            const small = tiny || /\b3b|\b4b/i.test(options.modelId)
+            const wanted = Math.min(options.contextLength || 8192, tiny ? 8192 : small ? 16384 : Infinity)
+            const max = Math.max(24, Math.min(wanted, model.trainContextSize || wanted))
+            const minimumContext = Math.min(512, max)
+            const insights = model.fileInsights
+            const flashAttention = options.flashAttention ?? true
+            const useFlash = flashAttention && insights.flashAttentionSupported
+
+            const modelReq = insights.estimateModelResourceRequirements({ gpuLayers, useMmap: options.useMemoryMapping ?? true })
+            let contextSize = max
+            let capped = false
+            if (options.autoContextCap !== false) {
+                const reserved = Math.max(0, options.reservedMB ?? 512) * 1024 * 1024
+                const budget = Math.max(64 * 1024 * 1024, readMemorySnapshot().available - reserved)
+                const totalFor = (ctx: number) => modelReq.cpuRam + insights.estimateContextResourceRequirements({
+                    contextSize: ctx, modelGpuLayers: gpuLayers, batchSize: options.batchSize || (tiny ? 64 : small ? 128 : 256), flashAttention: useFlash
+                }).cpuRam
+                if (totalFor(minimumContext) > budget) {
+                    await disposeModel()
+                    const needMB = Math.round(totalFor(minimumContext) / 1048576)
+                    const freeMB = Math.round(readMemorySnapshot().available / 1048576)
+                    throw new Error(`Not enough memory for this model: it needs at least ${needMB} MB even with the smallest context, and only ${freeMB} MB is free. Close other apps or pick a smaller model.`)
+                }
+                const fit = fitContextToBudget(ctx => ({ cpuRam: insights.estimateContextResourceRequirements({
+                    contextSize: ctx, modelGpuLayers: gpuLayers, batchSize: options.batchSize || (tiny ? 64 : small ? 128 : 256), flashAttention: useFlash
+                }).cpuRam }), budget - modelReq.cpuRam, max, minimumContext)
+                contextSize = fit.contextSize
+                capped = fit.capped
+                if (capped) console.warn(`[LLM] Context capped to ${contextSize} tokens (from ${max}) to fit ${(budget / 1048576).toFixed(0)} MB of free memory`)
+            }
+
+            const base = {
+                contextSize: { min: minimumContext, max: contextSize },
+                failedCreationRemedy: { retries: 3, autoContextSizeShrink: 0.75 },
+                batchSize: options.batchSize || (tiny ? 64 : small ? 128 : 256),
+                ...(options.threads && options.threads > 0 ? { threads: options.threads } : {})
+            }
+            try {
+                context = await model.createContext({ ...base, flashAttention: useFlash })
+            } catch (err) {
+                if (!useFlash) throw err
+                // Some backends can't do flash attention; try once without it.
+                context = await model.createContext(base)
+            }
+            loadedModelId = options.modelId
+
+            const totalRam = modelReq.cpuRam + insights.estimateContextResourceRequirements({
+                contextSize, modelGpuLayers: gpuLayers, batchSize: base.batchSize, flashAttention: useFlash
+            }).cpuRam
+            console.log(`[LLM] Loaded ${options.modelId}: context ${context.contextSize} tokens, ~${Math.round(totalRam / 1048576)} MB estimated`)
+            memoryGuard.touch()
+            return { contextSize: context.contextSize, estimatedRamMB: Math.round(totalRam / 1048576), contextCapped: capped && contextSize < max }
+        } catch (err) {
+            await disposeModel()
+            throw explainLoadFailure(err)
+        }
     })
 }
 
@@ -274,22 +276,24 @@ export function generate(requestId: string, options: GenerateOptions, onText?: (
         const stops = (options.stopSequences ?? []).filter(Boolean)
         const maxTokens = options.maxTokens && options.maxTokens > 0 ? options.maxTokens : 2048
 
-        const predictor = draft ? new engine.DraftSequenceTokenPredictor(draft.context.getSequence()) : undefined
-        const sequence = context.getSequence(predictor ? { tokenPredictor: predictor } : undefined)
-        let grammarEvaluationState: InstanceType<Engine['LlamaGrammarEvaluationState']> | undefined
-        if (options.jsonSchema) {
-            const grammar = new engine.LlamaJsonSchemaGrammar(llama!, options.jsonSchema as any)
-            grammarEvaluationState = new engine.LlamaGrammarEvaluationState({ model: current, grammar })
-        }
-
         const generated: Token[] = []
         let committed = ''      // text of generated[0..checkpoint)
         let checkpoint = 0
         let text = ''
         let emitted = 0
         let aborted = false
+        let draftSequence: ReturnType<LlamaContext['getSequence']> | undefined
+        let sequence: ReturnType<LlamaContext['getSequence']> | undefined
         generating = true
         try {
+            draftSequence = draft ? draft.context.getSequence() : undefined
+            const predictor = draftSequence ? new engine.DraftSequenceTokenPredictor(draftSequence) : undefined
+            sequence = context.getSequence(predictor ? { tokenPredictor: predictor } : undefined)
+            let grammarEvaluationState: InstanceType<Engine['LlamaGrammarEvaluationState']> | undefined
+            if (options.jsonSchema) {
+                const grammar = new engine.LlamaJsonSchemaGrammar(llama!, options.jsonSchema as any)
+                grammarEvaluationState = new engine.LlamaGrammarEvaluationState({ model: current, grammar })
+            }
             // `true`: the template's control tokens (e.g. <|im_start|>) are real tokens, not text.
             const input = current.tokenize(options.prompt, true)
             // evaluate() takes no abort signal; leaving the loop stops generation.
@@ -314,7 +318,8 @@ export function generate(requestId: string, options: GenerateOptions, onText?: (
             if (!controller.signal.aborted) throw err
             aborted = true
         } finally {
-            sequence.dispose()
+            try { sequence?.dispose() } catch { /* already disposed */ }
+            try { draftSequence?.dispose() } catch { /* already disposed */ }
             generating = false
             memoryGuard.touch()
             active.delete(requestId)

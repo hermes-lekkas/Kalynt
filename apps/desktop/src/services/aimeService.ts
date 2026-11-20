@@ -34,7 +34,7 @@ class AIMEService {
 
     // Web Worker for off-thread indexing
     private worker: Worker | null = null
-    private workerCallbacks = new Map<string, (data: any) => void>()
+    private workerCallbacks = new Map<string, { resolve: (data: any) => void; reject: (error: Error) => void }>()
     private useWorker = true // Feature flag
 
     // Background work pauses for a while after a memory-pressure signal.
@@ -74,18 +74,27 @@ class AIMEService {
      */
     private async saveIndex() {
         if (!this.workspacePath) return
+        let db: IDBDatabase | null = null
         try {
-            const db = await this.openDB()
-            const transaction = db.transaction(['aime-index'], 'readwrite')
-            const store = transaction.objectStore('aime-index')
-            store.put({
-                workspacePath: this.workspacePath,
-                index: this.index,
-                timestamp: Date.now()
+            db = await this.openDB()
+            const database = db
+            await new Promise<void>((resolve, reject) => {
+                const transaction = database.transaction(['aime-index'], 'readwrite')
+                const store = transaction.objectStore('aime-index')
+                store.put({
+                    workspacePath: this.workspacePath,
+                    index: this.index,
+                    timestamp: Date.now()
+                })
+                transaction.oncomplete = () => resolve()
+                transaction.onerror = () => reject(transaction.error ?? new Error('AIME save transaction failed'))
+                transaction.onabort = () => reject(transaction.error ?? new Error('AIME save transaction aborted'))
             })
             logger.agent.debug('AIME: Index saved to persistent storage')
         } catch (error) {
             logger.agent.warn('AIME: Failed to save index', error)
+        } finally {
+            db?.close()
         }
     }
 
@@ -93,20 +102,28 @@ class AIMEService {
      * Load an existing index from persistent storage
      */
     private async loadIndex(path: string): Promise<IndexedFile[] | null> {
+        let db: IDBDatabase | null = null
         try {
-            const db = await this.openDB()
-            const transaction = db.transaction(['aime-index'], 'readonly')
-            const store = transaction.objectStore('aime-index')
-            const request = store.get(path)
-
-            return new Promise((resolve) => {
-                request.onsuccess = () => {
-                    resolve(request.result?.index || null)
-                }
+            db = await this.openDB()
+            const database = db
+            return await new Promise<IndexedFile[] | null>((resolve) => {
+                const transaction = database.transaction(['aime-index'], 'readonly')
+                const store = transaction.objectStore('aime-index')
+                const request = store.get(path)
+                request.onsuccess = () => resolve(request.result?.index || null)
                 request.onerror = () => resolve(null)
             })
         } catch {
             return null
+        } finally {
+            db?.close()
+        }
+    }
+
+    private rejectPendingWorkerCallbacks(error: Error) {
+        for (const [key, cb] of this.workerCallbacks) {
+            this.workerCallbacks.delete(key)
+            cb.reject(error)
         }
     }
 
@@ -123,6 +140,10 @@ class AIMEService {
             this.worker!.onerror = (error) => {
                 console.error('[AIME] Worker error:', error)
                 this.useWorker = false // Fall back to main thread
+                const message = error instanceof ErrorEvent && error.message ? error.message : 'AIME worker failed'
+                this.rejectPendingWorkerCallbacks(new Error(message))
+                this.worker?.terminate()
+                this.worker = null
             }
             return this.worker
         } catch (error) {
@@ -147,7 +168,6 @@ class AIMEService {
                 })
                 break
             case 'indexingComplete': {
-                this.isIndexing = false
                 logger.agent.info('AIME Worker: Indexing complete', {
                     processed: data.processed,
                     failed: data.failed,
@@ -156,8 +176,8 @@ class AIMEService {
                 // Resolve the pending promise
                 const completeCallback = this.workerCallbacks.get('indexComplete')
                 if (completeCallback) {
-                    completeCallback(data)
                     this.workerCallbacks.delete('indexComplete')
+                    completeCallback.resolve(data)
                 }
 
                 // RAM Optimization: Destroy the worker's V8 isolate immediately after indexing
@@ -171,14 +191,22 @@ class AIMEService {
             case 'searchResults': {
                 const searchCallback = this.workerCallbacks.get(`search:${data.query}`)
                 if (searchCallback) {
-                    searchCallback(data.results)
                     this.workerCallbacks.delete(`search:${data.query}`)
+                    searchCallback.resolve(data.results)
                 }
                 break
             }
-            case 'error':
+            case 'error': {
                 logger.agent.error('AIME Worker error:', data)
+                if (!data.filePath) {
+                    const completeCallback = this.workerCallbacks.get('indexComplete')
+                    if (completeCallback) {
+                        this.workerCallbacks.delete('indexComplete')
+                        completeCallback.reject(new Error(String(data.error || 'AIME worker error')))
+                    }
+                }
                 break
+            }
         }
     }
 
@@ -195,9 +223,15 @@ class AIMEService {
                 reject(new Error('Worker timeout'))
             }, timeoutMs)
 
-            this.workerCallbacks.set(callbackKey, (data: any) => {
-                clearTimeout(timeout)
-                resolve(data)
+            this.workerCallbacks.set(callbackKey, {
+                resolve: (data: any) => {
+                    clearTimeout(timeout)
+                    resolve(data)
+                },
+                reject: (err: Error) => {
+                    clearTimeout(timeout)
+                    reject(err)
+                }
             })
 
             worker.postMessage({ type, ...payload })
@@ -222,14 +256,11 @@ class AIMEService {
                 this.buildSearchIndex()
                 logger.agent.info('AIME: Loaded index from cache', { files: this.index.length })
 
-                // Trigger fast incremental re-index for changed files
-                this.isIndexing = false // Temporarily unlock
-                await this.reindexChanged()
-                this.isIndexing = true // Re-lock for potential full index logic below if needed
+                // Keep the indexing lock held across incremental re-indexing.
+                await this.runReindexChanged()
 
                 // If we have enough files, we consider it "done" for now
                 if (this.index.length > 0) {
-                    this.isIndexing = false
                     return
                 }
             }
@@ -244,8 +275,13 @@ class AIMEService {
                     const fileData = await this.loadFileContents(files, path)
                     const worker = this.initWorker()
                     if (worker) {
-                        await this.indexWithWorker(fileData)
-                        return
+                        try {
+                            await this.indexWithWorker(fileData)
+                            return
+                        } catch (workerError) {
+                            logger.agent.warn('AIME: Worker indexing failed, falling back to main thread', { error: workerError })
+                            this.index = []
+                        }
                     }
                 }
             }
@@ -348,12 +384,13 @@ class AIMEService {
             try {
                 const res = await electronAPI?.fs.readFile(path)
                 if (res?.success && res.content) {
-                    // The real mtime, so later incremental re-indexes see real changes.
+                    // The real mtimeMs, so later incremental re-indexes see real changes.
                     const stats = await electronAPI?.fs.stat(path).catch(() => undefined)
+                    const mtime = (stats?.success ? (stats.mtimeMs ?? stats.mtime) : 0) || 0
                     files.push({
                         path,
                         content: res.content,
-                        lastModified: stats?.mtime || 0,
+                        lastModified: mtime,
                         relativePath: path.replace(workspacePath, '').replace(/^[/\\]/, '')
                     })
                 }
@@ -376,10 +413,11 @@ class AIMEService {
         const result = await this.sendToWorker('indexWorkspace', { files }, 'indexComplete', timeoutMs)
 
         if (result?.indexData) {
+            const validTypes = new Set<CodeSymbol['type']>(['class', 'function', 'interface', 'variable', 'method'])
             for (const entry of result.indexData) {
                 const symbols: CodeSymbol[] = (entry.symbols || []).map((s: any) => ({
                     name: s.name,
-                    type: s.type === 'class' ? 'class' : s.type === 'variable' ? 'variable' : 'function',
+                    type: validTypes.has(s.type) ? s.type : 'function',
                     filePath: entry.path,
                     line: s.line,
                     content: s.context || ''
@@ -458,10 +496,11 @@ class AIMEService {
 
             const stats = await electronAPI.fs.stat(filePath)
             const symbols = await this.extractSymbols(res.content, filePath)
+            const mtime = (stats?.success ? (stats.mtimeMs ?? stats.mtime) : 0) || Date.now()
 
             this.index.push({
                 path: filePath,
-                lastModified: stats?.mtime || Date.now(),
+                lastModified: mtime,
                 symbols
             })
         } catch (error) {
@@ -590,7 +629,8 @@ class AIMEService {
 
             // Approximate token count based on file structure
             const approximateTokenCount = fileTokens.length
-            score += idf * (f_q * (k1 + 1)) / (f_q + k1 * (1 - b + b * (approximateTokenCount / (this.avgdl * 10)))) // Adjust avgdl scale
+            const avgLen = Math.max(1, this.avgdl * 10)
+            score += idf * (f_q * (k1 + 1)) / (f_q + k1 * (1 - b + b * (approximateTokenCount / avgLen)))
         }
 
         return score
@@ -609,11 +649,20 @@ class AIMEService {
         // 1. Get fuzzy matches for symbols
         const fuseResults = this.fuse.search(query)
 
-        // 2. Calculate BM25 for files containing these symbols
+        // 2. Deduplicate concurrent file reads / BM25 calculations per unique file path
+        const bm25ByPath = new Map<string, Promise<number>>()
+        const getFileBm25 = (filePath: string): Promise<number> => {
+            const cached = bm25ByPath.get(filePath)
+            if (cached) return cached
+            const file = this.index.find(f => f.path === filePath)
+            const pending = file ? this.calculateBM25(query, file) : Promise.resolve(0)
+            bm25ByPath.set(filePath, pending)
+            return pending
+        }
+
         const scoredSymbolsPromises = fuseResults.map(async (res) => {
             const symbol = res.item
-            const file = this.index.find(f => f.path === symbol.filePath)
-            const bm25 = file ? await this.calculateBM25(query, file) : 0
+            const bm25 = await getFileBm25(symbol.filePath)
 
             // Normalize scores (Fuse score is 0-1 where 0 is perfect, BM25 is typically > 0 where higher is better)
             // We want a combined score where HIGHER is better
@@ -802,6 +851,16 @@ class AIMEService {
      */
     async reindexChanged() {
         if (this.isIndexing || this.suspended() || !this.workspacePath) return
+        this.isIndexing = true
+        try {
+            await this.runReindexChanged()
+        } finally {
+            this.isIndexing = false
+        }
+    }
+
+    private async runReindexChanged() {
+        if (this.suspended() || !this.workspacePath) return
 
         const electronAPI = globalThis.window.electronAPI
         if (!electronAPI) return
@@ -812,24 +871,28 @@ class AIMEService {
 
         for (let i = 0; i < this.index.length; i++) {
             const file = this.index[i]
-            let stats: { mtime?: number } | undefined
+            let stats: { success?: boolean; mtimeMs?: number; mtime?: number } | undefined
             try {
                 stats = await electronAPI.fs.stat(file.path)
             } catch {
-                // File is gone; drop it from the index.
+                stats = { success: false }
+            }
+            if (!stats?.success) {
+                // File is gone (fs:stat returns { success: false }); drop it from the index.
                 this.index.splice(i, 1)
                 i--
                 removed++
                 continue
             }
             try {
-                if (stats?.mtime && stats.mtime > file.lastModified) {
+                const mtime = stats.mtimeMs ?? stats.mtime ?? 0
+                if (mtime > file.lastModified) {
                     const res = await electronAPI.fs.readFile(file.path)
-                    if (res?.success && res.content) {
+                    if (res?.success && typeof res.content === 'string') {
                         const symbols = await this.extractSymbols(res.content, file.path)
                         this.index[i] = {
                             ...file,
-                            lastModified: stats.mtime,
+                            lastModified: mtime,
                             symbols
                         }
                         updated++

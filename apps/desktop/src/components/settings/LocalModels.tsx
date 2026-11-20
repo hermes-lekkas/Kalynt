@@ -2,10 +2,10 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 import { useEffect, useState } from 'react'
-import { Download, Square, Trash2 } from 'lucide-react'
+import { Download, Pause, Play, Square, Trash2 } from 'lucide-react'
 import { useModelStore } from '../../stores/modelStore'
 import { offlineLLMService } from '../../services/offlineLLMService'
-import { cancelDownload, deleteModel, downloadModel } from '../../services/modelDownloadService'
+import { cancelDownload, deleteModel, downloadModel, pauseDownload, resumeDownload } from '../../services/modelDownloadService'
 import { OFFLINE_MODELS, formatBytes, formatETA } from '../../types/offlineModels'
 import { useNotificationStore } from '../../stores/notificationStore'
 import { Badge, Button, IconButton, ProgressBar, confirmAction } from '../ui'
@@ -17,7 +17,7 @@ export function LocalModels() {
     const [memory, setMemory] = useState<number | null>(null)
     const [failedModel, setFailedModel] = useState<string | null>(null)
 
-    useEffect(() => { useModelStore.getState().setupListeners() }, [])
+    useEffect(() => useModelStore.getState().setupListeners(), [])
     useEffect(() => {
         let active = true
         window.electronAPI?.getHardwareInfo?.().then(info => {
@@ -74,10 +74,11 @@ export function LocalModels() {
                             {memory !== null && model.ramRequiredMB + 2048 > memory && <p className="model-row__specs">Memory may be tight on this machine. Try a smaller model or a local server.</p>}
                             {downloading && (
                                 <div className="model-row__progress">
-                                    <ProgressBar value={download.totalBytes ? download.bytesDownloaded / download.totalBytes : undefined} tone="agent" label={`Downloading ${model.name}`} />
+                                    <ProgressBar value={download.totalBytes ? download.bytesDownloaded / download.totalBytes : undefined} tone="agent" label={download.status === 'paused' ? `Paused ${model.name}` : `Downloading ${model.name}`} />
                                     <span>
+                                        {download.status === 'paused' && 'Paused · '}
                                         {formatBytes(download.bytesDownloaded)} of {formatBytes(download.totalBytes)}
-                                        {download.speed > 0 && `, ${formatBytes(download.speed)}/s, ${formatETA(download.eta)} left`}
+                                        {download.status === 'downloading' && download.speed > 0 && `, ${formatBytes(download.speed)}/s, ${formatETA(download.eta)} left`}
                                     </span>
                                 </div>
                             )}
@@ -86,7 +87,14 @@ export function LocalModels() {
                         </div>
                         <div className="model-row__actions">
                             {downloading ? (
-                                <Button size="sm" variant="ghost" icon={<Square size={11} />} onClick={() => cancelDownload(model.id)}>Cancel</Button>
+                                <>
+                                    {download.status === 'paused' ? (
+                                        <Button size="sm" variant="primary" icon={<Play size={11} />} onClick={() => void resumeDownload(model.id)}>Resume</Button>
+                                    ) : (
+                                        <Button size="sm" variant="ghost" icon={<Pause size={11} />} onClick={() => void pauseDownload(model.id)}>Pause</Button>
+                                    )}
+                                    <Button size="sm" variant="ghost" icon={<Square size={11} />} onClick={() => cancelDownload(model.id)}>Cancel</Button>
+                                </>
                             ) : downloaded ? (
                                 <>
                                     {loaded

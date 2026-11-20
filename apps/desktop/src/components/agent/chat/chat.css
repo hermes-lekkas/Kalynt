@@ -10,12 +10,50 @@
     flex-direction: column;
 }
 
+.agent-chat__stage {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
 .agent-chat__thread {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
+}
+
+.agent-chat__jump {
+    position: absolute;
+    left: 50%;
+    bottom: var(--sp-4);
+    transform: translateX(-50%);
+    z-index: 4;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    height: 26px;
+    padding: 0 var(--sp-4);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-pill);
+    background: var(--raised);
+    color: var(--text);
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-medium);
+    box-shadow: var(--shadow-pop);
+}
+
+.agent-chat__jump:hover {
+    background: var(--hover);
+    border-color: var(--agent-line);
+}
+
+.agent-chat__jump.is-live {
+    border-color: var(--agent-line);
+    color: var(--agent);
 }
 
 .agent-chat__messages {
@@ -171,6 +209,12 @@
     color: var(--text-3);
 }
 
+.md-pre__actions {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-1);
+}
+
 .md-pre__copy {
     display: inline-flex;
     align-items: center;
@@ -194,6 +238,27 @@
     font-size: var(--fs-sm);
     line-height: 1.55;
 }
+
+/* Syntax tokens aligned with Kalynt Monaco themes */
+.md-pre .tok-cm { color: #8a8699; font-style: italic; }
+.md-pre .tok-kw { color: #b69cff; }
+.md-pre .tok-str { color: #8fd3a8; }
+.md-pre .tok-num { color: #f0b47c; }
+.md-pre .tok-type { color: #6fc3df; }
+.md-pre .tok-fn { color: #d5c7ff; }
+.md-pre .tok-tag { color: #e57fb5; }
+.md-pre .tok-attr { color: #e8c27a; }
+.md-pre .tok-add { color: var(--success); }
+.md-pre .tok-del { color: var(--danger); }
+
+:root[data-theme='light'] .md-pre .tok-cm { color: #6b6880; }
+:root[data-theme='light'] .md-pre .tok-kw { color: #5b3dd9; }
+:root[data-theme='light'] .md-pre .tok-str { color: #1f7a4d; }
+:root[data-theme='light'] .md-pre .tok-num { color: #a3570f; }
+:root[data-theme='light'] .md-pre .tok-type { color: #1a6f96; }
+:root[data-theme='light'] .md-pre .tok-fn { color: #4328b8; }
+:root[data-theme='light'] .md-pre .tok-tag { color: #b02a6e; }
+:root[data-theme='light'] .md-pre .tok-attr { color: #8a5a00; }
 
 .md-mention {
     color: var(--agent);

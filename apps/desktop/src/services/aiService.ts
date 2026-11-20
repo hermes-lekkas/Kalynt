@@ -40,6 +40,10 @@ export interface ChatOptions {
     temperature?: number
     /** Ask for deeper reasoning. */
     thinking?: boolean
+    /** Abort this request without cancelling unrelated requests. */
+    signal?: AbortSignal
+    /** Keep leading/trailing whitespace (needed for inline completions and code fixes). */
+    preserveWhitespace?: boolean
 }
 
 /**
@@ -57,8 +61,8 @@ export function pickProvider(apiKeys: Partial<Record<ProviderId, boolean>>): AIP
     return PROVIDER_IDS.find(p => p !== 'local-server' && !!apiKeys[p]) ?? null
 }
 
-/** Current models think before answering; small output limits would leave no room for the answer. */
-const MIN_OUTPUT_TOKENS = 8000
+/** Generous default when a caller does not specify a cap; explicit caller limits are respected. */
+const DEFAULT_OUTPUT_TOKENS = 8000
 
 function toRequest(messages: AIMessage[], provider: AIProvider, options?: ChatOptions) {
     let model = options?.model || defaultModel(provider)
@@ -73,9 +77,12 @@ function toRequest(messages: AIMessage[], provider: AIProvider, options?: ChatOp
         ? { role: 'user' as const, content: m.content }
         : { role: 'assistant' as const, text: m.content, toolCalls: [], provider, model })
     const effort: Effort = options?.thinking ? 'high' : 'low'
+    const maxTokens = options?.maxTokens !== undefined && options.maxTokens > 0
+        ? options.maxTokens
+        : (provider === 'local-server' ? 2048 : DEFAULT_OUTPUT_TOKENS)
     return {
         model,
-        request: { provider, model, system, items, effort, maxTokens: provider === 'local-server' ? options?.maxTokens ?? 2048 : Math.max(options?.maxTokens ?? 0, MIN_OUTPUT_TOKENS), temperature: options?.temperature }
+        request: { provider, model, system, items, effort, maxTokens, temperature: options?.temperature }
     }
 }
 
@@ -105,11 +112,16 @@ class AIService {
         const { model, request } = toRequest(messages, provider, options)
         const controller = new AbortController()
         this.controllers.add(controller)
+        const onAbort = () => controller.abort()
+        if (options?.signal) {
+            if (options.signal.aborted) controller.abort()
+            else options.signal.addEventListener('abort', onAbort, { once: true })
+        }
         try {
             const result = await gatewayChat(request, () => {}, controller.signal)
             if (result.stopReason === 'refusal') return { content: '', provider, model, error: 'The model declined this request.', errorType: 'api' }
             return {
-                content: result.assistant.text.trim(),
+                content: options?.preserveWhitespace ? result.assistant.text : result.assistant.text.trim(),
                 provider,
                 model: result.assistant.model,
                 usage: result.usage ? {
@@ -121,6 +133,7 @@ class AIService {
         } catch (error) {
             return { content: '', provider, model, error: error instanceof Error ? error.message : String(error), errorType: errorType(error) }
         } finally {
+            options?.signal?.removeEventListener('abort', onAbort)
             this.controllers.delete(controller)
         }
     }
@@ -129,6 +142,11 @@ class AIService {
         const { request } = toRequest(messages, provider, options)
         const controller = new AbortController()
         this.controllers.add(controller)
+        const onAbort = () => controller.abort()
+        if (options?.signal) {
+            if (options.signal.aborted) controller.abort()
+            else options.signal.addEventListener('abort', onAbort, { once: true })
+        }
         try {
             const result = await gatewayChat(request, event => { if (event.type === 'text') callbacks.onToken(event.delta) }, controller.signal)
             const text = result.assistant.text
@@ -138,6 +156,7 @@ class AIService {
             if (!(error instanceof AiRequestError && error.aborted)) callbacks.onError(error instanceof Error ? error.message : String(error))
             return ''
         } finally {
+            options?.signal?.removeEventListener('abort', onAbort)
             this.controllers.delete(controller)
         }
     }

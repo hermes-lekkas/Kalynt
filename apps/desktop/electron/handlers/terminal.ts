@@ -2,19 +2,38 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { ipcMain } from 'electron'
+import { ipcMain as globalIpcMain } from 'electron'
 import type { BrowserWindow as BrowserWindowType } from 'electron'
 import treeKill from 'tree-kill'
-import { TerminalService } from '../terminal/terminalService'
+import { TerminalService, type KalyntTerminal } from '../terminal/terminalService'
+import { sendToWindow } from '../utils/window'
 
 let terminalService: TerminalService | null = null
+let eventsWired = false
+
+function buildBroadcastFilter(filter?: string): ((term: KalyntTerminal) => boolean) | undefined {
+    const trimmed = typeof filter === 'string' ? filter.trim() : ''
+    if (!trimmed || trimmed.toLowerCase() === 'all') return undefined
+
+    const lower = trimmed.toLowerCase()
+    if (lower === 'shell' || lower === 'task' || lower === 'debug') {
+        return (term) => term.processType === lower
+    }
+
+    return (term) =>
+        term.id === trimmed ||
+        term.title.toLowerCase().includes(lower) ||
+        term.shell.toLowerCase().includes(lower) ||
+        term.cwd.toLowerCase().includes(lower)
+}
 
 export function registerTerminalHandlers(
-    _ipcMain: Electron.IpcMain, // We use the global ipcMain in the implementation below or pass it (it's passed but we can close over it)
+    ipcMainArg: Electron.IpcMain,
     getMainWindow: () => BrowserWindowType | null,
     getCurrentWorkspacePath: () => string | null
 ) {
-    // Initialize Terminal Service
+    const ipc = ipcMainArg || globalIpcMain
+
     if (!terminalService) {
         terminalService = new TerminalService(getMainWindow, getCurrentWorkspacePath)
     }
@@ -22,122 +41,160 @@ export function registerTerminalHandlers(
     // ==========================================
     // Terminal APIs
     // ==========================================
-    ipcMain.handle('terminal:spawn', async (_event, options) => {
+    ipc.handle('terminal:spawn', async (_event, options) => {
         return terminalService!.spawnTerminal(options)
     })
 
-    ipcMain.handle('terminal:write', async (_event, options) => {
-        return terminalService!.writeToTerminal(options.id, options.data)
+    ipc.handle('terminal:write', async (_event, options) => {
+        const success = await terminalService!.writeToTerminal(options.id, options.data)
+        return success ? { success: true } : { success: false, error: `Terminal ${options.id} not found or not running` }
     })
 
     // Alias for writeOutput - same as write for compatibility
-    ipcMain.handle('terminal:writeOutput', async (_event, options) => {
-        return terminalService!.writeToTerminal(options.id, options.data)
+    ipc.handle('terminal:writeOutput', async (_event, options) => {
+        const success = await terminalService!.writeToTerminal(options.id, options.data)
+        return success ? { success: true } : { success: false, error: `Terminal ${options.id} not found or not running` }
     })
 
-    ipcMain.handle('terminal:resize', async (_event, options) => {
-        return terminalService!.resizeTerminal(options.id, options.cols, options.rows)
+    ipc.handle('terminal:resize', async (_event, options) => {
+        const success = await terminalService!.resizeTerminal(options.id, options.cols, options.rows)
+        return success ? { success: true } : { success: false, error: `Failed to resize terminal ${options.id}` }
     })
 
-    ipcMain.handle('terminal:kill', async (_event, id) => {
-        // Handle object form {id, signal} or string id
-        if (typeof id === 'object') {
-            return terminalService!.killTerminal(id.id, id.signal)
-        }
-        return terminalService!.killTerminal(id)
+    ipc.handle('terminal:kill', async (_event, idOrOptions) => {
+        const id = typeof idOrOptions === 'object' && idOrOptions !== null ? idOrOptions.id : idOrOptions
+        const signal = typeof idOrOptions === 'object' && idOrOptions !== null ? idOrOptions.signal : undefined
+        const success = await terminalService!.killTerminal(id, signal)
+        return success ? { success: true } : { success: false, error: `Terminal ${id} not found` }
     })
 
-    ipcMain.handle('terminal:sendSignal', async (_event, options) => {
-        return terminalService!.sendSignal(options.id, options.signal)
+    ipc.handle('terminal:sendSignal', async (_event, options) => {
+        const success = await terminalService!.sendSignal(options.id, options.signal)
+        return success ? { success: true } : { success: false, error: `Failed to send signal to terminal ${options.id}` }
     })
 
-    ipcMain.handle('terminal:getInfo', async (_event, id) => {
+    ipc.handle('terminal:getInfo', async (_event, id) => {
         const info = await terminalService!.getTerminalInfo(id)
-        return { success: !!info, info }
+        return info ? { success: true, info } : { success: false, error: `Terminal ${id} not found` }
     })
 
-    ipcMain.handle('terminal:getAll', async () => {
+    ipc.handle('terminal:getAll', async () => {
         const terminals = terminalService!.getAllTerminals()
-        // Map to serializable format
-        const serialized = await Promise.all(terminals.map(t => terminalService!.getTerminalInfo(t.id)))
+        const serialized = (await Promise.all(terminals.map(t => terminalService!.getTerminalInfo(t.id)))).filter(Boolean)
         return { success: true, terminals: serialized }
     })
 
-    ipcMain.handle('terminal:fork', async (_event, options) => {
+    ipc.handle('terminal:fork', async (_event, options) => {
         const success = await terminalService!.forkTerminal(options.sourceId, options.newId)
-        return { success }
+        return success ? { success: true } : { success: false, error: `Failed to fork terminal ${options.sourceId}` }
     })
 
-    ipcMain.handle('terminal:sendSequence', async (_event, options) => {
+    ipc.handle('terminal:sendSequence', async (_event, options) => {
         const success = await terminalService!.sendTerminalSequence(options.id, options.sequence)
-        return { success }
+        return success ? { success: true } : { success: false, error: `Terminal ${options.id} not found or not running` }
     })
 
-    ipcMain.handle('terminal:clearHistory', async (_event, id) => {
+    ipc.handle('terminal:clearHistory', async (_event, id) => {
         const success = await terminalService!.clearTerminalHistory(id)
-        return { success }
+        return success ? { success: true } : { success: false, error: `Terminal ${id} history not found` }
     })
 
-    ipcMain.handle('terminal:saveState', async (_event, id) => {
+    ipc.handle('terminal:saveState', async (_event, id) => {
         return terminalService!.saveTerminalState(id)
     })
 
-    ipcMain.handle('terminal:restoreState', async (_event, state) => {
+    ipc.handle('terminal:restoreState', async (_event, state) => {
         return terminalService!.restoreTerminalState(state)
     })
 
-    ipcMain.handle('terminal:broadcast', async (_event, options) => {
-        const count = await terminalService!.broadcastToTerminals(options.data)
-        return { success: true, count }
+    ipc.handle('terminal:broadcast', async (_event, options) => {
+        try {
+            const filterFn = buildBroadcastFilter(options?.filter)
+            const count = await terminalService!.broadcastToTerminals(options?.data ?? '', filterFn)
+            return { success: true, count }
+        } catch (error) {
+            return { success: false, error: error instanceof Error ? error.message : String(error) }
+        }
     })
 
-    ipcMain.handle('terminal:getCommandHistory', async (_event, terminalId) => {
+    ipc.handle('terminal:getCommandHistory', async (_event, terminalId) => {
         const history = terminalService!.shellIntegration.getCommandHistory(terminalId)
         return { success: true, history }
     })
 
-    ipcMain.handle('terminal:getCurrentCommand', async (_event, terminalId) => {
+    ipc.handle('terminal:getCurrentCommand', async (_event, terminalId) => {
         const command = terminalService!.shellIntegration.getCurrentCommand(terminalId)
         return { success: true, command }
     })
 
-    ipcMain.handle('terminal:getDefaultShell', async () => {
-        return { success: true, shell: (terminalService as any).getDefaultShell() }
+    ipc.handle('terminal:getDefaultShell', async () => {
+        return { success: true, shell: terminalService!.getDefaultShell() }
     })
 
     // ==========================================
     // Language Runtime APIs
     // ==========================================
-    ipcMain.handle('runtime:startLSP', async (_event, options) => {
-        return terminalService!.languageGateway.loadLanguageServer(options)
+    ipc.handle('runtime:startLSP', async (_event, options) => {
+        try {
+            return await terminalService!.languageGateway.loadLanguageServer(options)
+        } catch (error) {
+            return { success: false, error: error instanceof Error ? error.message : String(error) }
+        }
     })
 
-    ipcMain.handle('runtime:stopLSP', async (_event, sessionId) => {
-        return terminalService!.languageGateway.stopLanguageServer(sessionId)
+    ipc.handle('runtime:stopLSP', async (_event, sessionId) => {
+        const success = await terminalService!.languageGateway.stopLanguageServer(sessionId)
+        return success ? { success: true } : { success: false, error: `Language server ${sessionId} not found` }
     })
 
-    ipcMain.handle('runtime:sendLSPRequest', async (_event, options) => {
-        return terminalService!.languageGateway.sendLSPRequest(options.sessionId, options.method, options.params)
+    ipc.handle('runtime:sendLSPRequest', async (_event, options) => {
+        try {
+            const result = await terminalService!.languageGateway.sendLSPRequest(
+                options.sessionId,
+                options.method,
+                options.params
+            )
+            return { success: true, result }
+        } catch (error) {
+            return { success: false, error: error instanceof Error ? error.message : String(error) }
+        }
     })
 
-    ipcMain.handle('runtime:getLanguageServers', async () => {
+    ipc.handle('runtime:getLanguageServers', async () => {
         const servers = await terminalService!.languageGateway.getLanguageServers()
         return { success: true, servers }
     })
 
-    ipcMain.handle('runtime:startDebug', async (_event, options) => {
-        return terminalService!.languageGateway.startDebugSession(options)
+    ipc.handle('runtime:startDebug', async (_event, options) => {
+        try {
+            const merged = options?.options && typeof options.options === 'object'
+                ? { ...options.options, ...options }
+                : options
+            return await terminalService!.languageGateway.startDebugSession(merged)
+        } catch (error) {
+            return { success: false, error: error instanceof Error ? error.message : String(error) }
+        }
     })
 
-    ipcMain.handle('runtime:stopDebug', async (_event, sessionId) => {
-        return terminalService!.languageGateway.stopDebugSession(sessionId)
+    ipc.handle('runtime:stopDebug', async (_event, sessionId) => {
+        const success = await terminalService!.languageGateway.stopDebugSession(sessionId)
+        return success ? { success: true } : { success: false, error: `Debug session ${sessionId} not found` }
     })
 
-    ipcMain.handle('runtime:sendDebugRequest', async (_event, options) => {
-        return terminalService!.languageGateway.sendDebugRequest(options.sessionId, options.method, options.params)
+    ipc.handle('runtime:sendDebugRequest', async (_event, options) => {
+        try {
+            const result = await terminalService!.languageGateway.sendDebugRequest(
+                options.sessionId,
+                options.method,
+                options.params
+            )
+            return { success: true, result }
+        } catch (error) {
+            return { success: false, error: error instanceof Error ? error.message : String(error) }
+        }
     })
 
-    ipcMain.handle('runtime:getDebugSessions', async () => {
+    ipc.handle('runtime:getDebugSessions', async () => {
         const sessions = await terminalService!.languageGateway.getDebugSessions()
         return { success: true, sessions }
     })
@@ -145,25 +202,34 @@ export function registerTerminalHandlers(
     // ==========================================
     // Task Runner APIs
     // ==========================================
-    ipcMain.handle('tasks:detectTasks', async (_event, workspacePath) => {
-        const tasks = await terminalService!.taskRunner.detectTasks(workspacePath)
-        return { success: true, tasks }
+    ipc.handle('tasks:detectTasks', async (_event, workspacePath) => {
+        try {
+            const tasks = await terminalService!.taskRunner.detectTasks(workspacePath)
+            return { success: true, tasks }
+        } catch (error) {
+            return { success: false, error: error instanceof Error ? error.message : String(error) }
+        }
     })
 
-    ipcMain.handle('tasks:executeTask', async (_event, options) => {
-        return terminalService!.taskRunner.executeTask({
-            ...options,
-            terminalService: terminalService,
-            getMainWindow: getMainWindow
-        })
+    ipc.handle('tasks:executeTask', async (_event, options) => {
+        try {
+            return await terminalService!.taskRunner.executeTask({
+                id: options?.taskId || options?.id || options?.task?.id || `task_${Date.now()}`,
+                task: options?.task,
+                terminalService: terminalService!,
+                getMainWindow
+            })
+        } catch (error) {
+            return { success: false, error: error instanceof Error ? error.message : String(error) }
+        }
     })
 
-    ipcMain.handle('tasks:killTask', async (_event, executionId) => {
+    ipc.handle('tasks:killTask', async (_event, executionId) => {
         const success = await terminalService!.taskRunner.killTaskExecution(executionId)
-        return { success }
+        return success ? { success: true } : { success: false, error: `Task execution ${executionId} not found` }
     })
 
-    ipcMain.handle('tasks:getExecutions', async () => {
+    ipc.handle('tasks:getExecutions', async () => {
         const executions = await terminalService!.taskRunner.getTaskExecutions()
         const serialized = executions.map(ex => {
             const { process: _process, ...rest } = ex
@@ -172,9 +238,9 @@ export function registerTerminalHandlers(
         return { success: true, executions: serialized }
     })
 
-    ipcMain.handle('tasks:getExecution', async (_event, executionId) => {
+    ipc.handle('tasks:getExecution', async (_event, executionId) => {
         const execution = await terminalService!.taskRunner.getTaskExecution(executionId)
-        if (!execution) return { success: false }
+        if (!execution) return { success: false, error: `Task execution ${executionId} not found` }
         const { process: _process, ...rest } = execution
         return { success: true, execution: JSON.parse(JSON.stringify(rest)) }
     })
@@ -182,62 +248,77 @@ export function registerTerminalHandlers(
     // ==========================================
     // Session Management APIs
     // ==========================================
-    ipcMain.handle('sessions:createSession', async (_event, options) => {
-        const session = terminalService!.sessionManager.createSession(options)
-        return { success: true, session }
+    ipc.handle('sessions:createSession', async (_event, options) => {
+        try {
+            const session = terminalService!.sessionManager.createSession(options)
+            return { success: true, session }
+        } catch (error) {
+            return { success: false, error: error instanceof Error ? error.message : String(error) }
+        }
     })
 
-    ipcMain.handle('sessions:getSession', async (_event, sessionId) => {
+    ipc.handle('sessions:getSession', async (_event, sessionId) => {
         const session = terminalService!.sessionManager.getSession(sessionId)
-        return { success: !!session, session }
+        return session ? { success: true, session } : { success: false, error: `Session ${sessionId} not found` }
     })
 
-    ipcMain.handle('sessions:updateSession', async (_event, options) => {
+    ipc.handle('sessions:updateSession', async (_event, options) => {
         const success = terminalService!.sessionManager.updateSession(options.sessionId, options.updates)
-        return { success }
+        return success ? { success: true } : { success: false, error: `Session ${options.sessionId} not found` }
     })
 
-    ipcMain.handle('sessions:deleteSession', async (_event, sessionId) => {
+    ipc.handle('sessions:deleteSession', async (_event, sessionId) => {
         const success = terminalService!.sessionManager.deleteSession(sessionId)
-        return { success }
+        return success ? { success: true } : { success: false, error: `Session ${sessionId} not found` }
     })
 
-    ipcMain.handle('sessions:getAllSessions', async () => {
+    ipc.handle('sessions:getAllSessions', async () => {
         const sessions = terminalService!.sessionManager.getAllSessions()
         return { success: true, sessions }
     })
 
-    ipcMain.handle('sessions:getActiveSessions', async () => {
+    ipc.handle('sessions:getActiveSessions', async () => {
         const sessions = terminalService!.sessionManager.getActiveSessions()
         return { success: true, sessions }
     })
 
-    ipcMain.handle('sessions:saveSession', async (_event, sessionId) => {
+    ipc.handle('sessions:saveSession', async (_event, sessionId) => {
         const success = terminalService!.sessionManager.saveSession(sessionId)
-        return { success }
+        return success ? { success: true } : { success: false, error: `Failed to save session ${sessionId}` }
     })
 
-    ipcMain.handle('sessions:loadSession', async (_event, sessionId) => {
+    ipc.handle('sessions:loadSession', async (_event, sessionId) => {
         const session = terminalService!.sessionManager.loadSession(sessionId)
-        return { success: !!session, session }
+        return session ? { success: true, session } : { success: false, error: `Session ${sessionId} not found` }
     })
 
-    ipcMain.handle('sessions:exportSession', async (_event, options) => {
-        const success = terminalService!.sessionManager.exportSession(options.sessionId, options.exportPath)
-        return { success }
+    ipc.handle('sessions:exportSession', async (_event, options) => {
+        const success = terminalService!.sessionManager.exportSession(
+            options.sessionId,
+            options.exportPath,
+            getCurrentWorkspacePath()
+        )
+        return success
+            ? { success: true }
+            : { success: false, error: 'Failed to export session (invalid session or disallowed export path)' }
     })
 
-    ipcMain.handle('sessions:importSession', async (_event, importPath) => {
-        const sessionId = terminalService!.sessionManager.importSession(importPath)
-        return { success: !!sessionId, sessionId }
+    ipc.handle('sessions:importSession', async (_event, importPath) => {
+        const sessionId = terminalService!.sessionManager.importSession(
+            importPath,
+            getCurrentWorkspacePath()
+        )
+        return sessionId
+            ? { success: true, sessionId }
+            : { success: false, error: 'Failed to import session (invalid file or disallowed import path)' }
     })
 
-    ipcMain.handle('sessions:getStats', async () => {
+    ipc.handle('sessions:getStats', async () => {
         const stats = terminalService!.sessionManager.getSessionStats()
         return { success: true, stats }
     })
 
-    ipcMain.handle('sessions:clearOldSessions', async (_event, maxAgeHours) => {
+    ipc.handle('sessions:clearOldSessions', async (_event, maxAgeHours) => {
         const count = terminalService!.sessionManager.clearOldSessions(maxAgeHours)
         return { success: true, count }
     })
@@ -245,20 +326,20 @@ export function registerTerminalHandlers(
     // ==========================================
     // Event Forwarding
     // ==========================================
-    setupEventForwarding(terminalService, getMainWindow)
+    if (!eventsWired) {
+        eventsWired = true
+        setupEventForwarding(terminalService, getMainWindow)
+    }
 }
 
 function setupEventForwarding(service: TerminalService, getMainWindow: () => BrowserWindowType | null) {
-    const send = (channel: string, data: any) => {
-        const win = getMainWindow()
-        if (win && !win.isDestroyed()) {
-            win.webContents.send(channel, data)
-        }
+    const send = (channel: string, data: unknown) => {
+        sendToWindow(getMainWindow(), channel, data)
     }
 
     // Shell Integration Events
     service.shellIntegration.on('command_recorded', (command) => {
-        send('terminal:commandFinished', command)
+        send('terminal:commandFinished', { terminalId: command.terminalId, command })
     })
     service.shellIntegration.on('decorations_available', (data) => {
         send('terminal:decorationsAvailable', data)
@@ -271,6 +352,9 @@ function setupEventForwarding(service: TerminalService, getMainWindow: () => Bro
     service.languageGateway.on('language_server_stopped', (data) => {
         send('runtime:languageServerStopped', data)
     })
+    service.languageGateway.on('language_server_error', (data) => {
+        send('runtime:languageServerError', data)
+    })
     service.languageGateway.on('debug_session_started', (data) => {
         send('runtime:debugSessionStarted', data)
     })
@@ -280,13 +364,21 @@ function setupEventForwarding(service: TerminalService, getMainWindow: () => Bro
     service.languageGateway.on('debug_session_error', (data) => {
         send('runtime:debugSessionError', data)
     })
+    service.languageGateway.on('debug_event', (data) => {
+        send('runtime:debugEvent', data)
+    })
 
     // Task Runner Events
     service.taskRunner.on('task_output', (data) => {
         send('tasks:output', data)
     })
     service.taskRunner.on('task_completed', (data) => {
-        send('tasks:completed', data)
+        send('tasks:completed', {
+            executionId: data.executionId,
+            exitCode: data.exitCode,
+            status: data.status,
+            duration: data.duration
+        })
     })
     service.taskRunner.on('task_error', (data) => {
         send('tasks:error', data)
@@ -297,7 +389,7 @@ function setupEventForwarding(service: TerminalService, getMainWindow: () => Bro
 
     // Session Manager Events
     service.sessionManager.on('session_created', (session) => {
-        send('sessions:created', session)
+        send('sessions:created', { session })
     })
     service.sessionManager.on('session_updated', (data) => {
         send('sessions:updated', data)
@@ -308,7 +400,7 @@ function setupEventForwarding(service: TerminalService, getMainWindow: () => Bro
 
     // Group Events
     service.sessionManager.on('group_created', (group) => {
-        send('sessions:groupCreated', group)
+        send('sessions:groupCreated', { group })
     })
     service.sessionManager.on('group_updated', (data) => {
         send('sessions:groupUpdated', data)
@@ -329,4 +421,16 @@ export async function killAllTerminals(): Promise<number> {
         })
     })))
     return terminals.length
+}
+
+/**
+ * Fully disposes the terminal service and all owned subsystems
+ * (PTYs, shell integration temp files, session manager, LSP/DAP gateways, task runner).
+ */
+export async function disposeTerminalService(): Promise<void> {
+    if (!terminalService) return
+    const service = terminalService
+    terminalService = null
+    eventsWired = false
+    await service.dispose()
 }

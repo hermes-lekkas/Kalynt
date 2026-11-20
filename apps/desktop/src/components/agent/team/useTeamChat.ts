@@ -10,6 +10,8 @@ import { useNotificationStore } from '../../../stores/notificationStore'
 import { useYDoc, useYArray, useAwareness } from '../../../hooks/useYjs'
 import { usePermissions } from '../../../hooks/usePermissions'
 import { encryptionService, type EncryptedPayload } from '../../../services/encryptionService'
+import { initializeRoomEncryption } from '../../../services/encryptedProvider'
+import { normalizeRoomId } from '../../../services/p2pService'
 import { getRoomPassword } from '../../../services/roomPasswordStore'
 import type { ChatMessage } from '../../../types/chat'
 
@@ -21,6 +23,12 @@ function localUserId(): string {
     const id = crypto.randomUUID()
     localStorage.setItem(USER_ID_KEY, id)
     return id
+}
+
+interface DecryptedMessageData {
+    text: string
+    replyToContent?: string
+    replyToSender?: string
 }
 
 export interface TeamMessage extends ChatMessage {
@@ -43,51 +51,158 @@ export function useTeamChat(spaceId: string, visible: boolean) {
     const { items, push } = useYArray<ChatMessage>(doc, 'messages')
     const { users, setLocalState, localClientId } = useAwareness(provider)
     const [encrypted, setEncrypted] = useState(false)
-    const [decrypted, setDecrypted] = useState<Map<string, string>>(new Map())
+    const [decrypted, setDecrypted] = useState<Map<string, DecryptedMessageData>>(new Map())
     const [failed, setFailed] = useState<Set<string>>(new Set())
     const [unread, setUnread] = useState(0)
     const userId = useRef(localUserId()).current
     const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
     const seen = useRef<Set<string> | null>(null)
     const inFlight = useRef(new Set<string>())
+    const decryptedRef = useRef<Map<string, DecryptedMessageData>>(new Map())
+    const failedRef = useRef<Set<string>>(new Set())
 
-    // Use the workspace's room password (from secure storage) as the encryption key.
+    // Reset all per-workspace chat state on spaceId switch and derive unified deterministic room key.
     useEffect(() => {
         let live = true
+        const normalizedSpaceId = normalizeRoomId(spaceId)
+
+        seen.current = null
+        inFlight.current.clear()
+        decryptedRef.current = new Map()
+        failedRef.current = new Set()
+        setDecrypted(new Map())
+        setFailed(new Set())
+        setUnread(0)
+        setEncrypted(false)
+
+        const unsubKeyChange = encryptionService.onKeyChange((changedRoomId, hasKey) => {
+            if (!live || normalizeRoomId(changedRoomId) !== normalizedSpaceId) return
+            setEncrypted(hasKey)
+            if (hasKey) {
+                // Retry previously failed messages when a new key is configured
+                failedRef.current = new Set()
+                setFailed(new Set())
+            }
+        })
+
         getRoomPassword(spaceId).then(async password => {
-            if (!password) return
-            await encryptionService.setRoomKey(spaceId, password)
+            if (!live) return
+            if (!password) {
+                setEncrypted(encryptionService.hasRoomKey(spaceId))
+                return
+            }
+            if (!encryptionService.hasRoomKey(spaceId)) {
+                await initializeRoomEncryption(spaceId, password)
+            }
             if (live) setEncrypted(true)
-        }).catch(() => { if (live) setEncrypted(false) })
-        return () => { live = false }
+        }).catch(() => {
+            if (live) setEncrypted(false)
+        })
+
+        return () => {
+            live = false
+            unsubKeyChange()
+        }
     }, [spaceId])
 
+    // Incremental O(k) decryption: decrypt only newly arrived encrypted messages and batch state updates.
     useEffect(() => {
         if (!encrypted) return
         const key = encryptionService.getRoomKey(spaceId)
         if (!key) return
-        items.forEach(async msg => {
-            if (!msg.encrypted || decrypted.has(msg.id) || failed.has(msg.id) || inFlight.current.has(msg.id)) return
-            inFlight.current.add(msg.id)
-            try {
-                const plain = await encryptionService.decryptToString(JSON.parse(msg.content) as EncryptedPayload, key)
-                let text = plain
-                try { text = JSON.parse(plain).text ?? plain } catch { /* plain text */ }
-                setDecrypted(prev => new Map(prev).set(msg.id, text))
-            } catch {
-                setFailed(prev => new Set(prev).add(msg.id))
-            } finally {
-                inFlight.current.delete(msg.id)
+
+        const pending = items.filter(
+            msg =>
+                msg.encrypted &&
+                !decryptedRef.current.has(msg.id) &&
+                !failedRef.current.has(msg.id) &&
+                !inFlight.current.has(msg.id)
+        )
+        if (pending.length === 0) return
+
+        let live = true
+        pending.forEach(msg => inFlight.current.add(msg.id))
+
+        void Promise.all(
+            pending.map(async msg => {
+                try {
+                    const plain = await encryptionService.decryptToString(
+                        JSON.parse(msg.content) as EncryptedPayload,
+                        key
+                    )
+                    let data: DecryptedMessageData = { text: plain }
+                    try {
+                        const parsed = JSON.parse(plain) as {
+                            text?: string
+                            replyToContent?: string
+                            replyToSender?: string
+                        }
+                        if (parsed && typeof parsed === 'object' && typeof parsed.text === 'string') {
+                            data = {
+                                text: parsed.text,
+                                replyToContent: typeof parsed.replyToContent === 'string' ? parsed.replyToContent : undefined,
+                                replyToSender: typeof parsed.replyToSender === 'string' ? parsed.replyToSender : undefined
+                            }
+                        }
+                    } catch {
+                        // Plain string payload
+                    }
+                    return { id: msg.id, ok: true as const, data }
+                } catch {
+                    return { id: msg.id, ok: false as const }
+                } finally {
+                    inFlight.current.delete(msg.id)
+                }
+            })
+        ).then(results => {
+            if (!live) return
+
+            let decryptedChanged = false
+            let failedChanged = false
+
+            for (const r of results) {
+                if (r.ok) {
+                    decryptedRef.current.set(r.id, r.data)
+                    decryptedChanged = true
+                } else {
+                    failedRef.current.add(r.id)
+                    failedChanged = true
+                }
+            }
+
+            if (decryptedChanged) {
+                setDecrypted(new Map(decryptedRef.current))
+            }
+            if (failedChanged) {
+                setFailed(new Set(failedRef.current))
             }
         })
-    }, [items, encrypted, spaceId, decrypted, failed])
 
-    const messages = useMemo<TeamMessage[]>(() => items.map(m => ({
-        ...m,
-        own: m.senderId === userId,
-        text: m.encrypted ? decrypted.get(m.id) ?? null : m.content,
-        decryptFailed: failed.has(m.id)
-    })), [items, decrypted, failed, userId])
+        return () => {
+            live = false
+        }
+    }, [items, encrypted, spaceId])
+
+    const messages = useMemo<TeamMessage[]>(() => items.map(m => {
+        if (!m.encrypted) {
+            return {
+                ...m,
+                own: m.senderId === userId,
+                text: m.content,
+                decryptFailed: false
+            }
+        }
+
+        const dec = decrypted.get(m.id)
+        return {
+            ...m,
+            own: m.senderId === userId,
+            text: dec ? dec.text : null,
+            replyToContent: dec ? (dec.replyToContent ?? m.replyToContent) : undefined,
+            replyToSender: dec ? (dec.replyToSender ?? m.replyToSender) : undefined,
+            decryptFailed: failed.has(m.id)
+        }
+    }), [items, decrypted, failed, userId])
 
     // Notify about mentions and replies; count unread while the tab is hidden.
     useEffect(() => {
@@ -137,16 +252,43 @@ export function useTeamChat(spaceId: string, visible: boolean) {
             replyToId: replyTo.id,
             replyToContent: (replyTo.text ?? '').slice(0, 100),
             replyToSender: replyTo.own ? userName : (replyTo.sender || 'Someone')
-        } : {}
+        } : undefined
         const id = crypto.randomUUID()
-        const base = { id, sender: userName || 'You', senderId: userId, timestamp: Date.now(), ...reply }
         const key = encrypted ? encryptionService.getRoomKey(spaceId) : null
+
         if (key) {
-            const payload = await encryptionService.encrypt(JSON.stringify({ text: body, ...reply }), key)
-            setDecrypted(prev => new Map(prev).set(id, body))
-            push({ ...base, content: JSON.stringify(payload), encrypted: true })
+            // Keep replyToContent and replyToSender strictly inside the AES-GCM ciphertext
+            const payload = await encryptionService.encrypt(
+                JSON.stringify({ text: body, ...(reply ?? {}) }),
+                key
+            )
+            const decEntry: DecryptedMessageData = {
+                text: body,
+                replyToContent: reply?.replyToContent,
+                replyToSender: reply?.replyToSender
+            }
+            decryptedRef.current.set(id, decEntry)
+            setDecrypted(new Map(decryptedRef.current))
+
+            push({
+                id,
+                sender: userName || 'You',
+                senderId: userId,
+                timestamp: Date.now(),
+                ...(reply ? { replyToId: reply.replyToId } : {}),
+                content: JSON.stringify(payload),
+                encrypted: true
+            })
         } else {
-            push({ ...base, content: body, encrypted: false })
+            push({
+                id,
+                sender: userName || 'You',
+                senderId: userId,
+                timestamp: Date.now(),
+                ...(reply ?? {}),
+                content: body,
+                encrypted: false
+            })
         }
         setLocalState('isTyping', false)
     }, [canChat, userName, userId, encrypted, spaceId, push, setLocalState])

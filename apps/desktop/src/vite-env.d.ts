@@ -182,24 +182,30 @@ export interface ElectronAPI {
   getVersion: () => Promise<string>
   getModelsDirectory: () => Promise<string>
   getHardwareInfo: () => Promise<any>
+  getPerformanceInferenceConfig: () => Promise<{ flashAttention: boolean; batchSize: number; threads: number; useSpeculativeDecoding: boolean }>
   getRealTimeStats: () => Promise<any>
   fileExists: (path: string) => Promise<boolean>
   deleteModel: (path: string) => Promise<{ success: boolean; error?: string }>
   downloadModel: (options: any) => Promise<any>
   cancelDownload: (modelId: string) => Promise<{ success: boolean; error?: string }>
-  pauseDownload: (modelId: string) => Promise<boolean>
-  resumeDownload: (modelId: string) => Promise<boolean>
+  pauseDownload: (modelId: string) => Promise<any>
+  resumeDownload: (modelId: string) => Promise<any>
   onDownloadProgress: (callback: (progress: {
     modelId: string
     bytesDownloaded: number
     totalBytes: number
     speed: number
-  }) => void) => void
-  loadModel: (options: any) => Promise<boolean>
-  unloadModel: () => Promise<boolean>
+  }) => void) => () => void
+  loadModel: (options: any) => Promise<any>
+  unloadModel: () => Promise<any>
   generateCompletion: (options: any) => Promise<any>
   generateCompletionStream: (options: any, onToken: (token: string) => void, onComplete: (error?: string) => void) => string
-  cancelGeneration: (requestId: string) => Promise<boolean>
+  cancelGeneration: (requestId: string) => Promise<any>
+  loadDraftModel: (options: { modelId: string; path: string }) => Promise<{ success: boolean; error?: string }>
+  unloadDraftModel: () => Promise<{ success: boolean; error?: string }>
+  getDraftModelStatus: () => Promise<{ success: boolean; loaded: boolean; modelId: string | null }>
+  getModelStatus: () => Promise<{ success: boolean; loaded: boolean; modelId: string | null; generating?: boolean }>
+  onLLMEvent: (callback: (event: { type: 'llm:loaded' | 'llm:unloaded'; modelId?: string; reason?: 'low-memory' | 'idle'; contextSize?: number; estimatedRamMB?: number; contextCapped?: boolean }) => void) => () => void
 
   terminal: TerminalAPI
   runtime: RuntimeAPI
@@ -208,17 +214,60 @@ export interface ElectronAPI {
   update: UpdateAPI
 
   fs: any
-  code: any
+  code: {
+    execute: (options: any) => Promise<any>
+    kill: (id: string) => Promise<{ success: boolean; error?: string }>
+    writeInput: (id: string, data: string) => Promise<{ success: boolean; error?: string }>
+    runCommand: (cwd: string, command: string, id?: string) => Promise<any>
+    onOutput: (callback: (data: any) => void) => () => void
+    onExit: (callback: (data: any) => void) => () => void
+    removeListeners: () => void
+    clearBinaryCache: () => Promise<{ success: boolean; error?: string }>
+    clearCache: () => Promise<{ success: boolean; error?: string }>
+  }
   git: any
-  shell: any
+  shell: {
+    openExternal: (url: string) => Promise<{ success: boolean; error?: string } | void>
+    showItemInFolder: (path: string) => Promise<{ success: boolean; error?: string } | void>
+  }
   minimizeWindow: () => Promise<void>
   maximizeWindow: () => Promise<void>
   closeWindow: () => Promise<void>
+  isMaximized: () => Promise<boolean>
+  onMaximizedChange: (callback: (maximized: boolean) => void) => () => void
+  window: {
+    minimize: () => Promise<void>
+    maximize: () => Promise<void>
+    close: () => Promise<void>
+    isMaximized: () => Promise<boolean>
+    onMaximizedChange: (callback: (maximized: boolean) => void) => () => void
+  }
   nukeProcesses: (level: any) => Promise<{ success: boolean; message?: string }>
   build: any
   debug: any
-  safeStorage: any
+  safeStorage: {
+    isAvailable: () => Promise<boolean>
+    set: (options: { key: string; value: string }) => Promise<{ success: boolean; encrypted?: boolean; error?: string }>
+    get: (key: string) => Promise<{ success: boolean; value?: any; encrypted?: boolean; hasKey?: boolean; error?: string }>
+    hasKey: (key: string) => Promise<{ success: boolean; hasKey: boolean; error?: string }>
+    delete: (key: string) => Promise<{ success: boolean; error?: string }>
+    listKeys: () => Promise<{ success: boolean; keys?: string[]; error?: string }>
+  }
   runtimeMgmt: any
+  performance: {
+    setMode: (mode: 'balanced' | 'high_performance' | 'power_saver') => Promise<{ success: boolean; mode?: 'balanced' | 'high_performance' | 'power_saver'; error?: string }>
+    getStatus: () => Promise<{ memory: { mode: 'balanced' | 'high_performance' | 'power_saver'; rss: number; totalPrivateBytes: number }; platform: string; arch: string }>
+    requestGc: () => Promise<{ success: boolean }>
+    scanWorkspace: (dirPath?: string) => Promise<string[]>
+    prewarmCache: (dirPath?: string) => Promise<{ success: boolean; error?: string }>
+    testDiskSpeed: () => Promise<{ read: number; write: number }>
+    getBootTime: () => Promise<number>
+    getInferenceConfig: () => Promise<{ flashAttention: boolean; batchSize: number; threads: number; useSpeculativeDecoding: boolean }>
+    onRequestGc: (callback: () => void) => () => void
+    onSuspendBackgroundTasks: (callback: () => void) => () => void
+    onOptimizeMonaco: (callback: (options: Record<string, unknown>) => void) => () => void
+    onDisposeWorkers: (callback: () => void) => () => void
+  }
   deps: {
     detect: (workspacePath: string) => Promise<{ success: boolean; manager?: any; error?: string }>
     getForLanguage: (languageId: string) => Promise<{ success: boolean; manager?: any; error?: string }>
@@ -252,9 +301,11 @@ export interface ElectronAPI {
     startHost: () => Promise<void>
     stopHost: () => Promise<void>
     download: (url: string, targetPath: string) => Promise<void>
-    onExtensionActivated: (callback: (data: { id: string }) => void) => void
-    onExtensionDeactivated: (callback: (data: { id: string }) => void) => void
-    onShowMessage: (callback: (data: { type: string; message: string }) => void) => void
+    onActivated: (callback: (data: { id: string }) => void) => () => void
+    onDeactivated: (callback: (data: { id: string }) => void) => () => void
+    onExtensionActivated: (callback: (data: { id: string }) => void) => () => void
+    onExtensionDeactivated: (callback: (data: { id: string }) => void) => () => void
+    onShowMessage: (callback: (data: { type: string; message: string }) => void) => () => void
     removeListeners: () => void
   }
 
@@ -298,8 +349,11 @@ export interface ElectronAPI {
     deleteSession: (id: string) => Promise<{ ok: boolean; error?: string }>
   }
 
-  // IPC Renderer
-  ipcRenderer: {
+  /**
+   * @deprecated Removed from preload at runtime for IPC isolation.
+   * Kept optional here only until parallel Wave 1 branches merge.
+   */
+  ipcRenderer?: {
     invoke: (channel: string, ...args: any[]) => Promise<any>
     on: (channel: string, callback: (event: any, ...args: any[]) => void) => () => void
     removeAllListeners: (channel: string) => void

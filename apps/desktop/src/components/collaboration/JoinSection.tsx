@@ -3,8 +3,8 @@
  */
 import { useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
-import { p2pService } from '../../services/p2pService'
-import { encryptionService } from '../../services/encryptionService'
+import { p2pService, normalizeRoomId } from '../../services/p2pService'
+import { initializeRoomEncryption } from '../../services/encryptedProvider'
 import { setRoomPassword } from '../../services/roomPasswordStore'
 import { Button, Field, TextInput } from '../ui'
 
@@ -26,8 +26,8 @@ function parse(input: string): Parsed | string {
     if (!value) return 'Paste an invite link or type a room code.'
     if (value.includes('://') && !value.startsWith('kalynt://')) return 'Only kalynt:// invite links work here.'
     const link = p2pService.parseRoomLink(value)
-    if (link) return { roomId: link.roomId, spaceName: link.spaceName, password: link.password }
-    if (value.length <= 50 && !/\s/.test(value)) return { roomId: value.toLowerCase() }
+    if (link) return { roomId: normalizeRoomId(link.roomId), spaceName: link.spaceName, password: link.password }
+    if (value.length <= 50 && !/\s/.test(value)) return { roomId: normalizeRoomId(value) }
     return 'That doesn’t look like an invite link or room code.'
 }
 
@@ -48,19 +48,19 @@ export default function JoinSection({ onJoin, isJoining, error, onJoined }: Join
     const join = async () => {
         if (!parsed) return
         setLocalError(null)
-        // Store the password before joining so the connection uses it from the start,
-        // the same way Settings › Security stores it.
+        // Store the password and derive the unified deterministic room key before joining
+        // so both team chat and Yjs/moderation encryption are ready from the start.
         if (password) {
             try {
                 await setRoomPassword(parsed.roomId, password)
+                await initializeRoomEncryption(parsed.roomId, password)
             } catch (e) {
                 setLocalError(e instanceof Error ? e.message : String(e))
                 return
             }
-            await encryptionService.setRoomKey(parsed.roomId, password).catch(() => undefined)
         }
         try {
-            await onJoin(input.trim())
+            await onJoin(input.trim(), password || undefined)
             onJoined()
         } catch {
             // The hook reports the error.

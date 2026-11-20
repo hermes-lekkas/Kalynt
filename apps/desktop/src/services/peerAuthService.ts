@@ -2,8 +2,9 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 // SECURITY FIX V-006: Peer Authentication Service
-// Provides cryptographic identity verification for P2P peers
-// Uses ECDSA (P-256) for efficient signing and verification
+// Provides cryptographic identity verification for P2P peers using ECDSA (P-256).
+// Private keys are stored in Electron safeStorage when available (never plaintext
+// localStorage in Electron), falling back cleanly only in web/non-Electron shim.
 
 export interface PeerIdentity {
     peerId: string
@@ -20,8 +21,18 @@ export interface SignedMessage {
     timestamp: number
 }
 
-// Storage key for local identity
+// Public identity metadata (peerId + publicKey only; never privateKey in Electron)
 const IDENTITY_STORAGE_KEY = 'kalynt-peer-identity'
+// OS keychain key for private key in Electron safeStorage
+const PRIVATE_KEY_SAFE_STORAGE_KEY = 'kalynt_peer_private_key'
+// Web-mode-only fallback storage key (never written in Electron)
+const WEB_PRIVATE_KEY_STORAGE_KEY = 'kalynt-peer-private-key-web'
+
+interface SafeStorageResult {
+    success?: boolean
+    value?: string | null
+    error?: string
+}
 
 // Trusted peers cache (verified in current session)
 const trustedPeers = new Map<string, PeerIdentity>()
@@ -33,58 +44,84 @@ const roomPeers = new Map<string, Map<string, PeerIdentity>>()
 let localKeyPair: CryptoKeyPair | null = null
 let localPeerId: string | null = null
 let localPublicKeyBase64: string | null = null
+let initPromise: Promise<PeerIdentity> | null = null
+
+function hasLocalStorage(): boolean {
+    return typeof localStorage !== 'undefined'
+}
+
+function getSafeStorage() {
+    return typeof window !== 'undefined' ? window.electronAPI?.safeStorage : undefined
+}
+
+function isWebShimEnvironment(): boolean {
+    if (typeof window === 'undefined') return false
+    const api = window.electronAPI as { platform?: string; safeStorage?: unknown } | undefined
+    return !api || !api.safeStorage || api.platform === 'browser'
+}
+
+async function readPrivateKeyFromSecureStore(): Promise<string | null> {
+    const safe = getSafeStorage()
+    if (!safe) return null
+    try {
+        const res: SafeStorageResult | undefined = await safe.get(PRIVATE_KEY_SAFE_STORAGE_KEY)
+        if (res?.success && typeof res.value === 'string' && res.value) {
+            return res.value
+        }
+    } catch (error) {
+        console.warn('[PeerAuth] Failed to read private key from safeStorage:', error)
+    }
+    return null
+}
+
+async function writePrivateKeyToSecureStore(exportedPrivate: string): Promise<boolean> {
+    const safe = getSafeStorage()
+    if (!safe) return false
+    try {
+        const res: SafeStorageResult | undefined = await safe.set({
+            key: PRIVATE_KEY_SAFE_STORAGE_KEY,
+            value: exportedPrivate
+        })
+        return res?.success === true
+    } catch (error) {
+        console.warn('[PeerAuth] Failed to write private key to safeStorage:', error)
+        return false
+    }
+}
 
 /**
- * Generate a unique peer ID from public key
+ * Generate a unique peer ID from public key (first 16 bytes of SHA-256(SPKI))
  */
 async function generatePeerIdFromKey(publicKey: CryptoKey): Promise<string> {
     const exported = await crypto.subtle.exportKey('spki', publicKey)
     const hash = await crypto.subtle.digest('SHA-256', exported)
     const bytes = new Uint8Array(hash)
-    // Use first 16 bytes as peer ID (128-bit identifier)
     return Array.from(bytes.slice(0, 16))
         .map(b => b.toString(16).padStart(2, '0'))
         .join('')
 }
 
-/**
- * Generate ECDSA key pair for peer authentication
- * P-256 (secp256r1) is chosen for:
- * - Good security (128-bit equivalent)
- * - Fast signing/verification
- * - Small key and signature sizes
- * - Wide browser support
- */
 async function generateKeyPair(): Promise<CryptoKeyPair> {
     return crypto.subtle.generateKey(
         {
             name: 'ECDSA',
             namedCurve: 'P-256'
         },
-        true, // Extractable for export/import
+        true,
         ['sign', 'verify']
     )
 }
 
-/**
- * Export public key to Base64 (SPKI format)
- */
 async function exportPublicKey(publicKey: CryptoKey): Promise<string> {
     const exported = await crypto.subtle.exportKey('spki', publicKey)
     return arrayBufferToBase64(exported)
 }
 
-/**
- * Export private key to Base64 (PKCS8 format)
- */
 async function exportPrivateKey(privateKey: CryptoKey): Promise<string> {
     const exported = await crypto.subtle.exportKey('pkcs8', privateKey)
     return arrayBufferToBase64(exported)
 }
 
-/**
- * Import public key from Base64
- */
 async function importPublicKey(base64Key: string): Promise<CryptoKey> {
     const keyData = base64ToArrayBuffer(base64Key)
     return crypto.subtle.importKey(
@@ -96,23 +133,17 @@ async function importPublicKey(base64Key: string): Promise<CryptoKey> {
     )
 }
 
-/**
- * Import private key from Base64
- */
 async function importPrivateKey(base64Key: string): Promise<CryptoKey> {
     const keyData = base64ToArrayBuffer(base64Key)
     return crypto.subtle.importKey(
         'pkcs8',
         keyData,
         { name: 'ECDSA', namedCurve: 'P-256' },
-        true,
+        false,
         ['sign']
     )
 }
 
-/**
- * Sign data with local private key
- */
 async function signData(data: Uint8Array, privateKey: CryptoKey): Promise<Uint8Array> {
     const signature = await crypto.subtle.sign(
         { name: 'ECDSA', hash: 'SHA-256' },
@@ -122,9 +153,6 @@ async function signData(data: Uint8Array, privateKey: CryptoKey): Promise<Uint8A
     return new Uint8Array(signature)
 }
 
-/**
- * Verify signature with public key
- */
 async function verifySignature(
     data: Uint8Array,
     signature: Uint8Array,
@@ -144,58 +172,139 @@ async function verifySignature(
 }
 
 /**
- * Initialize local peer identity
- * Loads from storage or generates new identity
+ * Initialize local peer identity.
+ * Loads from safeStorage (migrating any legacy plaintext localStorage private key)
+ * or generates a new ECDSA P-256 identity.
  */
 export async function initializeLocalIdentity(): Promise<PeerIdentity> {
-    // Try to load existing identity
+    if (localKeyPair && localPeerId && localPublicKeyBase64) {
+        return {
+            peerId: localPeerId,
+            publicKey: localPublicKeyBase64,
+            createdAt: Date.now(),
+            verified: true
+        }
+    }
+
+    if (initPromise) return initPromise
+
+    initPromise = doInitializeLocalIdentity().finally(() => {
+        initPromise = null
+    })
+    return initPromise
+}
+
+async function doInitializeLocalIdentity(): Promise<PeerIdentity> {
+    // 1. Try to load existing identity
     try {
-        const stored = localStorage.getItem(IDENTITY_STORAGE_KEY)
-        if (stored) {
-            const { publicKey, privateKey, peerId } = JSON.parse(stored)
-            const pubKey = await importPublicKey(publicKey)
-            const privKey = await importPrivateKey(privateKey)
-            localKeyPair = { publicKey: pubKey, privateKey: privKey }
-            localPeerId = peerId
-            localPublicKeyBase64 = publicKey
-            console.log('[PeerAuth] Loaded existing identity:', peerId.substring(0, 8) + '...')
-            return {
-                peerId,
-                publicKey,
-                createdAt: Date.now(),
-                verified: true
+        if (hasLocalStorage()) {
+            const stored = localStorage.getItem(IDENTITY_STORAGE_KEY)
+            if (stored) {
+                const parsed = JSON.parse(stored) as {
+                    publicKey?: string
+                    privateKey?: string
+                    peerId?: string
+                }
+                const { publicKey, peerId } = parsed
+                let privateKeyBase64 = await readPrivateKeyFromSecureStore()
+
+                // Migrate legacy plaintext privateKey out of localStorage into safeStorage
+                if (typeof parsed.privateKey === 'string' && parsed.privateKey) {
+                    if (!privateKeyBase64) {
+                        const migrated = await writePrivateKeyToSecureStore(parsed.privateKey)
+                        privateKeyBase64 = parsed.privateKey
+                        if (migrated) {
+                            localStorage.setItem(IDENTITY_STORAGE_KEY, JSON.stringify({
+                                publicKey,
+                                peerId
+                            }))
+                            console.log('[PeerAuth] Migrated ECDSA private key to safeStorage')
+                        } else if (isWebShimEnvironment()) {
+                            localStorage.setItem(WEB_PRIVATE_KEY_STORAGE_KEY, parsed.privateKey)
+                            localStorage.setItem(IDENTITY_STORAGE_KEY, JSON.stringify({
+                                publicKey,
+                                peerId
+                            }))
+                        }
+                    } else {
+                        // Already in safeStorage: strip legacy plaintext privateKey from localStorage
+                        localStorage.setItem(IDENTITY_STORAGE_KEY, JSON.stringify({
+                            publicKey,
+                            peerId
+                        }))
+                    }
+                }
+
+                // Web-only fallback when safeStorage is unavailable
+                if (!privateKeyBase64 && isWebShimEnvironment()) {
+                    privateKeyBase64 = localStorage.getItem(WEB_PRIVATE_KEY_STORAGE_KEY)
+                }
+
+                if (publicKey && privateKeyBase64 && peerId) {
+                    const pubKey = await importPublicKey(publicKey)
+                    const expectedPeerId = await generatePeerIdFromKey(pubKey)
+                    if (expectedPeerId === peerId) {
+                        const privKey = await importPrivateKey(privateKeyBase64)
+                        localKeyPair = { publicKey: pubKey, privateKey: privKey }
+                        localPeerId = peerId
+                        localPublicKeyBase64 = publicKey
+                        console.log('[PeerAuth] Loaded existing identity:', peerId.substring(0, 8) + '...')
+                        return {
+                            peerId,
+                            publicKey,
+                            createdAt: Date.now(),
+                            verified: true
+                        }
+                    }
+                }
             }
         }
     } catch (e) {
         console.warn('[PeerAuth] Failed to load stored identity, generating new one:', e)
     }
 
-    // Generate new identity
-    localKeyPair = await generateKeyPair()
-    localPeerId = await generatePeerIdFromKey(localKeyPair.publicKey)
-    localPublicKeyBase64 = await exportPublicKey(localKeyPair.publicKey)
+    // 2. Generate new ECDSA P-256 identity
+    const generated = await generateKeyPair()
+    const newPeerId = await generatePeerIdFromKey(generated.publicKey)
+    const newPublicKeyBase64 = await exportPublicKey(generated.publicKey)
+    const exportedPrivate = await exportPrivateKey(generated.privateKey)
 
-    // Store for persistence
-    const exportedPrivate = await exportPrivateKey(localKeyPair.privateKey)
-    localStorage.setItem(IDENTITY_STORAGE_KEY, JSON.stringify({
-        publicKey: localPublicKeyBase64,
-        privateKey: exportedPrivate,
-        peerId: localPeerId
-    }))
+    // Re-import private key as non-extractable for in-memory runtime safety
+    const nonExtractablePrivate = await importPrivateKey(exportedPrivate)
+    localKeyPair = { publicKey: generated.publicKey, privateKey: nonExtractablePrivate }
+    localPeerId = newPeerId
+    localPublicKeyBase64 = newPublicKeyBase64
 
-    console.log('[PeerAuth] Generated new identity:', localPeerId.substring(0, 8) + '...')
+    // Persist private key securely in safeStorage; never write plaintext privateKey in Electron
+    const savedSecurely = await writePrivateKeyToSecureStore(exportedPrivate)
+    if (hasLocalStorage()) {
+        if (savedSecurely) {
+            localStorage.setItem(IDENTITY_STORAGE_KEY, JSON.stringify({
+                publicKey: newPublicKeyBase64,
+                peerId: newPeerId
+            }))
+            localStorage.removeItem(WEB_PRIVATE_KEY_STORAGE_KEY)
+        } else if (isWebShimEnvironment()) {
+            localStorage.setItem(IDENTITY_STORAGE_KEY, JSON.stringify({
+                publicKey: newPublicKeyBase64,
+                peerId: newPeerId
+            }))
+            localStorage.setItem(WEB_PRIVATE_KEY_STORAGE_KEY, exportedPrivate)
+        } else {
+            console.warn('[PeerAuth] safeStorage unavailable in desktop runtime; keeping ECDSA key ephemeral in memory only')
+        }
+    }
+
+    console.log('[PeerAuth] Generated new identity:', newPeerId.substring(0, 8) + '...')
 
     return {
-        peerId: localPeerId,
-        publicKey: localPublicKeyBase64,
+        peerId: newPeerId,
+        publicKey: newPublicKeyBase64,
         createdAt: Date.now(),
         verified: true
     }
 }
 
-/**
- * Get local peer identity (must call initializeLocalIdentity first)
- */
 export function getLocalIdentity(): PeerIdentity | null {
     if (!localPeerId || !localPublicKeyBase64) return null
     return {
@@ -206,11 +315,64 @@ export function getLocalIdentity(): PeerIdentity | null {
     }
 }
 
-/**
- * Get local peer ID
- */
 export function getLocalPeerId(): string | null {
     return localPeerId
+}
+
+/**
+ * Sign an arbitrary canonical string payload (e.g., ownership proof or moderation action)
+ * with the local ECDSA P-256 private key.
+ */
+export async function signPayload(payload: string): Promise<{
+    signature: string
+    peerId: string
+    publicKey: string
+} | null> {
+    if (!localKeyPair || !localPeerId || !localPublicKeyBase64) {
+        await initializeLocalIdentity()
+    }
+    if (!localKeyPair || !localPeerId || !localPublicKeyBase64) {
+        console.error('[PeerAuth] Local identity not initialized')
+        return null
+    }
+
+    const bytes = new TextEncoder().encode(payload)
+    const signature = await signData(bytes, localKeyPair.privateKey)
+    return {
+        signature: uint8ArrayToBase64(signature),
+        peerId: localPeerId,
+        publicKey: localPublicKeyBase64
+    }
+}
+
+/**
+ * Verify an ECDSA P-256 signature over a canonical string payload against
+ * a Base64 SPKI public key (and optionally verify that the public key hashes
+ * to `expectedPeerId`).
+ */
+export async function verifyPayloadSignature(
+    payload: string,
+    signatureBase64: string,
+    publicKeyBase64: string,
+    expectedPeerId?: string
+): Promise<boolean> {
+    if (!payload || !signatureBase64 || !publicKeyBase64) return false
+    try {
+        const pubKey = await importPublicKey(publicKeyBase64)
+        if (expectedPeerId) {
+            const derivedPeerId = await generatePeerIdFromKey(pubKey)
+            if (derivedPeerId !== expectedPeerId) {
+                console.warn('[PeerAuth] Public key does not match claimed peerId')
+                return false
+            }
+        }
+        const dataBytes = new TextEncoder().encode(payload)
+        const signatureBytes = new Uint8Array(base64ToArrayBuffer(signatureBase64))
+        return await verifySignature(dataBytes, signatureBytes, pubKey)
+    } catch (e) {
+        console.error('[PeerAuth] Payload signature verification error:', e)
+        return false
+    }
 }
 
 /**
@@ -225,8 +387,8 @@ export async function signMessage(data: Uint8Array): Promise<SignedMessage | nul
     const signature = await signData(data, localKeyPair.privateKey)
 
     return {
-        data: arrayBufferToBase64(data.buffer as ArrayBuffer),
-        signature: arrayBufferToBase64(signature.buffer as ArrayBuffer),
+        data: uint8ArrayToBase64(data),
+        signature: uint8ArrayToBase64(signature),
         peerId: localPeerId,
         timestamp: Date.now()
     }
@@ -241,14 +403,14 @@ export async function verifyMessage(
 ): Promise<{ valid: boolean; data: Uint8Array | null; peerId: string }> {
     const { data, signature, peerId, timestamp } = signedMessage
 
-    // Check timestamp freshness (reject messages older than 5 minutes)
     const MAX_AGE_MS = 5 * 60 * 1000
-    if (Date.now() - timestamp > MAX_AGE_MS) {
+    const MAX_FUTURE_SKEW_MS = 60 * 1000
+    const now = Date.now()
+    if (now - timestamp > MAX_AGE_MS || timestamp - now > MAX_FUTURE_SKEW_MS) {
         console.warn('[PeerAuth] Rejecting stale message from:', peerId.substring(0, 8))
         return { valid: false, data: null, peerId }
     }
 
-    // Get peer's public key
     const peerIdentity = roomId
         ? roomPeers.get(roomId)?.get(peerId)
         : trustedPeers.get(peerId)
@@ -286,10 +448,8 @@ export async function registerPeer(
     publicKey: string,
     displayName?: string
 ): Promise<boolean> {
-    // Validate public key format
     try {
         const key = await importPublicKey(publicKey)
-        // Verify peer ID matches public key
         const expectedPeerId = await generatePeerIdFromKey(key)
         if (expectedPeerId !== peerId) {
             console.warn('[PeerAuth] Peer ID mismatch - possible spoofing attempt')
@@ -300,15 +460,12 @@ export async function registerPeer(
         return false
     }
 
-    // Add to room registry
     if (!roomPeers.has(roomId)) {
         roomPeers.set(roomId, new Map())
     }
 
-    // Check if peer is already registered to avoid duplicate logs
     const existingPeer = roomPeers.get(roomId)!.get(peerId)
     if (existingPeer) {
-        // Peer already registered, skip
         return true
     }
 
@@ -327,12 +484,8 @@ export async function registerPeer(
     return true
 }
 
-/**
- * Remove a peer from room registry
- */
 export function unregisterPeer(roomId: string, peerId: string): void {
     roomPeers.get(roomId)?.delete(peerId)
-    // Only remove from global trusted if not in any other room
     let inOtherRoom = false
     for (const [rid, peers] of roomPeers) {
         if (rid !== roomId && peers.has(peerId)) {
@@ -345,24 +498,15 @@ export function unregisterPeer(roomId: string, peerId: string): void {
     }
 }
 
-/**
- * Get all peers in a room
- */
 export function getRoomPeers(roomId: string): PeerIdentity[] {
     const peers = roomPeers.get(roomId)
     return peers ? Array.from(peers.values()) : []
 }
 
-/**
- * Check if a peer is known/trusted in a room
- */
 export function isPeerTrusted(roomId: string, peerId: string): boolean {
     return roomPeers.get(roomId)?.has(peerId) || false
 }
 
-/**
- * Clean up room peer registry
- */
 export function cleanupRoom(roomId: string): void {
     const peers = roomPeers.get(roomId)
     if (peers) {
@@ -373,9 +517,6 @@ export function cleanupRoom(roomId: string): void {
     }
 }
 
-/**
- * Create identity announcement message for broadcasting
- */
 export function createIdentityAnnouncement(): {
     type: 'identity'
     peerId: string
@@ -391,14 +532,17 @@ export function createIdentityAnnouncement(): {
     }
 }
 
-// Utility functions
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-    const bytes = new Uint8Array(buffer)
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+    const CHUNK = 0x8000
     let binary = ''
-    for (let i = 0; i < bytes.length; i++) {
-        binary += String.fromCharCode(bytes[i])
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+        binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + CHUNK, bytes.length)))
     }
     return btoa(binary)
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+    return uint8ArrayToBase64(new Uint8Array(buffer))
 }
 
 function base64ToArrayBuffer(base64: string): ArrayBuffer {

@@ -53,7 +53,10 @@ export class DapConnection extends EventEmitter {
 
         if (socket) {
             socket.on('data', feed)
-            socket.on('error', err => this.emit('output', `Debugger connection error: ${err.message}\n`, 'stderr'))
+            socket.on('error', err => {
+                this.emit('output', `Debugger connection error: ${err.message}\n`, 'stderr')
+                this.emit('adapter-error', `Debugger connection error: ${err.message}`)
+            })
             socket.on('close', () => this.shutdown())
             proc?.stdout?.on('data', text('stdout'))
         } else {
@@ -64,6 +67,7 @@ export class DapConnection extends EventEmitter {
         proc?.on('exit', () => this.shutdown())
         proc?.on('error', err => {
             this.emit('output', `Debugger failed to start: ${err.message}\n`, 'stderr')
+            this.emit('adapter-error', `Debugger failed to start: ${err.message}`)
             this.shutdown()
         })
     }
@@ -110,6 +114,7 @@ export class DapConnection extends EventEmitter {
 
     private dispatch(message: DapMessage) {
         if (message.type === 'response') {
+            this.emit('response', message)
             const pending = this.pending.get(message.request_seq!)
             if (!pending) return
             this.pending.delete(message.request_seq!)

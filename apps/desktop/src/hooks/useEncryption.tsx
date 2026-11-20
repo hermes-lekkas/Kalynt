@@ -5,15 +5,17 @@
 // Fixed: Uses LRU cache, network-layer encryption, no raw password storage
 
 import { useState, useEffect, useCallback, createContext, useContext, ReactNode } from 'react'
+import { Lock, Unlock } from 'lucide-react'
 import {
     isRoomEncryptionReady,
     getRoomEncryptionState,
     LRUCache,
     decryptionCache
 } from '../services/encryptedProvider'
+import { encryptionService } from '../services/encryptionService'
+import { normalizeRoomId } from '../services/p2pService'
 import { hasRoomPassword } from '../services/roomPasswordStore'
 
-// Encryption context for the entire app
 interface EncryptionContextType {
     isEnabled: boolean
     isReady: boolean
@@ -30,8 +32,6 @@ interface EncryptionStatus {
 
 const EncryptionContext = createContext<EncryptionContextType | null>(null)
 
-// Provider component for encryption context
-// Note: Actual encryption happens at network layer in encryptedProvider.ts
 export function EncryptionProvider({
     children,
     spaceId
@@ -42,50 +42,57 @@ export function EncryptionProvider({
     const [isEnabled, setIsEnabled] = useState(false)
     const [isReady, setIsReady] = useState(false)
 
-    // Check encryption state (key is derived in useYjs, not here)
     useEffect(() => {
+        decryptionCache.clear()
+
         if (!spaceId) {
-            // Already false by default, but if we need to reset:
-            // setIsEnabled(false)
-            // setIsReady(false)
+            setIsEnabled(false)
+            setIsReady(false)
             return
         }
 
-        // Clear cache when space changes
-        decryptionCache.clear()
-
-        // Check if encryption is configured for this space
-        // (only whether a password is stored; key derivation happens in useYjs)
         let cancelled = false
+        const normalizedSpaceId = normalizeRoomId(spaceId)
+
         hasRoomPassword(spaceId).then(enabled => {
             if (cancelled) return
-            // Batch updates
-            setIsEnabled(enabled)
+            setIsEnabled(enabled || isRoomEncryptionReady(spaceId))
+            setIsReady(true)
+        }).catch(() => {
+            if (cancelled) return
+            setIsEnabled(false)
             setIsReady(true)
         })
 
-        // Re-check when encryption state might change
+        // React immediately when encryption is toggled on/off in Settings
+        const unsubKeyChange = encryptionService.onKeyChange((changedRoomId, hasKey) => {
+            if (!cancelled && normalizeRoomId(changedRoomId) === normalizedSpaceId) {
+                setIsEnabled(hasKey)
+                setIsReady(true)
+            }
+        })
+
         const checkReady = () => {
-            if (spaceId && isRoomEncryptionReady(spaceId)) {
+            if (!cancelled && isRoomEncryptionReady(spaceId)) {
                 setIsEnabled(true)
             }
         }
 
-        // Check periodically until ready
         const interval = setInterval(checkReady, 100)
-        setTimeout(() => clearInterval(interval), 5000) // Stop after 5s
+        const timeout = setTimeout(() => clearInterval(interval), 5000)
 
         return () => {
             cancelled = true
+            unsubKeyChange()
             clearInterval(interval)
+            clearTimeout(timeout)
         }
     }, [spaceId])
 
-    // Get encryption status for UI
     const getEncryptionStatus = useCallback((): EncryptionStatus => {
         const state = spaceId ? getRoomEncryptionState(spaceId) : null
         return {
-            enabled: state?.enabled ?? false,
+            enabled: state?.enabled ?? isEnabled,
             algorithm: 'AES-GCM',
             keyStrength: 256,
             ready: isReady && (state?.key !== null || !isEnabled)
@@ -106,11 +113,9 @@ export function EncryptionProvider({
     )
 }
 
-// Hook to use encryption context
 export function useEncryption() {
     const context = useContext(EncryptionContext)
     if (!context) {
-        // Return a no-op encryption context if not inside provider
         return {
             isEnabled: false,
             isReady: true,
@@ -121,15 +126,10 @@ export function useEncryption() {
     return context
 }
 
-// LRU Cache for decrypted messages (re-export for convenience)
 export { LRUCache, decryptionCache }
 
-import { Lock, Unlock } from 'lucide-react'
-
-// Encryption badge component for UI
 export function EncryptionBadge({ showDetails = false }: { showDetails?: boolean }) {
-    const { isEnabled, isReady, getEncryptionStatus
-    } = useEncryption()
+    const { isEnabled, isReady, getEncryptionStatus } = useEncryption()
     const status = getEncryptionStatus()
 
     if (!isReady) {

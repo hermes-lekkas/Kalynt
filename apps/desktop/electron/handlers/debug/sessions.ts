@@ -116,6 +116,8 @@ export class DebugSessionManager {
     private wire(session: Session) {
         const { id: sessionId, connection } = session
         connection.on('output', (text: string, stream: string) => this.send('debug:output', { sessionId, category: stream, output: text }))
+        connection.on('adapter-error', (error: string) => this.send('debug:error', { sessionId, error }))
+        connection.on('response', (response: DapMessage) => this.send('debug:response', { sessionId, ...response }))
         connection.on('event', (event: DapMessage) => {
             this.send('debug:event', { sessionId, ...event })
             switch (event.event) {
@@ -162,7 +164,9 @@ export class DebugSessionManager {
         proc.stdout?.on('data', forward('stdout'))
         proc.stderr?.on('data', forward('stderr'))
         proc.on('error', err => {
-            this.send('debug:output', { sessionId: session.id, category: 'stderr', output: `Couldn't start the program: ${err.message}\n` })
+            const message = `Couldn't start the program: ${err.message}`
+            this.send('debug:output', { sessionId: session.id, category: 'stderr', output: `${message}\n` })
+            this.send('debug:error', { sessionId: session.id, error: message })
         })
         session.connection.respond(request, true, { processId: proc.pid })
     }

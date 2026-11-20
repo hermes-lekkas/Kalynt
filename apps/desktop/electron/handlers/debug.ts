@@ -4,9 +4,11 @@
  * IPC for debugging. Sessions, adapters and the protocol live in ./debug/.
  */
 import { ipcMain, BrowserWindow } from 'electron'
+import path from 'node:path'
 import type { Breakpoint, DebugConfiguration } from '../../src/types/debug'
 import { DebugSessionManager, type InitialBreakpoints } from './debug/sessions'
 import { getAllConfigurations } from './debug/configurations'
+import { validatePath } from '../utils/pathValidator'
 
 let manager: DebugSessionManager | null = null
 
@@ -20,9 +22,15 @@ type Handler = (...args: any[]) => Promise<Record<string, unknown>> | Record<str
 export function setupDebugHandlers(
     ipc: typeof ipcMain,
     getMainWindow: () => BrowserWindow | null,
-    _getWorkspacePath: () => string | null
+    getWorkspacePath: () => string | null
 ) {
     const sessions = (manager = new DebugSessionManager(getMainWindow))
+
+    const resolveWorkspace = (requested?: string): string => {
+        const current = getWorkspacePath()
+        if (!current) throw new Error('No workspace open')
+        return requested ? validatePath(current, requested) : path.resolve(current)
+    }
 
     const handle = (channel: string, fn: Handler) => {
         ipc.handle(channel, async (_event, ...args) => {
@@ -34,11 +42,18 @@ export function setupDebugHandlers(
         })
     }
 
-    handle('debug:getConfigurations', (workspacePath: string) => ({ configurations: getAllConfigurations(workspacePath) }))
+    handle('debug:getConfigurations', (workspacePath?: string) => ({ configurations: getAllConfigurations(resolveWorkspace(workspacePath)) }))
 
-    handle('debug:start', async (configuration: DebugConfiguration, workspacePath: string, activeFile?: string, breakpoints?: InitialBreakpoints[]) => ({
-        sessionId: await sessions.startSession(configuration, workspacePath, activeFile, Array.isArray(breakpoints) ? breakpoints : [])
-    }))
+    handle('debug:start', async (configuration: DebugConfiguration, workspacePath?: string, activeFile?: string, breakpoints?: InitialBreakpoints[]) => {
+        const safeWorkspace = resolveWorkspace(workspacePath)
+        const safeActiveFile = activeFile ? validatePath(safeWorkspace, activeFile) : undefined
+        const safeBreakpoints = Array.isArray(breakpoints)
+            ? breakpoints.map(bp => ({ ...bp, file: validatePath(safeWorkspace, bp.file) }))
+            : []
+        return {
+            sessionId: await sessions.startSession(configuration, safeWorkspace, safeActiveFile, safeBreakpoints)
+        }
+    })
 
     handle('debug:stop', async (sessionId: string) => {
         await sessions.stopSession(sessionId)
@@ -46,7 +61,8 @@ export function setupDebugHandlers(
     })
 
     handle('debug:setBreakpoints', async (sessionId: string, file: string, breakpoints: Breakpoint[]) => {
-        await sessions.setBreakpoints(sessionId, file, breakpoints)
+        const safeFile = validatePath(resolveWorkspace(), file)
+        await sessions.setBreakpoints(sessionId, safeFile, breakpoints)
         return {}
     })
 

@@ -15,18 +15,18 @@ const openExternal = (url: string) => { void window.electronAPI?.shell?.openExte
 export function DiffView({ lines, maxLines = 400 }: { lines: DiffLine[]; maxLines?: number }) {
     const shown = lines.slice(0, maxLines)
     return (
-        <div className="diff-view selectable" role="table" aria-label="Changes">
+        <div className="agent-diff selectable" role="table" aria-label="Changes">
             {shown.map((line, i) => line.type === 'gap'
-                ? <div key={i} className="diff-view__gap">{line.text}</div>
+                ? <div key={i} className="agent-diff__gap">{line.text}</div>
                 : (
-                    <div key={i} className={`diff-view__line is-${line.type}`} role="row">
-                        <span className="diff-view__num" aria-hidden>{line.type === 'add' ? '' : line.oldLine}</span>
-                        <span className="diff-view__num" aria-hidden>{line.type === 'remove' ? '' : line.newLine}</span>
-                        <span className="diff-view__sign" aria-hidden>{line.type === 'add' ? '+' : line.type === 'remove' ? '−' : ' '}</span>
-                        <span className="diff-view__text">{line.text || ' '}</span>
+                    <div key={i} className={`agent-diff__line is-${line.type}`} role="row">
+                        <span className="agent-diff__num" aria-hidden>{line.type === 'add' ? '' : line.oldLine}</span>
+                        <span className="agent-diff__num" aria-hidden>{line.type === 'remove' ? '' : line.newLine}</span>
+                        <span className="agent-diff__sign" aria-hidden>{line.type === 'add' ? '+' : line.type === 'remove' ? '−' : ' '}</span>
+                        <span className="agent-diff__text">{line.text || ' '}</span>
                     </div>
                 ))}
-            {lines.length > maxLines && <div className="diff-view__gap">{lines.length - maxLines} more lines</div>}
+            {lines.length > maxLines && <div className="agent-diff__gap">{lines.length - maxLines} more lines</div>}
         </div>
     )
 }

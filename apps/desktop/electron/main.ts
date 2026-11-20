@@ -13,6 +13,7 @@ import fs from 'node:fs'
 // Import services
 import { RuntimeManager } from './services/runtime-manager'
 import { performanceAcceleration } from './services/Performance_Acceleration'
+import { nativeHelperService } from './services/native-helper-service'
 
 // Import handlers
 import { registerAppInfoHandlers } from './handlers/app-info'
@@ -32,11 +33,12 @@ import { registerUpdateHandlers, initializeAutoUpdater, isInstallingUpdate } fro
 import { extensionHostManager } from './extensions/extensionHostManager'
 import { startSignalingServer } from './signalingServer'
 import type { SignalingServerHandle } from './signalingServer'
-import { stopEverything } from './services/shutdown'
+import { shutdownApp } from './services/shutdown'
 import { createAppWindow } from './appWindow'
 import { registerAiHandlers } from './ai'
 import { registerAgentHandlers } from './agent'
 import { registerEditorStateHandlers } from './handlers/editor-state'
+import { sendToWindow } from './utils/window'
 
 // Window and workspace state
 let mainWindow: BrowserWindowType | null = null
@@ -176,7 +178,8 @@ function registerAllHandlers() {
         () => mainWindow,
         () => currentWorkspacePath,
         (path) => currentWorkspacePath = path,
-        () => MODELS_DIR
+        () => MODELS_DIR,
+        () => app.getPath('userData')
     )
 
     // Code execution
@@ -245,15 +248,40 @@ function registerAllHandlers() {
             mainWindow.close()
         }
     })
+
+    ipcMain.handle('is-window-maximized', () => {
+        return !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isMaximized()
+    })
 }
 
 // Extension handlers
 function registerExtensionHandlers() {
     // Extension host is already set up in extensionHostManager
     // Additional handlers for file operations
-    ipcMain.handle('dialog:showOpenDialog', async (_, options) => {
-        if (!mainWindow) return { canceled: true }
-        return dialog.showOpenDialog(mainWindow, options)
+    ipcMain.handle('dialog:showOpenDialog', async (_, options: Electron.OpenDialogOptions) => {
+        if (!mainWindow || mainWindow.isDestroyed()) return { canceled: true, filePaths: [] }
+        // Only pass through safe, declarative dialog options from the renderer.
+        const safeOptions: Electron.OpenDialogOptions = {
+            title: typeof options?.title === 'string' ? options.title : undefined,
+            buttonLabel: typeof options?.buttonLabel === 'string' ? options.buttonLabel : undefined,
+            defaultPath: typeof options?.defaultPath === 'string' ? options.defaultPath : undefined,
+            filters: Array.isArray(options?.filters) ? options.filters : undefined,
+            properties: Array.isArray(options?.properties)
+                ? options.properties.filter(p => ['openFile', 'openDirectory', 'multiSelections', 'showHiddenFiles', 'createDirectory', 'dontAddToRecent'].includes(p))
+                : ['openFile']
+        }
+        return dialog.showOpenDialog(mainWindow, safeOptions)
+    })
+}
+
+function attachMainWindow(win: BrowserWindowType) {
+    mainWindow = win
+    nativeHelperService.setMainWindow(win)
+    win.on('closed', () => {
+        if (mainWindow === win) {
+            mainWindow = null
+            nativeHelperService.setMainWindow(null)
+        }
     })
 }
 
@@ -284,7 +312,7 @@ if (!gotTheLock) {
             if (deepLink) {
                 const validatedLink = validateDeepLink(deepLink)
                 if (validatedLink) {
-                    mainWindow.webContents.send('deep-link', validatedLink)
+                    sendToWindow(mainWindow, 'deep-link', validatedLink)
                 }
             }
         }
@@ -300,7 +328,7 @@ if (!gotTheLock) {
         console.log('[Main] Ensuring directories...');
         // Initialize services
         runtimeManager = new RuntimeManager(RUNTIMES_DIR)
-        performanceAcceleration.init()
+        performanceAcceleration.init(() => currentWorkspacePath)
 
         ensureModelsDir()
         ensureRuntimesDir()
@@ -322,10 +350,7 @@ if (!gotTheLock) {
             })
 
         console.log('[Main] Creating window...');
-        mainWindow = createAppWindow()
-        mainWindow.on('closed', () => {
-            mainWindow = null
-        })
+        attachMainWindow(createAppWindow())
 
         // Initialize extension host
         console.log('[Main] Starting extension host...');
@@ -351,13 +376,13 @@ app.on('open-url', (event, url) => {
         mainWindow.focus()
         const validatedLink = validateDeepLink(url)
         if (validatedLink) {
-            mainWindow.webContents.send('deep-link', validatedLink)
+            sendToWindow(mainWindow, 'deep-link', validatedLink)
         }
     }
 })
 
-// Stop everything Kalynt started before quitting, so no shell, program or
-// debugger is left running. Waits at most a few seconds.
+// Stop everything Kalynt started before quitting, so no shell, program,
+// debugger, native model or helper is left running. Waits at most a few seconds.
 let cleanedUp = false
 app.on('before-quit', event => {
     if (signalingServer) {
@@ -368,13 +393,16 @@ app.on('before-quit', event => {
     cleanedUp = true
     // Installing an update must quit right away; stop processes without waiting.
     if (isInstallingUpdate()) {
-        void stopEverything()
+        void shutdownApp().catch(err => console.error('[Main] Shutdown cleanup failed:', err))
         return
     }
     event.preventDefault()
     const timeout = new Promise(resolve => setTimeout(resolve, 3000))
     Promise.race([
-        Promise.all([stopEverything(), extensionHostManager.stop().catch(() => undefined)]),
+        Promise.all([
+            shutdownApp().catch(err => console.error('[Main] Shutdown cleanup failed:', err)),
+            extensionHostManager.stop().catch(() => undefined)
+        ]),
         timeout
     ]).finally(() => app.quit())
 })
@@ -387,9 +415,6 @@ app.on('window-all-closed', () => {
 
 app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-        mainWindow = createAppWindow()
-        mainWindow.on('closed', () => {
-            mainWindow = null
-        })
+        attachMainWindow(createAppWindow())
     }
 })

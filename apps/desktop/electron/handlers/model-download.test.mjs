@@ -11,8 +11,11 @@ const { outputFiles } = await build({ entryPoints: [fileURLToPath(new URL('./mod
 const { registerModelDownloadHandlers } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString('base64')}`)
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'kalynt-download-'))
 const handlers = new Map()
-registerModelDownloadHandlers({ handle: (name, fn) => handlers.set(name, fn) }, () => null, () => root)
+registerModelDownloadHandlers({ handle: (name, fn) => handlers.set(name, fn) }, () => null, () => root, { allowLocalTestServer: true })
 const invoke = (name, arg) => handlers.get(name)(null, arg)
+const strictHandlers = new Map()
+registerModelDownloadHandlers({ handle: (name, fn) => strictHandlers.set(name, fn) }, () => null, () => root)
+const invokeStrict = (name, arg) => strictHandlers.get(name)(null, arg)
 const payload = Buffer.from('abcdefghij')
 const server = http.createServer((req, res) => {
     if (req.url === '/bad-redirect') { res.writeHead(302, { Location: 'file:///tmp/model' }); res.end(); return }
@@ -85,4 +88,27 @@ test('pause keeps partial bytes; resume finishes; cancel removes paused data', {
     await new Promise(resolve => setTimeout(resolve, 50))
     await invoke('cancel-download', 'canceled')
     assert.equal((await cancel).canceled, true)
+})
+
+test('blocks non-HTTPS and private/loopback/metadata SSRF URLs by default', { timeout: 5000 }, async () => {
+    const blockedUrls = [
+        `${base}/full`,
+        'http://example.com/model.gguf',
+        'https://127.0.0.1/model.gguf',
+        'https://localhost/model.gguf',
+        'https://169.254.169.254/latest/meta-data/',
+        'https://10.0.0.1/model.gguf',
+        'https://192.168.1.1/model.gguf',
+        'https://[::1]/model.gguf',
+        'https://user:pass@example.com/model.gguf'
+    ]
+    for (let i = 0; i < blockedUrls.length; i++) {
+        const result = await invokeStrict('download-model', {
+            modelId: `ssrf-${i}`,
+            filename: `ssrf-${i}.gguf`,
+            url: blockedUrls[i],
+            expectedSize: 10
+        })
+        assert.equal(result.success, false, `Expected ${blockedUrls[i]} to be blocked: ${JSON.stringify(result)}`)
+    }
 })

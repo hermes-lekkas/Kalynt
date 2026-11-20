@@ -27,8 +27,15 @@ interface Checker {
 
 const isWindows = () => (window.electronAPI?.platform ?? '').startsWith('win')
 const quote = (p: string) => (isWindows() ? `"${p}"` : `'${p.replace(/'/g, `'\\''`)}'`)
-const extension = (path: string) => /\.([^./\\]+)$/.exec(path)?.[1]?.toLowerCase() ?? ''
-const parentDir = (p: string) => p.replace(/[\\/][^\\/]*$/, '') || p
+const extension = (path: string) => {
+    const base = path.split(/[\\/]/).pop() ?? path
+    const dot = base.lastIndexOf('.')
+    return dot > 0 ? base.slice(dot + 1).toLowerCase() : ''
+}
+const parentDir = (p: string) => {
+    const idx = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
+    return idx > 0 ? p.slice(0, idx) : p
+}
 const separator = (p: string) => (p.includes('\\') && !p.includes('/') ? '\\' : '/')
 const MAX_OUTPUT = 6000
 
@@ -99,11 +106,20 @@ async function projectChecker(path: string, workspace: string): Promise<Checker 
             return (await findUp(path, workspace, 'go.mod')) ? { name: 'go vet', command: 'go vet .', cwd: parentDir(path), timeoutMs: 180_000 } : null
         case 'rs': {
             const dir = await findUp(path, workspace, 'Cargo.toml')
-            return dir ? { name: 'cargo check', command: 'cargo check --quiet --message-format short', cwd: dir, timeoutMs: 300_000, filter: focusOn(path, /(error|warning)(\[\w+\])?:/) } : null
+            return dir ? { name: 'cargo check', command: 'cargo check --quiet --message-format short', cwd: dir, timeoutMs: 300_000, filter: focusOn(path, /(?:error|warning)(?:\[\w+\])?:/) } : null
         }
         default:
             return quickChecker(path)
     }
+}
+
+function looksLikeJsonc(content: string): boolean {
+    if (content.includes('/*')) return true
+    for (const line of content.split('\n')) {
+        const trimmed = line.trimStart()
+        if (trimmed.startsWith('//')) return true
+    }
+    return false
 }
 
 /** JSON is checked in-process. Files with comments (tsconfig, VS Code settings) are JSONC and skipped. */
@@ -114,38 +130,47 @@ async function checkJson(path: string): Promise<CheckResult | null> {
         JSON.parse(file.content)
         return { ok: true, checker: 'JSON', output: '' }
     } catch (error) {
-        if (/(^|\s)\/\/|\/\*/.test(file.content)) return null
+        if (looksLikeJsonc(file.content)) return null
         return { ok: false, checker: 'JSON', output: error instanceof Error ? error.message : String(error) }
     }
 }
 
-async function run(checker: Checker): Promise<CheckResult | null> {
+async function run(checker: Checker, signal?: AbortSignal): Promise<CheckResult | null> {
+    if (signal?.aborted) return null
     const agent = window.electronAPI?.agent
     if (!agent) return null
     const id = `check-${crypto.randomUUID()}`
-    const result = await agent.exec({ id, command: checker.command, cwd: checker.cwd, timeoutMs: checker.timeoutMs })
-    if (!result.ok || result.timedOut) return null
-    // The checker isn't installed: say nothing rather than report a fake problem.
-    if (result.exitCode === 127 || result.exitCode === 9009 || /command not found|is not recognized|could not determine executable/i.test(result.output)) return null
-    if (result.exitCode === 0) return { ok: true, checker: checker.name, output: '' }
-    const output = (checker.filter ? checker.filter(result.output) : result.output).trim().slice(0, MAX_OUTPUT)
-    return { ok: false, checker: checker.name, output: output || `${checker.name} exited with code ${result.exitCode}.` }
+    const onAbort = () => { void agent.execKill(id) }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    try {
+        const result = await agent.exec({ id, command: checker.command, cwd: checker.cwd, timeoutMs: checker.timeoutMs })
+        if (signal?.aborted || !result.ok || result.timedOut) return null
+        // The checker isn't installed: say nothing rather than report a fake problem.
+        if (result.exitCode === 127 || result.exitCode === 9009 || /command not found|is not recognized|could not determine executable/i.test(result.output)) return null
+        if (result.exitCode === 0) return { ok: true, checker: checker.name, output: '' }
+        const output = (checker.filter ? checker.filter(result.output) : result.output).trim().slice(0, MAX_OUTPUT)
+        return { ok: false, checker: checker.name, output: output || `${checker.name} exited with code ${result.exitCode}.` }
+    } finally {
+        signal?.removeEventListener('abort', onAbort)
+    }
 }
 
 /** The fast check run after edits. Null when there's no quick checker for the file type. */
-export async function quickCheck(path: string): Promise<CheckResult | null> {
+export async function quickCheck(path: string, signal?: AbortSignal): Promise<CheckResult | null> {
     try {
+        if (signal?.aborted) return null
         if (extension(path) === 'json') return await checkJson(path)
         const checker = quickChecker(path)
-        return checker ? await run(checker) : null
+        return checker ? await run(checker, signal) : null
     } catch {
         return null
     }
 }
 
 /** The full check behind get_diagnostics. Null when no checker applies. */
-export async function checkFile(path: string, workspace: string): Promise<CheckResult | null> {
+export async function checkFile(path: string, workspace: string, signal?: AbortSignal): Promise<CheckResult | null> {
+    if (signal?.aborted) return null
     if (extension(path) === 'json') return checkJson(path)
     const checker = await projectChecker(path, workspace)
-    return checker ? run(checker) : null
+    return checker ? run(checker, signal) : null
 }

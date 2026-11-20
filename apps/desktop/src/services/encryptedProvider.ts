@@ -1,158 +1,100 @@
 ﻿/*
  * SPDX-License-Identifier: AGPL-3.0-only
  */
-// Encrypted WebRTC Provider - Encrypts Yjs updates at the network layer
-// This wraps y-webrtc to encrypt/decrypt binary update messages
-// SECURITY FIX V-007: Added HMAC integrity verification for updates
+// Encrypted WebRTC Provider - Encrypts/decrypts binary updates with AES-256-GCM
+// and HMAC-SHA256 integrity verification, unified with encryptionService's
+// deterministic room salt + PBKDF2->HKDF key derivation.
 
 import * as Y from 'yjs'
+import { encryptionService, deriveDeterministicRoomSalt } from './encryptionService'
 import {
     signUpdate,
     verifyUpdate,
-    initializeFromPassword as initIntegrity,
+    setHmacKey,
     cleanupRoom as cleanupIntegrity,
     isIntegrityEnabled,
     hasIntegrityHeader
 } from './updateIntegrityService'
 
-// Encryption key storage (derived keys, never raw passwords)
-const derivedKeys = new Map<string, CryptoKey>()
-
-// Encryption config
 const ALGORITHM = 'AES-GCM'
-const KEY_LENGTH = 256
-const PBKDF2_ITERATIONS = 100000
+export const ENCRYPTED_REMOTE_ORIGIN = 'kalynt-encrypted-remote'
 
-// SECURITY FIX V-003: Store salts for rooms
+// Cached derived AES keys (never raw passwords)
+const derivedKeys = new Map<string, CryptoKey>()
 const roomSalts = new Map<string, Uint8Array>()
 
-/**
- * Derive encryption key from password using PBKDF2
- * SECURITY FIX V-003: Use random salt combined with roomId for proper entropy
- * Key is derived once and cached - never store raw password
- */
-export async function deriveRoomKey(
-    roomId: string,
-    password: string,
-    existingSalt?: Uint8Array
-): Promise<{ key: CryptoKey; salt: Uint8Array }> {
-    // Generate or use existing salt
-    let salt: Uint8Array
-    if (existingSalt && existingSalt.length >= 16) {
-        salt = existingSalt.slice(0, 16)
-    } else {
-        // Check if we have a cached salt for this room
-        const cachedSalt = roomSalts.get(roomId)
-        if (cachedSalt) {
-            salt = cachedSalt
-        } else {
-            // SECURITY FIX V-003: Generate random salt XOR'd with roomId hash
-            const randomSalt = crypto.getRandomValues(new Uint8Array(16))
-            const roomIdHash = await crypto.subtle.digest(
-                'SHA-256',
-                new TextEncoder().encode(roomId)
-            )
-            const roomIdBytes = new Uint8Array(roomIdHash).slice(0, 16)
-            salt = new Uint8Array(16)
-            for (let i = 0; i < 16; i++) {
-                salt[i] = randomSalt[i] ^ roomIdBytes[i]
-            }
-            roomSalts.set(roomId, salt)
-        }
-    }
-
-    // Check cache with salt included in key
-    const saltHex = Array.from(salt).map(b => b.toString(16).padStart(2, '0')).join('')
-    const cacheKey = `${roomId}:${saltHex}:${await hashPassword(password)}`
-    const cached = derivedKeys.get(cacheKey)
-    if (cached) return { key: cached, salt }
-
-    // Import password as key material
-    const keyMaterial = await crypto.subtle.importKey(
-        'raw',
-        new TextEncoder().encode(password),
-        'PBKDF2',
-        false,
-        ['deriveBits', 'deriveKey']
-    )
-
-    // Derive AES key
-    const key = await crypto.subtle.deriveKey(
-        {
-            name: 'PBKDF2',
-            salt: salt as BufferSource,
-            iterations: PBKDF2_ITERATIONS,
-            hash: 'SHA-256'
-        },
-        keyMaterial,
-        { name: ALGORITHM, length: KEY_LENGTH },
-        false, // not extractable - more secure
-        ['encrypt', 'decrypt']
-    )
-
-    derivedKeys.set(cacheKey, key)
-    roomSalts.set(roomId, salt)
-    return { key, salt }
+function normalizeRoomId(roomId: string): string {
+    return roomId.trim().toLowerCase()
 }
 
-/**
- * Get salt for a room (for sharing with peers)
- */
-export function getRoomSalt(roomId: string): Uint8Array | undefined {
-    return roomSalts.get(roomId)
-}
-
-/**
- * Set salt for a room (when receiving from peer/owner)
- */
-export function setRoomSalt(roomId: string, salt: Uint8Array): void {
-    roomSalts.set(roomId, salt)
-}
-
-/**
- * Hash password for cache key (not for storage)
- */
 async function hashPassword(password: string): Promise<string> {
     const data = new TextEncoder().encode(password)
     const hash = await crypto.subtle.digest('SHA-256', data)
     return Array.from(new Uint8Array(hash))
         .map(b => b.toString(16).padStart(2, '0'))
         .join('')
-        .substring(0, 16) // Truncate for cache key
+        .substring(0, 16)
 }
 
 /**
- * Encrypt Yjs update (binary data) - SYNCHRONOUS after key is derived
- * Uses streaming encryption for real-time updates
+ * Derive room AES-256-GCM key using the unified deterministic room salt
+ * (or an explicit shared salt when provided).
+ */
+export async function deriveRoomKey(
+    roomId: string,
+    password: string,
+    existingSalt?: Uint8Array
+): Promise<{ key: CryptoKey; salt: Uint8Array }> {
+    const keyId = normalizeRoomId(roomId)
+    const salt = existingSalt && existingSalt.length >= 16
+        ? new Uint8Array(existingSalt.slice(0, 16))
+        : (roomSalts.get(keyId) || await deriveDeterministicRoomSalt(keyId))
+
+    const saltHex = Array.from(salt).map(b => b.toString(16).padStart(2, '0')).join('')
+    const cacheKey = `${keyId}:${saltHex}:${await hashPassword(password)}`
+    const cached = derivedKeys.get(cacheKey)
+    if (cached) return { key: cached, salt }
+
+    const bundle = await encryptionService.deriveRoomKeys(keyId, password, salt)
+    derivedKeys.set(cacheKey, bundle.aesKey)
+    roomSalts.set(keyId, bundle.salt)
+    return { key: bundle.aesKey, salt: bundle.salt }
+}
+
+export function getRoomSalt(roomId: string): Uint8Array | undefined {
+    const keyId = normalizeRoomId(roomId)
+    return roomSalts.get(keyId) || encryptionService.getRoomSalt(keyId)
+}
+
+export function setRoomSalt(roomId: string, salt: Uint8Array): void {
+    roomSalts.set(normalizeRoomId(roomId), new Uint8Array(salt.slice(0, 16)))
+}
+
+/**
+ * Encrypt binary update with AES-256-GCM.
+ * Output format: [iv (12 bytes)][ciphertext + 16-byte GCM auth tag]
  */
 export async function encryptUpdate(update: Uint8Array, key: CryptoKey): Promise<Uint8Array> {
-    // Generate random IV (12 bytes for GCM)
     const iv = crypto.getRandomValues(new Uint8Array(12))
-
-    // Encrypt the update
     const encrypted = await crypto.subtle.encrypt(
         { name: ALGORITHM, iv },
         key,
         update as BufferSource
     )
 
-    // Combine: [iv (12 bytes)][encrypted data]
     const result = new Uint8Array(12 + encrypted.byteLength)
     result.set(iv, 0)
     result.set(new Uint8Array(encrypted), 12)
-
     return result
 }
 
 /**
- * Decrypt Yjs update (binary data)
+ * Decrypt binary update with AES-256-GCM.
  */
 export async function decryptUpdate(encryptedData: Uint8Array, key: CryptoKey): Promise<Uint8Array> {
-    // Extract IV (first 12 bytes)
     const iv = encryptedData.slice(0, 12)
     const ciphertext = encryptedData.slice(12)
 
-    // Decrypt
     const decrypted = await crypto.subtle.decrypt(
         { name: ALGORITHM, iv },
         key,
@@ -162,10 +104,7 @@ export async function decryptUpdate(encryptedData: Uint8Array, key: CryptoKey): 
     return new Uint8Array(decrypted)
 }
 
-/**
- * Encryption state for a room
- */
-interface RoomEncryptionState {
+export interface RoomEncryptionState {
     enabled: boolean
     key: CryptoKey | null
     pendingKey: Promise<CryptoKey> | null
@@ -174,86 +113,98 @@ interface RoomEncryptionState {
 const roomStates = new Map<string, RoomEncryptionState>()
 
 /**
- * Initialize encryption for a room
- * SECURITY FIX V-003: Returns salt for sharing with peers
- * SECURITY FIX V-007: Also initializes HMAC integrity verification
+ * Initialize encryption and HMAC integrity verification for a room.
+ * Synchronizes the exact same deterministic key bundle across `encryptedProvider`,
+ * `encryptionService`, and `updateIntegrityService`.
  */
 export async function initializeRoomEncryption(
     roomId: string,
     password: string,
     existingSalt?: Uint8Array
 ): Promise<Uint8Array> {
+    const keyId = normalizeRoomId(roomId)
     const state: RoomEncryptionState = {
         enabled: true,
         key: null,
         pendingKey: null
     }
-    roomStates.set(roomId, state)
+    roomStates.set(keyId, state)
 
-    // Derive key in background
-    const keyPromise = deriveRoomKey(roomId, password, existingSalt)
-    state.pendingKey = keyPromise.then(r => r.key)
-    const result = await keyPromise
-    state.key = result.key
-    state.pendingKey = null
+    const derivePromise = (async () => {
+        const salt = await encryptionService.setRoomKey(keyId, password, existingSalt)
+        const aesKey = encryptionService.getRoomKey(keyId)
+        const hmacKey = encryptionService.getRoomHmacKey(keyId)
+        if (!aesKey || !hmacKey) {
+            throw new Error('Failed to derive room encryption keys')
+        }
+        return { aesKey, hmacKey, salt }
+    })()
 
-    // SECURITY FIX V-007: Initialize integrity verification
+    state.pendingKey = derivePromise.then(r => r.aesKey)
+
     try {
-        await initIntegrity(roomId, password)
-        console.log(`[Encryption] Room ${roomId} integrity verification initialized`)
-    } catch (e) {
-        console.error('[Encryption] Failed to initialize integrity:', e)
+        const { aesKey, hmacKey, salt } = await derivePromise
+        // Only commit if this state is still the active state for the room
+        if (roomStates.get(keyId) === state) {
+            state.key = aesKey
+            state.pendingKey = null
+            roomSalts.set(keyId, salt)
+            setHmacKey(keyId, hmacKey)
+        }
+        console.log(`[Encryption] Room ${keyId} encryption and integrity initialized`)
+        return salt
+    } catch (error) {
+        if (roomStates.get(keyId) === state) {
+            state.pendingKey = null
+        }
+        throw error
     }
-
-    console.log(`[Encryption] Room ${roomId} encryption initialized`)
-    return result.salt
 }
 
 /**
- * Disable encryption for a room
- * SECURITY FIX V-007: Also cleanup integrity verification state
+ * Disable encryption and clear all keys/integrity state for a room.
  */
 export function disableRoomEncryption(roomId: string): void {
-    roomStates.delete(roomId)
-    // SECURITY FIX V-007: Cleanup integrity state
-    cleanupIntegrity(roomId)
-    console.log(`[Encryption] Room ${roomId} encryption disabled`)
+    const keyId = normalizeRoomId(roomId)
+    roomStates.delete(keyId)
+    roomSalts.delete(keyId)
+    for (const cacheKey of Array.from(derivedKeys.keys())) {
+        if (cacheKey.startsWith(`${keyId}:`)) {
+            derivedKeys.delete(cacheKey)
+        }
+    }
+    cleanupIntegrity(keyId)
+    encryptionService.clearRoomKey(keyId)
+    console.log(`[Encryption] Room ${keyId} encryption disabled`)
 }
 
-/**
- * Get encryption state for a room
- */
 export function getRoomEncryptionState(roomId: string): RoomEncryptionState | null {
-    return roomStates.get(roomId) || null
+    return roomStates.get(normalizeRoomId(roomId)) || null
 }
 
-/**
- * Check if room has encryption ready (key derived)
- */
 export function isRoomEncryptionReady(roomId: string): boolean {
-    const state = roomStates.get(roomId)
+    const state = roomStates.get(normalizeRoomId(roomId))
     return state?.enabled === true && state?.key !== null
 }
 
 /**
- * Encrypt outgoing message for a room
- * SECURITY FIX V-007: Also signs message with HMAC for integrity
+ * Sign (HMAC-SHA256) and encrypt (AES-256-GCM) an outgoing room message.
  */
 export async function encryptRoomMessage(
     roomId: string,
     data: Uint8Array
 ): Promise<Uint8Array> {
-    const state = roomStates.get(roomId)
+    const keyId = normalizeRoomId(roomId)
+    const state = roomStates.get(keyId)
     if (!state?.enabled) {
-        return data // Return unencrypted if not enabled
+        return data
     }
     if (!state.key) throw new Error('Room encryption is not ready')
 
     try {
-        // SECURITY FIX V-007: Sign the data before encryption
         let dataToEncrypt = data
-        if (isIntegrityEnabled(roomId)) {
-            dataToEncrypt = await signUpdate(roomId, data)
+        if (isIntegrityEnabled(keyId)) {
+            dataToEncrypt = await signUpdate(keyId, data)
         }
         return await encryptUpdate(dataToEncrypt, state.key)
     } catch (e) {
@@ -263,16 +214,15 @@ export async function encryptRoomMessage(
 }
 
 /**
- * Decrypt incoming message for a room
- * SECURITY FIX V-007: Also verifies HMAC integrity after decryption
+ * Decrypt (AES-256-GCM) and verify (HMAC-SHA256) an incoming room message.
  */
 export async function decryptRoomMessage(
     roomId: string,
     data: Uint8Array
 ): Promise<Uint8Array> {
-    const state = roomStates.get(roomId)
+    const keyId = normalizeRoomId(roomId)
+    const state = roomStates.get(keyId)
 
-    // If encryption not enabled, return as-is
     if (!state?.enabled) {
         return data
     }
@@ -280,20 +230,15 @@ export async function decryptRoomMessage(
 
     try {
         // AES-GCM IVs are random: every first-byte value, including zero, is
-        // valid. Encrypted rooms always authenticate; do not guess whether a
-        // packet is plaintext from its contents or accept a legacy downgrade.
+        // valid. Encrypted rooms always authenticate; never accept plaintext downgrades.
         if (data.length < 12 + 16) throw new Error('Invalid encrypted message')
         const decrypted = await decryptUpdate(data, state.key)
 
-        // SECURITY FIX V-007: Verify integrity if enabled
-        if (isIntegrityEnabled(roomId) && hasIntegrityHeader(decrypted)) {
-            const verified = await verifyUpdate(roomId, decrypted)
-            if (!verified) {
+        if (isIntegrityEnabled(keyId) && hasIntegrityHeader(decrypted)) {
+            const verified = await verifyUpdate(keyId, decrypted)
+            if (!verified || !verified.verified) {
                 console.error('[Encryption] Integrity verification failed - rejecting update')
                 throw new Error('Integrity verification failed')
-            }
-            if (!verified.verified) {
-                console.warn('[Encryption] Update not verified (legacy peer?):', verified.peerId)
             }
             return verified.update
         }
@@ -306,25 +251,83 @@ export async function decryptRoomMessage(
 }
 
 /**
- * Create encrypted document with update interception
- * This wraps a Y.Doc to encrypt/decrypt updates
+ * Encrypt a Yjs document update for transmission over an untrusted channel.
  */
-export function createEncryptedDoc(roomId: string, baseDoc?: Y.Doc): Y.Doc {
-    const doc = baseDoc || new Y.Doc()
-    const state = roomStates.get(roomId)
+export async function encodeEncryptedUpdate(
+    roomId: string,
+    update: Uint8Array
+): Promise<Uint8Array> {
+    return encryptRoomMessage(roomId, update)
+}
 
-    if (state?.enabled && state.key) {
-        // Note: Full encryption happens at the y-webrtc provider level
-        // This doc instance will have its updates encrypted before network transmission
-        console.log('[Encryption] Created encrypted doc wrapper for', roomId)
+/**
+ * Decrypt, verify integrity, and apply a remote encrypted Yjs update to a Y.Doc.
+ */
+export async function applyEncryptedUpdate(
+    roomId: string,
+    doc: Y.Doc,
+    encryptedUpdate: Uint8Array,
+    origin: unknown = ENCRYPTED_REMOTE_ORIGIN
+): Promise<void> {
+    const plainUpdate = await decryptRoomMessage(roomId, encryptedUpdate)
+    Y.applyUpdate(doc, plainUpdate, origin)
+}
+
+export interface EncryptedDocOptions {
+    /** Invoked with each AES-GCM encrypted (+ HMAC signed) local Yjs update. */
+    onEncryptedUpdate?: (encrypted: Uint8Array, origin: unknown) => void
+    /** Invoked if encrypting a local update fails (never silently falls back to plaintext). */
+    onError?: (error: Error) => void
+}
+
+/**
+ * Wrap a Y.Doc with real update encryption interception when `onEncryptedUpdate`
+ * is provided, or verify active encryption readiness for y-webrtc key delegation.
+ */
+export function createEncryptedDoc(
+    roomId: string,
+    baseDoc?: Y.Doc,
+    options?: EncryptedDocOptions
+): Y.Doc {
+    const keyId = normalizeRoomId(roomId)
+    const doc = baseDoc || new Y.Doc()
+    const state = roomStates.get(keyId)
+
+    if (state?.enabled && !state.key && !state.pendingKey) {
+        throw new Error(`Room encryption for ${keyId} is enabled but has no derived key`)
+    }
+
+    if (options?.onEncryptedUpdate) {
+        const updateHandler = (update: Uint8Array, origin: unknown) => {
+            if (origin === ENCRYPTED_REMOTE_ORIGIN) return
+
+            const currentState = roomStates.get(keyId)
+            const run = async () => {
+                if (currentState?.enabled && !currentState.key && currentState.pendingKey) {
+                    await currentState.pendingKey
+                }
+                const payload = await encryptRoomMessage(keyId, update)
+                options.onEncryptedUpdate?.(payload, origin)
+            }
+
+            run().catch(err => {
+                const error = err instanceof Error ? err : new Error(String(err))
+                console.error(`[Encryption] Failed to encrypt doc update for ${keyId}:`, error)
+                options.onError?.(error)
+            })
+        }
+
+        doc.on('update', updateHandler)
+        doc.on('destroy', () => {
+            doc.off('update', updateHandler)
+        })
     }
 
     return doc
 }
 
 /**
- * LRU Cache with size limit for decrypted data
- * SECURITY FIX V-008: Added background TTL cleanup and shorter TTL
+ * LRU Cache with size limit and TTL cleanup for decrypted data.
  */
 export class LRUCache<K, V> {
     private readonly cache = new Map<K, { value: V; timestamp: number }>()
@@ -332,29 +335,22 @@ export class LRUCache<K, V> {
     private readonly ttlMs: number
     private cleanupInterval: ReturnType<typeof setInterval> | null = null
 
-    // SECURITY FIX V-008: Reduced default TTL to 2 minutes for security
     constructor(maxSize: number = 1000, ttlMs: number = 2 * 60 * 1000) {
         this.maxSize = maxSize
         this.ttlMs = ttlMs
-
-        // SECURITY FIX V-008: Start background cleanup every 30 seconds
         this.startBackgroundCleanup()
     }
 
-    /**
-     * SECURITY FIX V-008: Background cleanup of expired entries
-     */
     private startBackgroundCleanup(): void {
         if (this.cleanupInterval) return
 
         this.cleanupInterval = setInterval(() => {
             this.clearExpired()
-        }, 30 * 1000) // Run every 30 seconds
+        }, 30 * 1000)
+        const maybeTimer = this.cleanupInterval as unknown as { unref?: () => void }
+        maybeTimer.unref?.()
     }
 
-    /**
-     * SECURITY FIX V-008: Clear all expired entries proactively
-     */
     clearExpired(): number {
         const now = Date.now()
         let expiredCount = 0
@@ -376,13 +372,11 @@ export class LRUCache<K, V> {
         const entry = this.cache.get(key)
         if (!entry) return undefined
 
-        // Check TTL
         if (Date.now() - entry.timestamp > this.ttlMs) {
             this.cache.delete(key)
             return undefined
         }
 
-        // Move to end (most recently used)
         this.cache.delete(key)
         this.cache.set(key, { ...entry, timestamp: Date.now() })
 
@@ -390,7 +384,6 @@ export class LRUCache<K, V> {
     }
 
     set(key: K, value: V): void {
-        // Remove oldest if at capacity
         if (this.cache.size >= this.maxSize) {
             const firstKey = this.cache.keys().next().value
             if (firstKey !== undefined) {
@@ -413,9 +406,6 @@ export class LRUCache<K, V> {
         return this.cache.size
     }
 
-    /**
-     * SECURITY FIX V-008: Stop background cleanup (call on app shutdown)
-     */
     destroy(): void {
         if (this.cleanupInterval) {
             clearInterval(this.cleanupInterval)

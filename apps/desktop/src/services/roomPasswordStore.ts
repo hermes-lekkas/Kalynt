@@ -2,8 +2,9 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  *
  * Workspace room passwords. localStorage keeps only the `encryptionEnabled`
- * flag under `space-settings-<spaceId>`; the password itself lives in the
- * OS-backed secure storage under `roomPassword_<spaceId>`.
+ * flag under `space-settings-<spaceId>`; persistent passwords live in the
+ * OS-backed secure storage under `roomPassword_<spaceId>`, while deep-link
+ * session passwords can be kept purely in memory via the volatile helpers.
  */
 
 const SETTINGS_PREFIX = 'space-settings-'
@@ -22,9 +23,17 @@ interface StoredSettings {
 
 const settingsKey = (spaceId: string) => `${SETTINGS_PREFIX}${spaceId}`
 const secretKey = (spaceId: string) => `roomPassword_${spaceId}`
-const secure = () => window.electronAPI?.safeStorage
+const secure = () => (typeof window !== 'undefined' ? window.electronAPI?.safeStorage : undefined)
+
+/** Volatile in-memory passwords (e.g. from kalynt:// deep links); never persisted to disk. */
+const volatilePasswords = new Map<string, string>()
+
+function hasLocalStorage(): boolean {
+    return typeof localStorage !== 'undefined'
+}
 
 function readSettings(spaceId: string): StoredSettings {
+    if (!hasLocalStorage()) return {}
     try {
         const parsed = JSON.parse(localStorage.getItem(settingsKey(spaceId)) || '{}')
         return parsed && typeof parsed === 'object' ? parsed : {}
@@ -34,6 +43,7 @@ function readSettings(spaceId: string): StoredSettings {
 }
 
 function writeFlag(spaceId: string, encryptionEnabled: boolean): void {
+    if (!hasLocalStorage()) return
     localStorage.setItem(settingsKey(spaceId), JSON.stringify({ encryptionEnabled }))
 }
 
@@ -47,6 +57,7 @@ let migration: Promise<void> | null = null
  */
 export function migrateLegacyRoomPasswords(): Promise<void> {
     migration ??= (async () => {
+        if (!hasLocalStorage()) return
         const keys = Object.keys(localStorage).filter(k => k.startsWith(SETTINGS_PREFIX))
         for (const key of keys) {
             const spaceId = key.slice(SETTINGS_PREFIX.length)
@@ -67,8 +78,34 @@ export function migrateLegacyRoomPasswords(): Promise<void> {
     return migration
 }
 
+/**
+ * Keeps a room password in memory for the current session only (never written
+ * to localStorage or secure storage). Used for deep-link joins.
+ */
+export function setVolatileRoomPassword(spaceId: string, password: string): void {
+    if (!spaceId) return
+    if (password) {
+        volatilePasswords.set(spaceId, password)
+    } else {
+        volatilePasswords.delete(spaceId)
+    }
+}
+
+/** Returns the in-memory volatile password for a workspace, or null if none. */
+export function getVolatileRoomPassword(spaceId: string): string | null {
+    return volatilePasswords.get(spaceId) ?? null
+}
+
+/** Clears the in-memory volatile password for a workspace. */
+export function clearVolatileRoomPassword(spaceId: string): void {
+    volatilePasswords.delete(spaceId)
+}
+
 /** The workspace's room password, or null when encryption is off or none is stored. */
 export async function getRoomPassword(spaceId: string): Promise<string | null> {
+    const volatile = volatilePasswords.get(spaceId)
+    if (volatile) return volatile
+
     await migrateLegacyRoomPasswords()
     const { encryptionEnabled, roomPassword } = readSettings(spaceId)
     if (!encryptionEnabled) return null
@@ -91,11 +128,13 @@ export async function setRoomPassword(spaceId: string, password: string): Promis
     await migrateLegacyRoomPasswords()
     const r: SecureResult | undefined = await secure()?.set({ key: secretKey(spaceId), value: password })
     if (!r?.success) throw new Error(r?.error || 'The room password could not be saved to secure storage.')
+    volatilePasswords.delete(spaceId)
     writeFlag(spaceId, true)
 }
 
-/** Turns encryption off and deletes the stored password. */
+/** Turns encryption off and deletes both volatile and stored passwords. */
 export async function clearRoomPassword(spaceId: string): Promise<void> {
+    volatilePasswords.delete(spaceId)
     await migrateLegacyRoomPasswords()
     writeFlag(spaceId, false)
     const r: SecureResult | undefined = await secure()?.delete(secretKey(spaceId))
