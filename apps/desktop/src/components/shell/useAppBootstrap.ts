@@ -2,16 +2,24 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  *
  * One-time app start-up work: store initialisation, models directory,
- * auto-update wiring, deep links and the document theme attribute.
+ * auto-update wiring, model listeners, root recovery flush, deep links
+ * and live document theme synchronisation.
  */
 import { useEffect, useState } from 'react'
-import { useAppStore } from '../../stores/appStore'
+import { resolveTheme, useAppStore } from '../../stores/appStore'
+import { useModelStore } from '../../stores/modelStore'
+import { useNotificationStore } from '../../stores/notificationStore'
 import { useUpdateStore } from '../../stores/updateStore'
 import { usePerformanceAcceleration } from '../../hooks/usePerformanceAcceleration'
+import { flushEditorStates, onRecoveryError } from '../../services/editorRecovery'
 import { setModelsDirectory } from '../../services/modelDownloadService'
 import { p2pService } from '../../services/p2pService'
-import { markEncryptionEnabled, migrateLegacyRoomPasswords } from '../../services/roomPasswordStore'
+import * as roomPasswordStore from '../../services/roomPasswordStore'
 import { logger } from '../../utils/logger'
+
+interface VolatilePasswordApi {
+    setVolatileRoomPassword?: (spaceId: string, password: string) => void
+}
 
 export function useAppBootstrap(): { ready: boolean } {
     const initialize = useAppStore(s => s.initialize)
@@ -20,9 +28,19 @@ export function useAppBootstrap(): { ready: boolean } {
     const [ready, setReady] = useState(false)
     usePerformanceAcceleration()
 
-    // Theme lives on <html> so portals and the splash pick it up too.
+    // Theme lives on <html> so portals, splash, and scrollbars stay in sync,
+    // including live updates when following the OS colour scheme.
     useEffect(() => {
-        document.documentElement.dataset.theme = theme === 'light' ? 'light' : 'dark'
+        const apply = () => {
+            const resolved = resolveTheme(theme)
+            document.documentElement.dataset.theme = resolved
+            useAppStore.getState().setResolvedTheme(resolved)
+        }
+        apply()
+        if (theme !== 'system' || typeof window.matchMedia !== 'function') return
+        const mq = window.matchMedia('(prefers-color-scheme: light)')
+        mq.addEventListener('change', apply)
+        return () => mq.removeEventListener('change', apply)
     }, [theme])
 
     useEffect(() => {
@@ -32,6 +50,14 @@ export function useAppBootstrap(): { ready: boolean } {
             .finally(() => { if (!cancelled) setReady(true) })
         return () => { cancelled = true }
     }, [initialize])
+
+    // Subscribe to local model lifecycle & download progress IPC events at boot.
+    useEffect(() => {
+        const cleanup = useModelStore.getState().setupListeners() as unknown
+        return () => {
+            if (typeof cleanup === 'function') (cleanup as () => void)()
+        }
+    }, [])
 
     useEffect(() => {
         window.electronAPI?.getModelsDirectory?.()
@@ -44,10 +70,38 @@ export function useAppBootstrap(): { ready: boolean } {
 
     useEffect(() => {
         initializeUpdates().catch(error => logger.general.error('Failed to initialize auto-update system', error))
+        return () => {
+            useUpdateStore.getState().cleanupListeners()
+        }
     }, [initializeUpdates])
 
     // Older versions kept room passwords in localStorage; move them to secure storage.
-    useEffect(() => { migrateLegacyRoomPasswords() }, [])
+    useEffect(() => { roomPasswordStore.migrateLegacyRoomPasswords() }, [])
+
+    // Root beforeunload guard so pending editor recovery drafts flush cleanly
+    // even if the user navigated back to HomeScreen before closing the window.
+    useEffect(() => {
+        const offError = onRecoveryError(message => {
+            if (!useAppStore.getState().currentSpace) {
+                useNotificationStore.getState().addNotification(`Unsaved editor recovery failed: ${message}`, 'error')
+            }
+        })
+        const onBeforeUnload = (event: BeforeUnloadEvent) => {
+            window.dispatchEvent(new Event('kalynt-before-flush-editor'))
+            if (!window.electronAPI?.editorState) return
+            const result = flushEditorStates()
+            if (!result.success) {
+                event.preventDefault()
+                event.returnValue = ''
+                useNotificationStore.getState().addNotification(result.error ?? 'Save your files before closing.', 'error')
+            }
+        }
+        window.addEventListener('beforeunload', onBeforeUnload)
+        return () => {
+            offError()
+            window.removeEventListener('beforeunload', onBeforeUnload)
+        }
+    }, [])
 
     // kalynt:// invite links open (or create) the shared workspace.
     useEffect(() => {
@@ -58,8 +112,11 @@ export function useAppBootstrap(): { ready: boolean } {
                 return
             }
             if (parsed.password) {
-                // Never persist the room password from a link.
-                markEncryptionEnabled(parsed.roomId)
+                // Keep the link password only in volatile in-memory storage (never persisted)
+                // so the room decrypts immediately on join.
+                const volatileApi = roomPasswordStore as unknown as VolatilePasswordApi
+                volatileApi.setVolatileRoomPassword?.(parsed.roomId, parsed.password)
+                void roomPasswordStore.markEncryptionEnabled(parsed.roomId)
             }
             const store = useAppStore.getState()
             const existing = store.spaces.find(s => s.id === parsed.roomId)

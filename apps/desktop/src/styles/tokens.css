@@ -12,26 +12,33 @@
 :root[data-theme='dark'] {
     color-scheme: dark;
 
-    /* Surfaces — graphite with the faint violet cast of the mark */
-    --bg: #15141a;            /* editor, terminal, canvas */
-    --surface: #1a1920;       /* titlebar, side panels, status bar */
-    --raised: #222129;        /* inputs, menus, popovers */
-    --hover: #2a2932;
-    --active: #312f3b;
-    --line: #2b2a33;          /* hairlines between regions */
-    --line-strong: #3b3946;   /* control borders */
-    --scrim: rgba(8, 7, 12, 0.62);
+    /* Surfaces — crisp 3-tier graphite hierarchy with subtle violet undertone */
+    --bg: #121117;            /* editor, terminal, deep canvas */
+    --surface: #17161d;       /* titlebar, side panels, status bar */
+    --raised: #1f1e27;        /* inputs, menus, popovers, cards */
+    --hover: #282732;
+    --active: #32303e;
+    --line: #272630;          /* hairlines between regions */
+    --line-strong: #3a3847;   /* control borders */
+    --scrim: rgba(7, 6, 11, 0.64);
 
-    /* Text */
-    --text: #eceaf2;
-    --text-2: #b0adbd;
-    --text-3: #8a8699;
-    --text-4: #5e5b6b;
+    /* Floating glass & specular highlights */
+    --glass-bg: rgba(31, 30, 39, 0.88);
+    --glass-surface: rgba(23, 22, 29, 0.9);
+    --glass-blur: blur(12px);
+    --rim-light: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    --rim-subtle: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+
+    /* Text — WCAG AA readable across all tiers */
+    --text: #f0eef6;
+    --text-2: #bcb9ca;
+    --text-3: #9c98ad;
+    --text-4: #88849c;
 
     /* Neutral primary (buttons that commit an action) */
-    --primary: #eceaf2;
+    --primary: #f0eef6;
     --primary-hover: #ffffff;
-    --on-primary: #15141a;
+    --on-primary: #121117;
 
     /* Brand / agent */
     --violet: #8b6cff;
@@ -66,28 +73,36 @@
     --peer-6: #f0955a;
     --peer-7: #c792ea;
 
-    --shadow-pop: 0 10px 28px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--line-strong);
-    --shadow-dialog: 0 24px 64px rgba(0, 0, 0, 0.6), 0 0 0 1px var(--line-strong);
+    --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.56), 0 0 0 1px var(--line-strong), var(--rim-light);
+    --shadow-dialog: 0 28px 72px rgba(0, 0, 0, 0.68), 0 0 0 1px var(--line-strong), var(--rim-light);
 }
 
 :root[data-theme='light'] {
     color-scheme: light;
 
+    /* Crisp 3-tier daylight counterpart */
     --bg: #ffffff;
     --surface: #f6f5f9;
     --raised: #ffffff;
-    --hover: #eeedf3;
-    --active: #e5e3ee;
-    --line: #e3e1ea;
-    --line-strong: #cbc8d6;
-    --scrim: rgba(28, 27, 35, 0.36);
+    --hover: #edecef;
+    --active: #e4e2ec;
+    --line: #e2e0ea;
+    --line-strong: #c8c5d5;
+    --scrim: rgba(24, 22, 34, 0.34);
 
-    --text: #1c1b23;
-    --text-2: #4a4759;
-    --text-3: #6b6880;
-    --text-4: #a3a0b3;
+    --glass-bg: rgba(255, 255, 255, 0.88);
+    --glass-surface: rgba(246, 245, 249, 0.92);
+    --glass-blur: blur(12px);
+    --rim-light: inset 0 1px 0 rgba(255, 255, 255, 0.88);
+    --rim-subtle: inset 0 1px 0 rgba(255, 255, 255, 0.65);
 
-    --primary: #1c1b23;
+    /* Text — WCAG AA readable across all tiers */
+    --text: #191821;
+    --text-2: #434054;
+    --text-3: #5b576e;
+    --text-4: #6c6880;
+
+    --primary: #191821;
     --primary-hover: #000000;
     --on-primary: #ffffff;
 
@@ -120,8 +135,8 @@
     --peer-6: #c3601f;
     --peer-7: #9152c4;
 
-    --shadow-pop: 0 10px 28px rgba(28, 20, 60, 0.14), 0 0 0 1px var(--line-strong);
-    --shadow-dialog: 0 24px 64px rgba(28, 20, 60, 0.2), 0 0 0 1px var(--line-strong);
+    --shadow-pop: 0 12px 32px rgba(24, 18, 52, 0.14), 0 0 0 1px var(--line-strong), var(--rim-light);
+    --shadow-dialog: 0 28px 72px rgba(24, 18, 52, 0.2), 0 0 0 1px var(--line-strong), var(--rim-light);
 }
 
 :root {
@@ -176,7 +191,7 @@
     --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
     --dur-1: 90ms;
     --dur-2: 160ms;
-    --dur-3: 260ms;
+    --dur-3: 240ms;
 
     /* Layers */
     --z-panel: 10;

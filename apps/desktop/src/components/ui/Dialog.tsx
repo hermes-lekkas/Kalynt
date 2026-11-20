@@ -5,7 +5,7 @@ import { useEffect, useId, useRef, type KeyboardEvent, type ReactNode, type RefO
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import { IconButton } from './Button'
-import { focusableWithin, useLayer } from './layers'
+import { focusableWithin, layerZIndex, useLayer } from './layers'
 import './overlay.css'
 
 export type DialogSize = 'sm' | 'md' | 'lg' | 'xl'
@@ -74,6 +74,7 @@ export function Dialog({
     return createPortal(
         <div
             className="k-scrim"
+            style={{ zIndex: layerZIndex(depth) }}
             data-layer-depth={depth}
             onPointerDown={e => { pressStartedOnScrim.current = e.target === e.currentTarget }}
             onClick={e => {

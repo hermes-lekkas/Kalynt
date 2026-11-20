@@ -2,9 +2,9 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  *
  * A single stack for every floating layer (menus, popovers, dialogs) so that
- * Escape and outside clicks always close the top-most layer first.
+ * Escape, outside clicks, and z-index stacking always respect the real open order.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef } from 'react'
 
 interface Layer {
     id: number
@@ -14,6 +14,10 @@ interface Layer {
 const stack: Layer[] = []
 let seq = 0
 let installed = false
+
+export const LAYER_Z_BASE = 1000
+const LAYER_Z_STEP = 10
+const LAYER_Z_MAX_OFFSET = 1800
 
 function handleKeyDown(e: KeyboardEvent) {
     if (e.key !== 'Escape' || e.defaultPrevented) return
@@ -35,23 +39,46 @@ export function hasOpenLayer(): boolean {
 }
 
 /**
- * Registers a layer while `active` is true. Returns the layer's depth, which
- * popovers stamp onto their element to ignore clicks inside deeper layers.
+ * Computes a z-index for a layer depth so any Popover/Menu opened from inside
+ * a Dialog renders above the dialog scrim, while staying below toasts (3000).
+ */
+export function layerZIndex(depth: number): number {
+    const offset = Math.min(Math.max(1, depth) * LAYER_Z_STEP, LAYER_Z_MAX_OFFSET)
+    return LAYER_Z_BASE + offset
+}
+
+/**
+ * Registers a layer while `active` is true. Returns a strictly monotonic layer
+ * id synchronously on the first active frame (never 0 while active), so both
+ * `data-layer-depth` and z-index work reliably even across non-LIFO closes.
  */
 export function useLayer(active: boolean, onEscape: () => void): number {
     const escapeRef = useRef(onEscape)
     escapeRef.current = onEscape
-    const [depth, setDepth] = useState(0)
+    const idRef = useRef(0)
 
-    useEffect(() => {
+    if (active && idRef.current === 0) {
+        idRef.current = ++seq
+    } else if (!active && idRef.current !== 0) {
+        idRef.current = 0
+    }
+
+    const depth = active ? idRef.current : 0
+
+    useLayoutEffect(() => {
         if (!active) return
         install()
-        const layer: Layer = { id: ++seq, onEscape: () => escapeRef.current() }
-        stack.push(layer)
-        setDepth(stack.length)
+        const id = idRef.current
+        if (id > seq) seq = id
+        const layer: Layer = { id, onEscape: () => escapeRef.current() }
+        if (!stack.some(l => l.id === id)) {
+            stack.push(layer)
+            stack.sort((a, b) => a.id - b.id)
+        }
         return () => {
-            const index = stack.findIndex(l => l.id === layer.id)
+            const index = stack.findIndex(l => l.id === id)
             if (index !== -1) stack.splice(index, 1)
+            seq = stack.length === 0 ? 0 : stack[stack.length - 1].id
         }
     }, [active])
 

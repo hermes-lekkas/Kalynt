@@ -100,6 +100,7 @@
     background: var(--hover);
     color: var(--text-2);
     font-size: var(--fs-xs);
+    font-variant-numeric: tabular-nums;
     line-height: 16px;
     text-align: center;
 }
@@ -328,12 +329,45 @@
 .k-resizer--x::before { inset: 0 -4px; }
 .k-resizer--y::before { inset: -4px 0; }
 
-.k-resizer:hover,
-.k-resizer:focus-visible,
-body.is-resizing-x .k-resizer--x:active,
-body.is-resizing-y .k-resizer--y:active {
+/* Refined 3px hover/active accent rail with 120ms hover delay */
+.k-resizer::after {
+    content: '';
+    position: absolute;
     background: var(--focus);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--dur-2) var(--ease) 0ms;
+}
+
+.k-resizer--x::after {
+    top: 0;
+    bottom: 0;
+    left: -1px;
+    width: 3px;
+}
+
+.k-resizer--y::after {
+    left: 0;
+    right: 0;
+    top: -1px;
+    height: 3px;
+}
+
+.k-resizer:hover::after {
+    opacity: 0.9;
+    transition-delay: 120ms;
+}
+
+.k-resizer:focus-visible {
     outline: none;
+}
+
+.k-resizer:focus-visible::after,
+.k-resizer.is-dragging::after,
+body.is-resizing-x .k-resizer--x:active::after,
+body.is-resizing-y .k-resizer--y:active::after {
+    opacity: 1;
+    transition-delay: 0ms;
 }
 
 body.is-resizing-x,

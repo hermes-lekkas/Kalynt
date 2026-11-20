@@ -15,6 +15,7 @@ export function globalCommands(): IDECommand[] {
     const app = useAppStore.getState()
     const ui = useUiStore.getState()
     const inWorkspace = !!app.currentSpace
+    const isLight = app.resolvedTheme === 'light'
     const list: (IDECommand | false)[] = [
         { id: 'workspace.home', title: 'Show all workspaces', category: 'workspace', icon: 'LayoutGrid', action: () => app.setCurrentSpace(null) },
         {
@@ -40,8 +41,12 @@ export function globalCommands(): IDECommand[] {
         },
         { id: 'app.extensions', title: 'Extensions and runtimes', shortcut: 'Ctrl+Shift+X', category: 'view', icon: 'Puzzle', action: () => ui.openExtensions() },
         {
-            id: 'app.theme', title: app.theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme', category: 'view', icon: 'SunMoon',
-            action: () => app.setTheme(app.theme === 'light' ? 'dark' : 'light')
+            id: 'app.theme', title: isLight ? 'Switch to dark theme' : 'Switch to light theme', category: 'view', icon: 'SunMoon',
+            action: () => app.setTheme(isLight ? 'dark' : 'light')
+        },
+        app.theme !== 'system' && {
+            id: 'app.theme.system', title: 'Use system theme', category: 'view', icon: 'SunMoon',
+            action: () => app.setTheme('system')
         },
         { id: 'app.updates', title: 'Check for updates', category: 'view', icon: 'RefreshCw', action: () => { useUpdateStore.getState().checkForUpdates() } },
         { id: 'app.reload', title: 'Reload window', category: 'view', icon: 'RotateCw', action: () => window.location.reload() }

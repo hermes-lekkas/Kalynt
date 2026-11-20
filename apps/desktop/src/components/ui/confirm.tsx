@@ -44,50 +44,57 @@ interface ChooseOptions {
 }
 
 type Request =
-    | { kind: 'confirm'; options: ConfirmOptions; resolve: (ok: boolean) => void }
-    | { kind: 'prompt'; options: PromptOptions; resolve: (value: string | null) => void }
-    | { kind: 'choose'; options: ChooseOptions; resolve: (id: string | null) => void }
+    | { id: number; kind: 'confirm'; options: ConfirmOptions; resolve: (ok: boolean) => void }
+    | { id: number; kind: 'prompt'; options: PromptOptions; resolve: (value: string | null) => void }
+    | { id: number; kind: 'choose'; options: ChooseOptions; resolve: (id: string | null) => void }
 
 interface DialogQueue {
     queue: Request[]
     push: (request: Request) => void
-    shift: () => void
+    remove: (id: number) => void
 }
+
+let nextRequestId = 0
 
 const useDialogQueue = create<DialogQueue>(set => ({
     queue: [],
     push: request => set(s => ({ queue: [...s.queue, request] })),
-    shift: () => set(s => ({ queue: s.queue.slice(1) }))
+    remove: id => set(s => ({ queue: s.queue.filter(r => r.id !== id) }))
 }))
 
 export function confirmAction(options: ConfirmOptions): Promise<boolean> {
-    return new Promise(resolve => useDialogQueue.getState().push({ kind: 'confirm', options, resolve }))
+    return new Promise(resolve => useDialogQueue.getState().push({ id: ++nextRequestId, kind: 'confirm', options, resolve }))
 }
 
 export function promptText(options: PromptOptions): Promise<string | null> {
-    return new Promise(resolve => useDialogQueue.getState().push({ kind: 'prompt', options, resolve }))
+    return new Promise(resolve => useDialogQueue.getState().push({ id: ++nextRequestId, kind: 'prompt', options, resolve }))
 }
 
 /** Resolves with the chosen option id, or null when dismissed. */
 export function chooseAction(options: ChooseOptions): Promise<string | null> {
-    return new Promise(resolve => useDialogQueue.getState().push({ kind: 'choose', options, resolve }))
+    return new Promise(resolve => useDialogQueue.getState().push({ id: ++nextRequestId, kind: 'choose', options, resolve }))
 }
 
 export function DialogHost() {
     const current = useDialogQueue(s => s.queue[0])
-    const shift = useDialogQueue(s => s.shift)
+    const remove = useDialogQueue(s => s.remove)
+    const settledRef = useRef<number | null>(null)
     if (!current) return null
 
+    const settle = <T,>(reqId: number, resolve: (value: T) => void, value: T) => {
+        if (settledRef.current === reqId) return
+        settledRef.current = reqId
+        resolve(value)
+        remove(reqId)
+    }
+
     if (current.kind === 'confirm') {
-        const finish = (ok: boolean) => { current.resolve(ok); shift() }
-        return <ConfirmDialog options={current.options} onFinish={finish} />
+        return <ConfirmDialog key={current.id} options={current.options} onFinish={ok => settle(current.id, current.resolve, ok)} />
     }
     if (current.kind === 'choose') {
-        const finish = (id: string | null) => { current.resolve(id); shift() }
-        return <ChooseDialog options={current.options} onFinish={finish} />
+        return <ChooseDialog key={current.id} options={current.options} onFinish={id => settle(current.id, current.resolve, id)} />
     }
-    const finish = (value: string | null) => { current.resolve(value); shift() }
-    return <PromptDialog key={current.options.title} options={current.options} onFinish={finish} />
+    return <PromptDialog key={current.id} options={current.options} onFinish={value => settle(current.id, current.resolve, value)} />
 }
 
 function ConfirmDialog({ options, onFinish }: { options: ConfirmOptions; onFinish: (ok: boolean) => void }) {
@@ -148,7 +155,8 @@ function PromptDialog({ options, onFinish }: { options: PromptOptions; onFinish:
         const input = inputRef.current
         if (!input || !options.initialValue) return
         const dot = options.initialValue.lastIndexOf('.')
-        requestAnimationFrame(() => input.setSelectionRange(0, dot > 0 ? dot : options.initialValue!.length))
+        const frame = requestAnimationFrame(() => input.setSelectionRange(0, dot > 0 ? dot : options.initialValue!.length))
+        return () => cancelAnimationFrame(frame)
     }, [options.initialValue])
 
     const submit = () => {

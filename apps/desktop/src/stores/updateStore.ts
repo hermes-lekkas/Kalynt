@@ -3,6 +3,7 @@
  */
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
+import { logger } from '../utils/logger'
 
 /**
  * Update Store
@@ -59,16 +60,25 @@ interface UpdateState {
     installUpdate: () => Promise<void>
     dismissUpdate: () => void
 
-    // Initialization
+    // Initialization & lifecycle
     initialize: () => Promise<void>
+    cleanupListeners: () => void
+}
+
+let listenerUnsubs: Array<() => void> = []
+
+function trackUnsub(maybeUnsub: unknown) {
+    if (typeof maybeUnsub === 'function') {
+        listenerUnsubs.push(maybeUnsub as () => void)
+    }
 }
 
 export const useUpdateStore = create<UpdateState>()(
     persist(
-        (set) => ({
+        (set, get) => ({
             // Initial state
             status: 'idle',
-            currentVersion: 'v1.0 beta',
+            currentVersion: '2.0.0',
             updateInfo: null,
             downloadProgress: null,
             error: null,
@@ -105,16 +115,14 @@ export const useUpdateStore = create<UpdateState>()(
                             updateInfo: result.updateInfo,
                             showUpdateModal: true
                         })
-                        console.log('[UpdateStore] Update available:', result.updateInfo.version)
                     } else {
                         set({
                             status: 'not-available',
                             updateInfo: null
                         })
-                        console.log('[UpdateStore] No update available')
                     }
                 } catch (error) {
-                    console.error('[UpdateStore] Check error:', error)
+                    logger.general.error('[UpdateStore] Check error', error)
                     set({
                         status: 'error',
                         error: error instanceof Error ? error.message : String(error)
@@ -132,10 +140,8 @@ export const useUpdateStore = create<UpdateState>()(
                     if (!result?.success) {
                         throw new Error(result?.error || 'Failed to download update')
                     }
-
-                    console.log('[UpdateStore] Download started')
                 } catch (error) {
-                    console.error('[UpdateStore] Download error:', error)
+                    logger.general.error('[UpdateStore] Download error', error)
                     set({
                         status: 'error',
                         error: error instanceof Error ? error.message : String(error),
@@ -147,17 +153,13 @@ export const useUpdateStore = create<UpdateState>()(
             // Install update
             installUpdate: async () => {
                 try {
-                    console.log('[UpdateStore] Installing update and restarting...')
-
                     const result = await window.electronAPI?.update?.installUpdate()
 
                     if (!result?.success) {
                         throw new Error(result?.error || 'Failed to install update')
                     }
-
-                    // App will restart automatically
                 } catch (error) {
-                    console.error('[UpdateStore] Install error:', error)
+                    logger.general.error('[UpdateStore] Install error', error)
                     set({
                         status: 'error',
                         error: error instanceof Error ? error.message : String(error)
@@ -176,10 +178,24 @@ export const useUpdateStore = create<UpdateState>()(
                 })
             },
 
+            cleanupListeners: () => {
+                const unsubs = listenerUnsubs
+                listenerUnsubs = []
+                for (const unsub of unsubs) {
+                    try {
+                        unsub()
+                    } catch {
+                        // Ignore cleanup errors on already-detached channels.
+                    }
+                }
+            },
+
             // Initialize update system
             initialize: async () => {
                 try {
-                    // Get current version
+                    // Detach any prior subscriptions so repeated calls never leak listeners.
+                    get().cleanupListeners()
+
                     const versionResult = await window.electronAPI?.update?.getVersion()
                     if (versionResult?.success && versionResult.version) {
                         set({ currentVersion: versionResult.version })
@@ -191,69 +207,64 @@ export const useUpdateStore = create<UpdateState>()(
                         const configResult = await window.electronAPI?.update?.configureToken(tokenResult.value)
                         if (configResult?.success) {
                             set({ isConfigured: true })
-                            console.log('[UpdateStore] GitHub token configured')
                         }
                     } else {
-                        console.log('[UpdateStore] No GitHub token found, using public access')
-                        // Configure with empty token for public access
                         await window.electronAPI?.update?.configureToken('')
                     }
 
-                    // Set up event listeners
-                    window.electronAPI?.update?.onUpdateChecking(() => {
-                        console.log('[UpdateStore] Checking for updates...')
-                        set({ status: 'checking', error: null })
-                    })
+                    const api = window.electronAPI?.update
+                    if (!api) return
 
-                    window.electronAPI?.update?.onUpdateAvailable((info) => {
-                        console.log('[UpdateStore] Update available:', info)
+                    // Guard again in case another initialize() raced across the awaits above.
+                    get().cleanupListeners()
+
+                    trackUnsub(api.onUpdateChecking(() => {
+                        set({ status: 'checking', error: null })
+                    }))
+
+                    trackUnsub(api.onUpdateAvailable((info) => {
                         set({
                             status: 'available',
                             updateInfo: info,
                             showUpdateModal: true,
                             lastChecked: Date.now()
                         })
-                    })
+                    }))
 
-                    window.electronAPI?.update?.onUpdateNotAvailable((info) => {
-                        console.log('[UpdateStore] No update available:', info)
+                    trackUnsub(api.onUpdateNotAvailable(() => {
                         set({
                             status: 'not-available',
                             updateInfo: null,
                             lastChecked: Date.now()
                         })
-                    })
+                    }))
 
-                    window.electronAPI?.update?.onDownloadProgress((progress) => {
-                        console.log(`[UpdateStore] Download progress: ${progress.percent.toFixed(2)}%`)
+                    trackUnsub(api.onDownloadProgress((progress) => {
                         set({
                             status: 'downloading',
                             downloadProgress: progress
                         })
-                    })
+                    }))
 
-                    window.electronAPI?.update?.onUpdateDownloaded((info) => {
-                        console.log('[UpdateStore] Update downloaded:', info)
+                    trackUnsub(api.onUpdateDownloaded((info) => {
                         set({
                             status: 'downloaded',
                             updateInfo: info,
                             downloadProgress: null,
                             showUpdateModal: true
                         })
-                    })
+                    }))
 
-                    window.electronAPI?.update?.onUpdateError((error) => {
-                        console.error('[UpdateStore] Update error:', error)
+                    trackUnsub(api.onUpdateError((error) => {
+                        logger.general.error('[UpdateStore] Update error', error)
                         set({
                             status: 'error',
                             error: error.message,
                             downloadProgress: null
                         })
-                    })
-
-                    console.log('[UpdateStore] Initialized successfully')
+                    }))
                 } catch (error) {
-                    console.error('[UpdateStore] Initialization error:', error)
+                    logger.general.error('[UpdateStore] Initialization error', error)
                     set({
                         error: error instanceof Error ? error.message : String(error)
                     })
@@ -264,7 +275,6 @@ export const useUpdateStore = create<UpdateState>()(
             name: 'kalynt-update-storage',
             storage: createJSONStorage(() => localStorage),
             partialize: (state) => ({
-                // Only persist these fields
                 lastChecked: state.lastChecked,
                 isConfigured: state.isConfigured,
                 currentVersion: state.currentVersion

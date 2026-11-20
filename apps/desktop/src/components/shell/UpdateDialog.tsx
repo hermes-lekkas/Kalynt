@@ -75,7 +75,7 @@ export function UpdateDialog() {
                     </dl>
 
                     {status === 'downloading' && downloadProgress && (
-                        <div className="update-dialog__progress">
+                        <div className="update-dialog__progress tabular-nums">
                             <ProgressBar value={downloadProgress.percent / 100} label="Download progress" />
                             <p>
                                 {formatBytes(downloadProgress.transferred)} of {formatBytes(downloadProgress.total)}

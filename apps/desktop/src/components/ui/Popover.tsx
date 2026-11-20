@@ -3,7 +3,7 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { isInsideDeeperLayer, useLayer } from './layers'
+import { isInsideDeeperLayer, layerZIndex, useLayer } from './layers'
 import './overlay.css'
 
 export type Placement = 'bottom-start' | 'bottom-end' | 'top-start' | 'top-end' | 'right-start' | 'left-start'
@@ -47,14 +47,29 @@ function computePosition(rect: DOMRect, size: { w: number; h: number }, placemen
         case 'left-start': top = rect.top; left = rect.left - offset - size.w; break
     }
 
-    // Flip vertically when there is no room, then clamp into the viewport.
-    if (placement.startsWith('bottom') && top + size.h > vh - MARGIN && rect.top - offset - size.h > MARGIN) {
+    // Flip horizontally when there is not enough room on the requested side.
+    if (placement === 'right-start' && left + size.w > vw - MARGIN && rect.left - offset - size.w >= MARGIN) {
+        left = rect.left - offset - size.w
+    } else if (placement === 'left-start' && left < MARGIN && rect.right + offset + size.w <= vw - MARGIN) {
+        left = rect.right + offset
+    } else if ((placement === 'bottom-start' || placement === 'top-start') && left + size.w > vw - MARGIN && rect.right - size.w >= MARGIN) {
+        left = rect.right - size.w
+    } else if ((placement === 'bottom-end' || placement === 'top-end') && left < MARGIN && rect.left + size.w <= vw - MARGIN) {
+        left = rect.left
+    }
+
+    // Flip vertically when there is no room on the requested edge.
+    if (placement.startsWith('bottom') && top + size.h > vh - MARGIN && rect.top - offset - size.h >= MARGIN) {
         top = rect.top - offset - size.h
-    } else if (placement.startsWith('top') && top < MARGIN) {
+    } else if (placement.startsWith('top') && top < MARGIN && rect.bottom + offset + size.h <= vh - MARGIN) {
         top = rect.bottom + offset
     }
-    left = Math.min(Math.max(MARGIN, left), vw - size.w - MARGIN)
-    top = Math.min(Math.max(MARGIN, top), vh - size.h - MARGIN)
+
+    // Clamp safely into the viewport (never producing negative coordinates on narrow viewports).
+    const maxLeft = Math.max(MARGIN, vw - size.w - MARGIN)
+    const maxTop = Math.max(MARGIN, vh - size.h - MARGIN)
+    left = Math.max(MARGIN, Math.min(left, maxLeft))
+    top = Math.max(MARGIN, Math.min(top, maxTop))
     return { top, left }
 }
 
@@ -89,6 +104,8 @@ export function Popover({
         const resizeObserver = new ResizeObserver(() => reposition())
         if (el) resizeObserver.observe(el)
 
+        let scrollRaf: number | null = null
+
         const onPointerDown = (e: PointerEvent) => {
             const target = e.target as Node
             if (ref.current?.contains(target)) return
@@ -96,14 +113,42 @@ export function Popover({
             if (isInsideDeeperLayer(e.target, depth)) return
             onCloseRef.current()
         }
+
+        const onScroll = (e: Event) => {
+            // Allow scrolling inside the popover itself (e.g. long menus).
+            if (ref.current && e.target instanceof Node && ref.current.contains(e.target)) return
+            if (!(anchor instanceof HTMLElement)) {
+                onCloseRef.current()
+                return
+            }
+            if (!document.contains(anchor)) {
+                onCloseRef.current()
+                return
+            }
+            const rect = anchor.getBoundingClientRect()
+            if (rect.bottom < 0 || rect.top > window.innerHeight || rect.right < 0 || rect.left > window.innerWidth) {
+                onCloseRef.current()
+                return
+            }
+            if (scrollRaf === null) {
+                scrollRaf = requestAnimationFrame(() => {
+                    scrollRaf = null
+                    reposition()
+                })
+            }
+        }
+
         const onWindowChange = () => onCloseRef.current()
 
         document.addEventListener('pointerdown', onPointerDown, true)
+        document.addEventListener('scroll', onScroll, true)
         window.addEventListener('resize', onWindowChange)
         window.addEventListener('blur', onWindowChange)
         return () => {
+            if (scrollRaf !== null) cancelAnimationFrame(scrollRaf)
             resizeObserver.disconnect()
             document.removeEventListener('pointerdown', onPointerDown, true)
+            document.removeEventListener('scroll', onScroll, true)
             window.removeEventListener('resize', onWindowChange)
             window.removeEventListener('blur', onWindowChange)
         }
@@ -124,6 +169,7 @@ export function Popover({
     const style: CSSProperties = {
         top: pos?.top ?? -9999,
         left: pos?.left ?? -9999,
+        zIndex: layerZIndex(depth),
         width: width === 'anchor' ? anchorWidth : width,
         visibility: pos ? 'visible' : 'hidden'
     }

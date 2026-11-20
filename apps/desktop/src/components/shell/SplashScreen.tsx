@@ -6,15 +6,16 @@ import { useAppStore } from '../../stores/appStore'
 import './startup.css'
 import { LOGO_URL } from './brand'
 
-const MIN_VISIBLE_MS = 450
-const EXIT_MS = 220
+const SKIP_IF_READY_MS = 45
+const MIN_VISIBLE_MS = 80
+const EXIT_MS = 160
 
 interface SplashScreenProps {
     ready: boolean
     onDone: () => void
 }
 
-/** Shown only while the app initialises; leaves as soon as it is ready. */
+/** Shown only while the app initialises; skips or cross-fades out as soon as it is ready. */
 export function SplashScreen({ ready, onDone }: SplashScreenProps) {
     const status = useAppStore(s => s.startupStatus)
     const version = useAppStore(s => s.version)
@@ -23,7 +24,12 @@ export function SplashScreen({ ready, onDone }: SplashScreenProps) {
 
     useEffect(() => {
         if (!ready) return
-        const wait = Math.max(0, MIN_VISIBLE_MS - (Date.now() - shownAt.current))
+        const elapsed = Date.now() - shownAt.current
+        if (elapsed <= SKIP_IF_READY_MS) {
+            onDone()
+            return
+        }
+        const wait = Math.max(0, MIN_VISIBLE_MS - elapsed)
         const leave = setTimeout(() => setLeaving(true), wait)
         const done = setTimeout(onDone, wait + EXIT_MS)
         return () => {
@@ -40,7 +46,7 @@ export function SplashScreen({ ready, onDone }: SplashScreenProps) {
             <p className="splash__name">Kalynt</p>
             <div className="splash__wire" aria-hidden />
             <p className="splash__status">{ready ? 'Ready' : status}</p>
-            <p className="splash__version">{version}</p>
+            <p className="splash__version tabular-nums">{version}</p>
         </div>
     )
 }
