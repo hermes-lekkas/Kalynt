@@ -5,6 +5,8 @@ import { useEffect, useState } from 'react'
 import { Eye, EyeOff } from 'lucide-react'
 import { useAppStore } from '../../stores/appStore'
 import { encryptionService } from '../../services/encryptionService'
+import { disableRoomEncryption, initializeRoomEncryption } from '../../services/encryptedProvider'
+import { p2pService } from '../../services/p2pService'
 import { clearRoomPassword, getRoomPassword, setRoomPassword } from '../../services/roomPasswordStore'
 import { Badge, Button, Field, IconButton, TextInput, confirmAction } from '../ui'
 import { SavedNote, SettingsPage, SettingsSection } from './parts'
@@ -33,11 +35,14 @@ function WorkspaceEncryption({ spaceId, spaceName }: { spaceId: string; spaceNam
         setError(null)
         try {
             await setRoomPassword(spaceId, password)
+            await initializeRoomEncryption(spaceId, password)
+            if (p2pService.isConnected(spaceId)) {
+                await p2pService.reconnect(spaceId, password)
+            }
         } catch (e) {
             setError(e instanceof Error ? e.message : String(e))
             return
         }
-        await encryptionService.setRoomKey(spaceId, password)
         setStored(password)
         setSaved(true)
         setTimeout(() => setSaved(false), 1800)
@@ -52,6 +57,11 @@ function WorkspaceEncryption({ spaceId, spaceName }: { spaceId: string; spaceNam
         })
         if (!ok) return
         await clearRoomPassword(spaceId)
+        encryptionService.clearRoomKey(spaceId)
+        disableRoomEncryption(spaceId)
+        if (p2pService.isConnected(spaceId)) {
+            await p2pService.reconnect(spaceId, null)
+        }
         setStored(null)
         setPassword('')
     }

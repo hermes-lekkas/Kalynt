@@ -1,13 +1,11 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { CheckCircle2, XCircle } from 'lucide-react'
 import { p2pService } from '../../services/p2pService'
 import { Badge, Button, Field, TextInput } from '../ui'
 import { SavedNote, SettingsPage, SettingsSection } from './parts'
-
-const TURN_KEY = 'kalynt-turn-settings'
 
 interface TestResult {
     stun: boolean
@@ -31,32 +29,50 @@ export function NetworkSettings() {
         return { url: s.url, username: s.username, credential: s.credential }
     })
     const [saved, setSaved] = useState(false)
+    const [saving, setSaving] = useState(false)
+    const [saveError, setSaveError] = useState<string | null>(null)
     const [testing, setTesting] = useState(false)
     const [result, setResult] = useState<TestResult | null>(null)
+
+    useEffect(() => {
+        let live = true
+        p2pService.loadTurnSettings().then(s => {
+            if (!live) return
+            setTurn(current => {
+                if (current.url || current.username || current.credential) return current
+                return { url: s.url, username: s.username, credential: s.credential }
+            })
+        }).catch(() => undefined)
+        return () => { live = false }
+    }, [])
 
     const complete = !!(turn.url && turn.username && turn.credential)
     const partial = !complete && !!(turn.url || turn.username || turn.credential)
 
-    const save = () => {
-        localStorage.setItem(TURN_KEY, JSON.stringify(turn))
-        p2pService.refreshTurnSettings()
-        setSaved(true)
-        setTimeout(() => setSaved(false), 1800)
+    const save = async () => {
+        setSaving(true)
+        setSaveError(null)
+        try {
+            await p2pService.saveTurnSettings(turn)
+            await p2pService.refreshTurnSettings()
+            setSaved(true)
+            setTimeout(() => setSaved(false), 1800)
+        } catch (e) {
+            setSaveError(e instanceof Error ? e.message : String(e))
+        } finally {
+            setSaving(false)
+        }
     }
 
-    // Tests the values in the form without keeping them unless they were saved.
+    // Tests the values in the form purely in memory without mutating storage.
     const test = async () => {
         setTesting(true)
         setResult(null)
-        const previous = localStorage.getItem(TURN_KEY)
         try {
-            if (complete) localStorage.setItem(TURN_KEY, JSON.stringify(turn))
-            setResult(await p2pService.testConnectivity())
+            setResult(await p2pService.testConnectivity(complete ? turn : undefined))
         } catch (e) {
             setResult({ stun: false, turn: false, error: e instanceof Error ? e.message : String(e) })
         } finally {
-            if (previous === null) localStorage.removeItem(TURN_KEY)
-            else localStorage.setItem(TURN_KEY, previous)
             setTesting(false)
         }
     }
@@ -68,7 +84,7 @@ export function NetworkSettings() {
         >
             <SettingsSection
                 title="TURN relay"
-                description="Optional. Use your own relay credentials, for example from a free metered.ca account. They stay on this machine."
+                description="Optional. Use your own relay credentials, for example from a free metered.ca account. Stored in your system keychain on desktop."
                 actions={complete ? <Badge tone="success">Configured</Badge> : partial ? <Badge tone="warning">Incomplete</Badge> : <Badge>Not set</Badge>}
             >
                 <Field label="Relay URL">
@@ -82,8 +98,9 @@ export function NetworkSettings() {
                         {id => <TextInput id={id} type="password" value={turn.credential} autoComplete="new-password" onChange={e => setTurn({ ...turn, credential: e.target.value })} />}
                     </Field>
                 </div>
+                {saveError && <p className="net-result__note is-error" role="alert">{saveError}</p>}
                 <div className="set-inline">
-                    <Button variant="primary" onClick={save} disabled={partial}>Save and reconnect</Button>
+                    <Button variant="primary" loading={saving} onClick={save} disabled={partial || saving}>Save and reconnect</Button>
                     <SavedNote show={saved} />
                 </div>
             </SettingsSection>

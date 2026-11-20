@@ -4,13 +4,10 @@
 /**
  * Built-in y-webrtc Signaling Server
  *
- * This is an inline TypeScript port of the y-webrtc signaling server
- * (node_modules/y-webrtc/bin/server.js). Running it inline avoids
- * ESM/fork issues with Electron's CommonJS main process.
+ * Inline TypeScript port of the y-webrtc signaling server with bounded payload,
+ * connection, and topic limits plus verified EADDRINUSE detection.
  *
  * Listens on ws://localhost:4444 (127.0.0.1 only — localhost only for security).
- * The Electron renderer connects to this as its primary signaling endpoint,
- * enabling P2P collaboration without any external infrastructure.
  */
 
 // Use require to avoid ESM/types issues with the ws package
@@ -18,16 +15,72 @@
 const { WebSocketServer } = require('ws')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const http = require('http')
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const os = require('os')
 
 const PING_TIMEOUT = 30000
 const WS_READY_STATE_CONNECTING = 0
 const WS_READY_STATE_OPEN = 1
 
+const HEALTH_RESPONSE_BODY = 'Kalynt Signaling Server OK'
+const MAX_PAYLOAD_BYTES = 256 * 1024 // 256 KiB cap per signaling frame
+const MAX_CONNECTIONS = 500
+const MAX_TOPICS_PER_CLIENT = 100
+const MAX_TOTAL_TOPICS = 2000
+const MAX_TOPIC_NAME_LENGTH = 256
+const EXISTING_SERVER_PROBE_TIMEOUT_MS = 1500
+
 export interface SignalingServerHandle {
     port: number
     url: string
-    lanUrl?: string // CROSS-NETWORK FIX: Exposed when binding to 0.0.0.0 for LAN access
+    lanUrl?: string // Exposed when binding to 0.0.0.0 for LAN access
     close: () => void
+}
+
+/**
+ * Verify that an existing listener on `port` is actually a Kalynt signaling
+ * server before reusing it on EADDRINUSE.
+ */
+function verifyExistingKalyntSignalingServer(port: number): Promise<boolean> {
+    return new Promise((resolve) => {
+        let settled = false
+        const finish = (ok: boolean) => {
+            if (!settled) {
+                settled = true
+                resolve(ok)
+            }
+        }
+
+        const req = http.get(
+            {
+                hostname: '127.0.0.1',
+                port,
+                path: '/',
+                timeout: EXISTING_SERVER_PROBE_TIMEOUT_MS
+            },
+            (res: any) => {
+                if (res.statusCode !== 200) {
+                    res.resume()
+                    finish(false)
+                    return
+                }
+                let body = ''
+                res.setEncoding('utf8')
+                res.on('data', (chunk: string) => {
+                    if (body.length < 128) body += chunk
+                })
+                res.on('end', () => {
+                    finish(body.trim() === HEALTH_RESPONSE_BODY)
+                })
+            }
+        )
+
+        req.on('timeout', () => {
+            req.destroy()
+            finish(false)
+        })
+        req.on('error', () => finish(false))
+    })
 }
 
 /**
@@ -54,10 +107,13 @@ export function startSignalingServer(port: number = 4444): Promise<SignalingServ
             }
         }
 
-        const wss = new WebSocketServer({ noServer: true })
+        const wss = new WebSocketServer({
+            noServer: true,
+            maxPayload: MAX_PAYLOAD_BYTES
+        })
         const server = http.createServer((_req: any, res: any) => {
             res.writeHead(200, { 'Content-Type': 'text/plain' })
-            res.end('Kalynt Signaling Server OK')
+            res.end(HEALTH_RESPONSE_BODY)
         })
 
         wss.on('connection', (conn: any) => {
@@ -108,14 +164,20 @@ export function startSignalingServer(port: number = 4444): Promise<SignalingServ
                     return
                 }
 
-                if (!message || !message.type || closed) return
+                if (!message || typeof message.type !== 'string' || closed) return
 
                 switch (message.type) {
                     case 'subscribe': {
-                        const subscribeTopics: string[] = message.topics || []
-                        subscribeTopics.forEach((topicName: string) => {
-                            if (typeof topicName !== 'string') return
+                        const subscribeTopics: unknown[] = Array.isArray(message.topics) ? message.topics : []
+                        subscribeTopics.forEach((topicName) => {
+                            if (typeof topicName !== 'string' || !topicName || topicName.length > MAX_TOPIC_NAME_LENGTH) {
+                                return
+                            }
+                            if (!subscribedTopics.has(topicName) && subscribedTopics.size >= MAX_TOPICS_PER_CLIENT) {
+                                return
+                            }
                             if (!topics.has(topicName)) {
+                                if (topics.size >= MAX_TOTAL_TOPICS) return
                                 topics.set(topicName, new Set())
                             }
                             topics.get(topicName)!.add(conn)
@@ -125,8 +187,10 @@ export function startSignalingServer(port: number = 4444): Promise<SignalingServ
                     }
 
                     case 'unsubscribe': {
-                        const unsubscribeTopics: string[] = message.topics || []
-                        unsubscribeTopics.forEach((topicName: string) => {
+                        const unsubscribeTopics: unknown[] = Array.isArray(message.topics) ? message.topics : []
+                        unsubscribeTopics.forEach((topicName) => {
+                            if (typeof topicName !== 'string') return
+                            subscribedTopics.delete(topicName)
                             const subs = topics.get(topicName)
                             if (subs) {
                                 subs.delete(conn)
@@ -139,7 +203,12 @@ export function startSignalingServer(port: number = 4444): Promise<SignalingServ
                     }
 
                     case 'publish': {
-                        if (message.topic) {
+                        if (
+                            typeof message.topic === 'string' &&
+                            message.topic.length > 0 &&
+                            message.topic.length <= MAX_TOPIC_NAME_LENGTH &&
+                            subscribedTopics.has(message.topic)
+                        ) {
                             const receivers = topics.get(message.topic)
                             if (receivers) {
                                 message.clients = receivers.size
@@ -157,6 +226,11 @@ export function startSignalingServer(port: number = 4444): Promise<SignalingServ
         })
 
         server.on('upgrade', (request: any, socket: any, head: any) => {
+            if (wss.clients.size >= MAX_CONNECTIONS) {
+                socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n')
+                socket.destroy()
+                return
+            }
             wss.handleUpgrade(request, socket, head, (ws: any) => {
                 wss.emit('connection', ws, request)
             })
@@ -164,24 +238,29 @@ export function startSignalingServer(port: number = 4444): Promise<SignalingServ
 
         server.on('error', (err: any) => {
             if (err.code === 'EADDRINUSE') {
-                // Port already in use — another instance of the app may already be running the server
-                console.warn(`[Signaling] Port ${port} already in use — assuming another instance is running`)
-                resolve({
-                    port,
-                    url: `ws://localhost:${port}`,
-                    close: () => { /* already running elsewhere */ }
+                verifyExistingKalyntSignalingServer(port).then((isKalyntServer) => {
+                    if (isKalyntServer) {
+                        console.warn(`[Signaling] Port ${port} already running a verified Kalynt signaling server — reusing it`)
+                        resolve({
+                            port,
+                            url: `ws://localhost:${port}`,
+                            close: () => { /* owned by existing Kalynt instance */ }
+                        })
+                    } else {
+                        console.error(`[Signaling] Port ${port} is already in use by another process (not Kalynt signaling server)`)
+                        reject(err)
+                    }
                 })
             } else {
                 reject(err)
             }
         })
 
-        // CRITICAL FIX: Allow LAN connections when explicitly enabled via env var
-        // Default remains 127.0.0.1 for security (loopback only)
-        // Set KALYNT_SIGNALING_BIND=0.0.0.0 to enable LAN accessibility
+        // Default remains 127.0.0.1 for security (loopback only).
+        // Set KALYNT_SIGNALING_BIND=0.0.0.0 to enable LAN accessibility.
         const bindHost = process.env.KALYNT_SIGNALING_BIND === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1'
         const displayUrl = bindHost === '0.0.0.0'
-            ? `ws://0.0.0.0:${port} (LAN accessible - ${require('os').hostname() || 'this-machine'})`
+            ? `ws://0.0.0.0:${port} (LAN accessible - ${os.hostname() || 'this-machine'})`
             : `ws://localhost:${port} (localhost only)`
 
         server.listen(port, bindHost, () => {
@@ -192,11 +271,18 @@ export function startSignalingServer(port: number = 4444): Promise<SignalingServ
             resolve({
                 port: actualPort,
                 url: `ws://localhost:${actualPort}`,
-                // FIXED: Also expose LAN URL when binding to 0.0.0.0
-                lanUrl: bindHost === '0.0.0.0' ? `ws://${require('os').hostname()}:${actualPort}` : undefined,
+                lanUrl: bindHost === '0.0.0.0' ? `ws://${os.hostname()}:${actualPort}` : undefined,
                 close: () => {
-                    server.close()
+                    wss.clients.forEach((client: any) => {
+                        try {
+                            client.terminate()
+                        } catch {
+                            // Ignore errors during shutdown
+                        }
+                    })
                     wss.close()
+                    server.close()
+                    topics.clear()
                     console.log('[Signaling] Built-in signaling server stopped')
                 }
             })

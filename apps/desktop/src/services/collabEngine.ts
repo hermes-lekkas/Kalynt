@@ -50,14 +50,50 @@ const DEFAULT_CONFIG: CollabConfig = {
     enablePresence: true
 }
 
+/**
+ * Apply minimal prefix/suffix diff to a Y.Text so snapshot restores produce
+ * real forward CRDT edits (instead of a no-op Y.applyUpdate of stale state).
+ */
+function applyTextDiff(yText: Y.Text, target: string): void {
+    const current = yText.toString()
+    if (current === target) return
+
+    let prefix = 0
+    const minLen = Math.min(current.length, target.length)
+    while (prefix < minLen && current.charCodeAt(prefix) === target.charCodeAt(prefix)) {
+        prefix++
+    }
+
+    let currentSuffix = current.length
+    let targetSuffix = target.length
+    while (
+        currentSuffix > prefix &&
+        targetSuffix > prefix &&
+        current.charCodeAt(currentSuffix - 1) === target.charCodeAt(targetSuffix - 1)
+    ) {
+        currentSuffix--
+        targetSuffix--
+    }
+
+    const deleteLen = currentSuffix - prefix
+    const insertStr = target.slice(prefix, targetSuffix)
+
+    if (deleteLen > 0) {
+        yText.delete(prefix, deleteLen)
+    }
+    if (insertStr.length > 0) {
+        yText.insert(prefix, insertStr)
+    }
+}
+
 class CollaborativeEngine {
     private docs: Map<string, Y.Doc> = new Map()
+    private docRooms: Map<string, string> = new Map()
     private persistence: Map<string, IndexeddbPersistence> = new Map()
     private undoManagers: Map<string, Y.UndoManager> = new Map()
     private snapshots: Map<string, DocumentSnapshot[]> = new Map()
 
     private config: CollabConfig = DEFAULT_CONFIG
-    // BUG-078: Creation lock to prevent race conditions
     private creationLocks: Set<string> = new Set()
 
     // Callbacks
@@ -79,9 +115,7 @@ class CollaborativeEngine {
         this.onStats = onStats || null
     }
 
-    // Create or get a document
     getDocument(docId: string): Y.Doc {
-        // BUG-079: Validation
         if (!/^[a-zA-Z0-9_\-./]+$/.test(docId)) {
             throw new Error(`Invalid docId format: ${docId}`)
         }
@@ -90,11 +124,7 @@ class CollaborativeEngine {
             return this.docs.get(docId)!
         }
 
-        // BUG-078: Check creation lock
         if (this.creationLocks.has(docId)) {
-            // In a sync environment, this shouldn't happen unless called recursively or if init became async.
-            // We'll throw to be safe or return existing if we could (but we can't wait synchronously).
-            // Given the architecture, if we hit this, something is wrong.
             throw new Error(`Document ${docId} is being initialized`)
         }
 
@@ -104,38 +134,34 @@ class CollaborativeEngine {
             const doc = new Y.Doc()
             this.docs.set(docId, doc)
 
-            // Set up persistence
             const persistence = new IndexeddbPersistence(docId, doc)
             this.persistence.set(docId, persistence)
 
-            // Set up undo manager for editor content
             const editorText = doc.getText('editor-content')
             const undoManager = new Y.UndoManager(editorText, {
                 captureTimeout: 500
             })
             this.undoManagers.set(docId, undoManager)
 
-            // Track updates with error boundary
             doc.on('update', (update: Uint8Array, _origin: unknown) => {
                 try {
                     this.onUpdate?.(docId, update)
-                    // BUG-057: Trigger stats update on content change
-                    this.onStats?.(docId, this.getStats(docId))
+                    this.onStats?.(docId, this.getStats(docId, this.docRooms.get(docId)))
                 } catch (error) {
                     console.error(`[CollabEngine] Error in update handler for ${docId}:`, error)
                 }
             })
 
-
             return doc
-
         } finally {
             this.creationLocks.delete(docId)
         }
     }
 
     destroyDocument(docId: string) {
-        this.disconnectP2P(docId)
+        const roomId = this.docRooms.get(docId) || docId
+        this.disconnectP2P(roomId)
+        this.docRooms.delete(docId)
 
         const persistence = this.persistence.get(docId)
         if (persistence) {
@@ -158,10 +184,10 @@ class CollaborativeEngine {
         this.snapshots.delete(docId)
     }
 
-    // Connect to P2P network with error handling
     connectP2P(docId: string, roomId: string, password?: string): WebrtcProvider | null {
         try {
             const doc = this.getDocument(docId)
+            this.docRooms.set(docId, roomId)
 
             let provider = p2pService.getProvider(roomId)
             if (provider) {
@@ -169,21 +195,17 @@ class CollaborativeEngine {
             }
 
             provider = p2pService.connect(roomId, doc, password) as WebrtcProvider
-
             if (!provider) return null
 
-            // Handle sync events
             provider.on('synced', (event: { synced: boolean }) => {
                 console.log(`[CollabEngine] P2P sync for ${docId}:`, event.synced ? 'synced' : 'syncing')
             })
 
-            // Track cursor positions with error boundary
             if (this.config.enablePresence) {
                 provider.awareness.on('change', () => {
                     try {
                         const cursors = this.getCursors(docId, roomId)
                         this.onCursor?.(docId, cursors)
-                        // BUG-057: Trigger stats update on peer change
                         this.onStats?.(docId, this.getStats(docId, roomId))
                     } catch (error) {
                         console.error(`[CollabEngine] Error in awareness handler for ${docId}:`, error)
@@ -198,30 +220,25 @@ class CollaborativeEngine {
         }
     }
 
-    // Disconnect from P2P
     disconnectP2P(roomId: string) {
         p2pService.disconnect(roomId)
     }
 
-    // Get text content
     getText(docId: string, name: string = 'editor-content'): Y.Text {
         const doc = this.getDocument(docId)
         return doc.getText(name)
     }
 
-    // Get array
     getArray<T>(docId: string, name: string): Y.Array<T> {
         const doc = this.getDocument(docId)
         return doc.getArray<T>(name)
     }
 
-    // Get map
     getMap<T>(docId: string, name: string): Y.Map<T> {
         const doc = this.getDocument(docId)
         return doc.getMap<T>(name)
     }
 
-    // Undo
     undo(docId: string): boolean {
         const manager = this.undoManagers.get(docId)
         if (manager && manager.canUndo()) {
@@ -231,7 +248,6 @@ class CollaborativeEngine {
         return false
     }
 
-    // Redo
     redo(docId: string): boolean {
         const manager = this.undoManagers.get(docId)
         if (manager && manager.canRedo()) {
@@ -241,7 +257,6 @@ class CollaborativeEngine {
         return false
     }
 
-    // Check undo/redo availability
     canUndo(docId: string): boolean {
         return this.undoManagers.get(docId)?.canUndo() || false
     }
@@ -250,7 +265,6 @@ class CollaborativeEngine {
         return this.undoManagers.get(docId)?.canRedo() || false
     }
 
-    // Create snapshot
     createSnapshot(docId: string, userId: string, label?: string): DocumentSnapshot {
         const doc = this.docs.get(docId)
         if (!doc) throw new Error('Document not found')
@@ -264,29 +278,29 @@ class CollaborativeEngine {
             state: Y.encodeStateAsUpdate(doc)
         }
 
-        // Store snapshot
         if (!this.snapshots.has(docId)) {
             this.snapshots.set(docId, [])
         }
         const snaps = this.snapshots.get(docId)!
         snaps.push(snapshot)
 
-        // Limit snapshots (BUG-082)
         const limit = this.config.maxHistoryItems
         if (snaps.length > limit) {
-            // Remove all excess items, not just one
             snaps.splice(0, snaps.length - limit)
         }
 
         return snapshot
     }
 
-    // Get snapshots
     getSnapshots(docId: string): DocumentSnapshot[] {
         return this.snapshots.get(docId) || []
     }
 
-    // Restore from snapshot
+    /**
+     * Restore a snapshot onto the current live Y.Doc by materializing the
+     * snapshot into a temporary Y.Doc and diffing/replacing each shared type
+     * in a single transaction so CRDT peers receive genuine forward edits.
+     */
     restoreSnapshot(docId: string, snapshotId: string): boolean {
         const snaps = this.snapshots.get(docId)
         const snapshot = snaps?.find(s => s.id === snapshotId)
@@ -299,23 +313,56 @@ class CollaborativeEngine {
         // Create backup before restore
         this.createSnapshot(docId, 'system', 'Auto-backup before restore')
 
-        // Apply snapshot
+        const tempDoc = new Y.Doc()
         try {
-            Y.applyUpdate(doc, snapshot.state)
+            Y.applyUpdate(tempDoc, snapshot.state)
+
+            doc.transact(() => {
+                // Ensure primary editor text is always restored
+                const editorText = doc.getText('editor-content')
+                applyTextDiff(editorText, tempDoc.getText('editor-content').toString())
+
+                // Diff/replace all other initialized shared types on the live doc
+                doc.share.forEach((sharedType, key) => {
+                    if (key === 'editor-content') return
+
+                    if (sharedType instanceof Y.Text) {
+                        applyTextDiff(sharedType, tempDoc.getText(key).toString())
+                    } else if (sharedType instanceof Y.Array) {
+                        const targetItems = tempDoc.getArray(key).toArray()
+                        if (sharedType.length > 0) {
+                            sharedType.delete(0, sharedType.length)
+                        }
+                        if (targetItems.length > 0) {
+                            sharedType.insert(0, targetItems)
+                        }
+                    } else if (sharedType instanceof Y.Map) {
+                        const targetMap = tempDoc.getMap(key)
+                        const targetKeys = new Set<string>()
+                        targetMap.forEach((value, mapKey) => {
+                            targetKeys.add(mapKey)
+                            sharedType.set(mapKey, value)
+                        })
+                        for (const existingKey of Array.from(sharedType.keys())) {
+                            if (!targetKeys.has(existingKey)) {
+                                sharedType.delete(existingKey)
+                            }
+                        }
+                    }
+                })
+            }, 'snapshot-restore')
+
             return true
         } catch (error) {
-            // BUG-080: Improved error handling
             console.error('[Collab] Failed to restore snapshot:', error)
-            // Attempt to restore backup if simple apply failed? 
-            // For now, at least strictly return false so caller knows.
             return false
+        } finally {
+            tempDoc.destroy()
         }
     }
 
-    // Get cursors
     getCursors(docId: string, roomId?: string): CursorPosition[] {
-        const provider = p2pService.getProvider(roomId || docId)
-        // BUG-081: Check connection status to avoid stuck loops
+        const provider = p2pService.getProvider(roomId || this.docRooms.get(docId) || docId)
         if (!provider || !provider.connected) return []
 
         const cursors: CursorPosition[] = []
@@ -333,23 +380,20 @@ class CollaborativeEngine {
         return cursors
     }
 
-    // Set local cursor
     setCursor(docId: string, anchor: number, head: number, roomId?: string) {
-        const provider = p2pService.getProvider(roomId || docId)
+        const provider = p2pService.getProvider(roomId || this.docRooms.get(docId) || docId)
         if (provider) {
             provider.awareness.setLocalStateField('cursor', { anchor, head })
         }
     }
 
-    // Set local user
     setLocalUser(docId: string, name: string, color: string, roomId?: string) {
-        const provider = p2pService.getProvider(roomId || docId)
+        const provider = p2pService.getProvider(roomId || this.docRooms.get(docId) || docId)
         if (provider) {
             provider.awareness.setLocalStateField('user', { name, color })
         }
     }
 
-    // Merge documents (for conflict resolution)
     mergeDocuments(targetDocId: string, sourceDocId: string): void {
         if (targetDocId === sourceDocId) {
             console.warn('[Collab] Attempted to merge document with itself')
@@ -365,22 +409,17 @@ class CollaborativeEngine {
         Y.applyUpdate(target, sourceState)
     }
 
-    // Export document state
     exportState(docId: string): Uint8Array | null {
         const doc = this.docs.get(docId)
         if (!doc) return null
         return Y.encodeStateAsUpdate(doc)
     }
 
-    // Import document state
     importState(docId: string, state: Uint8Array): void {
         const doc = this.getDocument(docId)
         Y.applyUpdate(doc, state)
     }
 
-
-
-    // Get stats
     getStats(docId: string, roomId?: string): {
         textLength: number
         taskCount: number
@@ -389,17 +428,16 @@ class CollaborativeEngine {
         peerCount: number
     } {
         const doc = this.docs.get(docId)
-        const provider = p2pService.getProvider(roomId || docId)
+        const provider = p2pService.getProvider(roomId || this.docRooms.get(docId) || docId)
 
         return {
             textLength: doc?.getText('editor-content').length || 0,
             taskCount: doc?.getArray('tasks').length || 0,
             messageCount: doc?.getArray('messages').length || 0,
             snapshotCount: this.snapshots.get(docId)?.length || 0,
-            peerCount: provider ? provider.awareness.getStates().size - 1 : 0
+            peerCount: provider ? Math.max(0, provider.awareness.getStates().size - 1) : 0
         }
     }
 }
 
-// Singleton
 export const collabEngine = new CollaborativeEngine()
