@@ -46,9 +46,17 @@ interface SaveOptions {
 
 const MAX_CLOSED_STACK = 25
 const AUTO_SAVE_DELAY_MS = 1000
+const EXTRA_LIB_FILE_RE = /\.(?:d\.ts|tsx?|jsx?|mts|cts|mjs|cjs)$/i
 
 const api = () => window.electronAPI
 const editorText = (text: string) => text.replace(/^\uFEFF/, '')
+
+function syncWorkspaceExtraLib(filePath: string, content: string) {
+    if (!EXTRA_LIB_FILE_RE.test(filePath)) return
+    void import('../editor/monacoSetup')
+        .then(m => m.updateWorkspaceExtraLib(filePath, content))
+        .catch(() => undefined)
+}
 
 export function useOpenFiles({
     spaceId,
@@ -153,42 +161,43 @@ export function useOpenFiles({
         path: string,
         line?: number,
         column?: number,
-        opts?: { silentMissing?: boolean }
-    ) => {
+        opts?: { silentMissing?: boolean; preserveActive?: boolean }
+    ): Promise<string | null> => {
         const openedIn = generation.current
         const target = validate(path, opts?.silentMissing)
-        if (!target) return
+        if (!target) return null
         if (line) setReveal({ path: target, line, column, nonce: Date.now() })
 
         const existing = filesRef.current.find(f => samePath(f.path, target))
         if (existing) {
-            setActivePath(existing.path)
-            return
+            if (!opts?.preserveActive || !activeRef.current) setActivePath(existing.path)
+            return existing.path
         }
 
         const result = await api()?.fs?.readFile(target)
-        if (openedIn !== generation.current) return
+        if (openedIn !== generation.current) return null
         if (!result?.success) {
-            if (opts?.silentMissing) return
+            if (opts?.silentMissing) return null
             const dir = await api()?.fs?.readDir(target)
-            if (openedIn !== generation.current) return
+            if (openedIn !== generation.current) return null
             if (dir?.success) {
                 onRevealDirectory(target)
-                return
+                return null
             }
             addNotification(`Couldn't open ${baseName(target)}: ${result?.error || 'the file could not be read'}`, 'error')
-            return
+            return null
         }
 
         const name = baseName(target)
         setFiles(prev => prev.some(f => samePath(f.path, target))
             ? prev
             : [...prev, { path: target, name, content: editorText(result.content ?? ''), diskContent: result.content ?? '', language: languageFromFileName(name), isDirty: false }])
-        setActivePath(target)
+        if (!opts?.preserveActive || !activeRef.current) setActivePath(target)
+        return target
     }, [validate, onRevealDirectory, addNotification, setFiles, setActivePath])
 
-    const openFile = useCallback((path: string, line?: number, column?: number) => {
-        return openFileInternal(path, line, column)
+    const openFile = useCallback((path: string, line?: number, column?: number, opts?: { preserveActive?: boolean }) => {
+        return openFileInternal(path, line, column, opts)
     }, [openFileInternal])
 
     const writeFile = useCallback((file: OpenFile): Promise<boolean> => {
@@ -227,6 +236,7 @@ export function useOpenFiles({
                 setFiles(prev => prev.map(f => f.path === file.path ? {
                     ...f, diskContent: (result.bom ? '\uFEFF' : '') + editorText(file.content), isDirty: f.content !== file.content
                 } : f))
+                syncWorkspaceExtraLib(file.path, file.content)
             }
             return true
         }).catch(error => {
@@ -556,6 +566,7 @@ export function useOpenFiles({
         setFiles(prev => prev.map(f => (f.path === file.path && !f.isDirty && f.content === file.content
             ? { ...f, content: editorText(result.content), diskContent: result.content }
             : f)))
+        syncWorkspaceExtraLib(file.path, editorText(result.content))
     })
 
     // MRU Ctrl+Tab cycling: keep a stable snapshot while Ctrl/Meta is held, promote on keyup.
@@ -775,6 +786,7 @@ export function useOpenFiles({
                 setFiles(prev => prev.map(f => (f.path === file.path && !f.isDirty
                     ? { ...f, content: editorText(nextContent), diskContent: nextContent }
                     : f)))
+                syncWorkspaceExtraLib(file.path, editorText(nextContent))
                 return
             }
             void api()?.fs?.readFile(file.path).then((result: { success?: boolean; content?: string } | undefined) => {
@@ -783,6 +795,7 @@ export function useOpenFiles({
                 setFiles(prev => prev.map(f => (f.path === file.path && !f.isDirty && f.content === file.content
                     ? { ...f, content: editorText(diskText), diskContent: diskText }
                     : f)))
+                syncWorkspaceExtraLib(file.path, editorText(diskText))
             })
         }
         window.addEventListener('kalynt-open-file', onOpen)

@@ -49,6 +49,8 @@ export function useIdeShortcuts(enabled: boolean, actions: IdeActions) {
                 if (e.shiftKey && key === 'f') return run(focusWorkspaceSearch)
                 if (e.shiftKey && key === 'h') return run(focusWorkspaceReplace)
                 if (e.shiftKey && key === 'g') return run(() => layout.showSidePanel('git'))
+                if (e.shiftKey && key === 'd') return run(() => layout.showSidePanel('debug'))
+                if (e.shiftKey && key === 'o') return run(() => layout.showSidePanel('outline'))
                 if (e.shiftKey && key === 'm') return run(openProblemsPanel)
                 if (e.shiftKey && key === 'a') return run(() => layout.setRightOpen(!layout.rightOpen))
                 if (key === '`' || e.code === 'Backquote') return run(() => layout.setBottomOpen(!layout.bottomOpen))

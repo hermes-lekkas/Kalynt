@@ -4,6 +4,7 @@
 import { useEffect, useState } from 'react'
 import { AlertTriangle, ArrowDown, ArrowUp, GitBranch, Lock, Sparkles, Users, XCircle } from 'lucide-react'
 import { useEditorStatusStore, type LineEnding } from '../../stores/editorStatusStore'
+import { useDiagnosticsStore } from '../../stores/diagnosticsStore'
 import { useAgentStatusStore } from '../../stores/agentStatusStore'
 import { useLayoutStore } from '../../stores/layoutStore'
 import { useUiStore } from '../../stores/uiStore'
@@ -63,7 +64,10 @@ export function StatusBar({
     const openCollaboration = useUiStore(s => s.openCollaboration)
     const { peerCount, encrypted, synced } = useYDoc(spaceId)
 
-    const [diagnostics, setDiagnostics] = useState<DiagnosticsSummary>({ errors: 0, warnings: 0 })
+    const [diagnostics, setDiagnostics] = useState<DiagnosticsSummary>(() => {
+        const { errors, warnings } = useDiagnosticsStore.getState().counts
+        return { errors, warnings }
+    })
     const indentMenu = useMenuAnchor()
     const eolMenu = useMenuAnchor()
     const langMenu = useMenuAnchor()

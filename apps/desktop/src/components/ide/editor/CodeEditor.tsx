@@ -299,7 +299,7 @@ export default function CodeEditor({
             })
         }
         const onInsertAtCursor = (e: Event) => {
-            if (!isFocusedRef.current || readOnlyRef.current) return
+            if (e.defaultPrevented || !isFocusedRef.current || readOnlyRef.current) return
             const ed = editorRef.current
             if (!ed) return
             const detail = (e as CustomEvent<{ code?: string; text?: string; language?: string }>).detail
@@ -307,6 +307,7 @@ export default function CodeEditor({
             if (typeof text !== 'string' || !text) return
             const selection = ed.getSelection()
             if (!selection) return
+            e.preventDefault()
             ed.executeEdits('kalynt-insert-at-cursor', [{ range: selection, text, forceMoveMarkers: true }])
             ed.pushUndoStop()
             ed.focus()

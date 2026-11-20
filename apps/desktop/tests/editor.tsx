@@ -8,7 +8,7 @@ import '../src/electronShim'
 import '../src/styles/tokens.css'
 import '../src/styles/base.css'
 import '../src/components/ide/ide.css'
-import { EditorArea } from '../src/components/ide/editor/EditorArea'
+import { EditorArea, type EditorPaneId } from '../src/components/ide/editor/EditorArea'
 import { useOpenFiles } from '../src/components/ide/hooks/useOpenFiles'
 import { useRunner } from '../src/components/ide/hooks/useRunner'
 import { useIdeShortcuts } from '../src/components/ide/hooks/useIdeShortcuts'
@@ -40,12 +40,32 @@ for (const id of ['a', 'b']) {
 function Fixture() {
     const [id, setId] = useState('a')
     const [saved, setSaved] = useState('')
+    const [focusedPane, setFocusedPane] = useState<EditorPaneId>('primary')
+    const [secondaryPath, setSecondaryPath] = useState<string | null>(null)
     const folder = `/fixture-${id}`
     const model = useRef<editor.IStandaloneCodeEditor | null>(null)
     const open = useOpenFiles({ spaceId: `fixture-${id}`, folder, onRevealDirectory() {}, onDisposeModel() {} })
     const runner = useRunner({ folder, activeFile: open.activeFile, saveFile: open.saveFile })
     const runEditorAction = (action: string) => { model.current?.getAction(action)?.run() }
-    useIdeShortcuts(true, { files: open, runner, folder, newFile() {}, openFolder() {}, closeFolder() {}, runEditorAction, gitPush() {}, gitPull() {} })
+    const focusedPath = focusedPane === 'secondary' && secondaryPath ? secondaryPath : open.activePath
+    useIdeShortcuts(true, {
+        files: open,
+        runner,
+        folder,
+        canEdit: true,
+        newFile() {},
+        saveFocusedFile() { if (focusedPath) void open.saveFile(focusedPath) },
+        closeFocusedTab() { if (focusedPath) void open.closeFile(focusedPath) },
+        toggleCurrentBreakpoint() {
+            const line = model.current?.getPosition()?.lineNumber ?? 1
+            if (focusedPath) runner.toggleBreakpoint(focusedPath, line)
+        },
+        openFolder() {},
+        closeFolder() {},
+        runEditorAction,
+        gitPush() {},
+        gitPull() {}
+    })
     return <main style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
         <header style={{ padding: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
             <strong>Editor integration fixture — virtual files only</strong>
@@ -57,7 +77,21 @@ function Fixture() {
             <span>{open.activeFile?.isDirty ? 'Unsaved changes' : 'No unsaved changes'}</span>
         </header>
         <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-            <EditorArea files={open} runner={runner} folder={folder} canEdit onOpenFolder={() => {}} onRevealDirectory={() => {}} onRevealFile={() => {}} onActivateEditor={ed => { model.current = ed }} runEditorAction={runEditorAction} />
+            <EditorArea
+                files={open}
+                runner={runner}
+                folder={folder}
+                canEdit
+                focusedPane={focusedPane}
+                secondaryPath={secondaryPath}
+                onSecondaryPathChange={setSecondaryPath}
+                onFocusPane={setFocusedPane}
+                onOpenFolder={() => {}}
+                onRevealDirectory={() => {}}
+                onRevealFile={() => {}}
+                onActivateEditor={ed => { model.current = ed }}
+                runEditorAction={runEditorAction}
+            />
         </div>
     </main>
 }

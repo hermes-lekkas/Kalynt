@@ -117,7 +117,12 @@ function withBreaks(text: string, key: string): ReactNode[] {
 }
 
 async function insertAtActiveCursor(text: string, lang: string): Promise<boolean> {
-    window.dispatchEvent(new CustomEvent('kalynt-insert-code', { detail: { text, lang } }))
+    const ev = new CustomEvent('kalynt-insert-at-cursor', {
+        detail: { code: text, text, language: lang },
+        cancelable: true
+    })
+    window.dispatchEvent(ev)
+    if (ev.defaultPrevented) return true
     try {
         const { monaco } = await import('../../ide/editor/monacoSetup')
         const editors = monaco.editor.getEditors()

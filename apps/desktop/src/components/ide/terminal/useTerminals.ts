@@ -149,12 +149,14 @@ export function useTerminals(folder: string | null, visible: boolean, keys: Term
         instances.current.forEach(i => { i.xterm.options.theme = { ...palette } })
     }, [theme])
 
-    const add = useCallback((shellOverride?: string) => {
+    const add = useCallback((shellOverride?: string, cwdOverride?: string) => {
         const id = uuidv4()
         const shell = shellOverride?.trim() || defaultShell.current
+        const cwd = cwdOverride?.trim() || folder || ''
+        started.current = true
         setTabs(prev => {
             const n = prev.filter(t => t.shell === shell).length + 1
-            return [...prev, { id, title: n > 1 ? `${shellName(shell)} ${n}` : shellName(shell), shell, cwd: folder ?? '' }]
+            return [...prev, { id, title: n > 1 ? `${shellName(shell)} ${n}` : shellName(shell), shell, cwd }]
         })
         setActiveId(id)
         return id

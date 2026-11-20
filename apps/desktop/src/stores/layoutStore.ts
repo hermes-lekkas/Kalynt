@@ -8,8 +8,16 @@ import { create } from 'zustand'
 import { persist, createJSONStorage, type StateStorage } from 'zustand/middleware'
 
 export type MainView = 'code' | 'tasks' | 'history' | 'files'
-export type SidePanel = 'files' | 'search' | 'git'
+export type SidePanel = 'files' | 'search' | 'git' | 'debug' | 'outline'
 export type BottomTab = 'terminal' | 'output' | 'build' | 'debug'
+
+const VALID_SIDE_PANELS: ReadonlySet<SidePanel> = new Set(['files', 'search', 'git', 'debug', 'outline'])
+
+function sanitizeSidePanel(value: unknown): SidePanel {
+    return typeof value === 'string' && VALID_SIDE_PANELS.has(value as SidePanel)
+        ? (value as SidePanel)
+        : 'files'
+}
 export type RightTab = 'agent' | 'team'
 export type AutoSaveMode = 'off' | 'afterDelay' | 'onFocusChange'
 export type LineNumbersMode = 'on' | 'off' | 'relative'
@@ -177,13 +185,22 @@ export const useLayoutStore = create<LayoutState>()(
         }),
         {
             name: 'kalynt-layout',
-            version: 2,
+            version: 3,
             storage: createJSONStorage(() => debouncedStorage),
             migrate: (persisted) => {
                 const state = (persisted && typeof persisted === 'object' ? persisted : {}) as Partial<LayoutState>
                 return {
                     ...EDITOR_PREF_DEFAULTS,
-                    ...state
+                    ...state,
+                    sidePanel: sanitizeSidePanel(state.sidePanel)
+                }
+            },
+            merge: (persisted, current) => {
+                const state = (persisted && typeof persisted === 'object' ? persisted : {}) as Partial<LayoutState>
+                return {
+                    ...current,
+                    ...state,
+                    sidePanel: sanitizeSidePanel(state.sidePanel ?? current.sidePanel)
                 }
             }
         }

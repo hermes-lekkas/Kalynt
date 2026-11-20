@@ -1,23 +1,23 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
  */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
     CaseSensitive, ChevronRight, ChevronsDownUp, ChevronsUpDown,
     Filter, Regex, Replace, ReplaceAll, Square, WholeWord, X
 } from 'lucide-react'
-import { Button, EmptyState, IconButton, ProgressBar, TextInput, VirtualList, hasOpenLayer } from '../../ui'
+import { Button, EmptyState, IconButton, ProgressBar, TextInput, VirtualList } from '../../ui'
 import { useLayoutStore } from '../../../stores/layoutStore'
 import { usePermissions } from '../../../hooks/usePermissions'
 import { FileGlyph } from '../explorer/fileIcons'
 import { dirName, relativePath } from '../languages'
 import { useWorkspaceSearch } from './useWorkspaceSearch'
 import { buildPattern, formatReplacementPreview, type SearchMatch } from './searchUtils'
-import { FOCUS_SEARCH_EVENT } from '../hooks/useIdeCommands'
+import { FOCUS_REPLACE_EVENT, FOCUS_SEARCH_EVENT } from '../hooks/useIdeCommands'
 import type { OpenFilesApi } from '../hooks/useOpenFiles'
 import './search.css'
 
-export const FOCUS_REPLACE_EVENT = 'kalynt-focus-replace'
+export { FOCUS_REPLACE_EVENT }
 export const FIND_IN_FOLDER_EVENT = 'kalynt-find-in-folder'
 
 type Row = { kind: 'file'; path: string; name: string; count: number; open: boolean } | { kind: 'match'; match: SearchMatch }
@@ -45,56 +45,89 @@ export function SearchPanel({ folder, buffers, visible, onOpenMatch, canEdit: ca
     searchRef.current = s.search
     const clearRef = useRef(s.clear)
     clearRef.current = s.clear
-    const queryRef = useRef(s.query)
-    queryRef.current = s.query
+    const setIncludeRef = useRef(s.setInclude)
+    setIncludeRef.current = s.setInclude
+    const visibleRef = useRef(visible)
+    visibleRef.current = visible
+    const showReplaceRef = useRef(showReplace)
+    showReplaceRef.current = showReplace
+    const prevVisibleRef = useRef(false)
+    const pendingFocusRef = useRef<'search' | 'replace' | null>(null)
+    const focusFrameRef = useRef<number | null>(null)
 
-    // Focus search / replace inputs on visibility, FOCUS_SEARCH_EVENT, FOCUS_REPLACE_EVENT,
-    // FIND_IN_FOLDER_EVENT, and Ctrl+Shift+H / Cmd+Shift+H.
+    const scheduleFocus = useCallback((target: 'search' | 'replace') => {
+        if (focusFrameRef.current !== null) cancelAnimationFrame(focusFrameRef.current)
+        focusFrameRef.current = requestAnimationFrame(() => {
+            focusFrameRef.current = null
+            if (target === 'replace' && replaceInputRef.current && !replaceInputRef.current.disabled) {
+                replaceInputRef.current.focus()
+                replaceInputRef.current.select()
+            } else {
+                inputRef.current?.focus()
+                inputRef.current?.select()
+            }
+        })
+    }, [])
+
+    useEffect(() => () => {
+        if (focusFrameRef.current !== null) cancelAnimationFrame(focusFrameRef.current)
+    }, [])
+
+    // Focus search / replace inputs on FOCUS_SEARCH_EVENT, FOCUS_REPLACE_EVENT, and FIND_IN_FOLDER_EVENT.
+    // Ctrl+Shift+H is owned by useIdeShortcuts (respecting IDEWorkspace's active guard).
     useEffect(() => {
-        const focusSearch = () => requestAnimationFrame(() => { inputRef.current?.focus(); inputRef.current?.select() })
-        const focusReplace = () => {
+        const onFocusSearch = () => {
+            pendingFocusRef.current = 'search'
+            if (visibleRef.current) {
+                pendingFocusRef.current = null
+                scheduleFocus('search')
+            }
+        }
+        const onFocusReplace = () => {
+            pendingFocusRef.current = 'replace'
             setShowReplace(true)
-            requestAnimationFrame(() => {
-                if (queryRef.current.trim()) {
-                    replaceInputRef.current?.focus()
-                    replaceInputRef.current?.select()
-                } else {
-                    inputRef.current?.focus()
-                    inputRef.current?.select()
-                }
-            })
+            if (visibleRef.current && showReplaceRef.current) {
+                pendingFocusRef.current = null
+                scheduleFocus('replace')
+            }
         }
         const onFindInFolder = (e: Event) => {
             const detail = (e as CustomEvent<{ include?: string }>).detail
             if (detail?.include !== undefined) {
                 setShowFilters(true)
-                s.setInclude(detail.include)
+                setIncludeRef.current(detail.include)
             }
+            pendingFocusRef.current = 'search'
             useLayoutStore.getState().showSidePanel('search')
-            focusSearch()
-        }
-        const onKeyDown = (e: KeyboardEvent) => {
-            if (hasOpenLayer() || e.defaultPrevented || e.altKey) return
-            const mod = e.ctrlKey || e.metaKey
-            if (mod && e.shiftKey && e.key.toLowerCase() === 'h') {
-                e.preventDefault()
-                useLayoutStore.getState().showSidePanel('search')
-                focusReplace()
+            if (visibleRef.current) {
+                pendingFocusRef.current = null
+                scheduleFocus('search')
             }
         }
-        if (visible) focusSearch()
-        window.addEventListener(FOCUS_SEARCH_EVENT, focusSearch)
-        window.addEventListener(FOCUS_REPLACE_EVENT, focusReplace)
+        window.addEventListener(FOCUS_SEARCH_EVENT, onFocusSearch)
+        window.addEventListener(FOCUS_REPLACE_EVENT, onFocusReplace)
         window.addEventListener(FIND_IN_FOLDER_EVENT, onFindInFolder)
-        window.addEventListener('keydown', onKeyDown)
         return () => {
-            window.removeEventListener(FOCUS_SEARCH_EVENT, focusSearch)
-            window.removeEventListener(FOCUS_REPLACE_EVENT, focusReplace)
+            window.removeEventListener(FOCUS_SEARCH_EVENT, onFocusSearch)
+            window.removeEventListener(FOCUS_REPLACE_EVENT, onFocusReplace)
             window.removeEventListener(FIND_IN_FOLDER_EVENT, onFindInFolder)
-            window.removeEventListener('keydown', onKeyDown)
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [visible])
+    }, [scheduleFocus])
+
+    useEffect(() => {
+        const becameVisible = visible && !prevVisibleRef.current
+        prevVisibleRef.current = visible
+        if (!visible) return
+        const pending = pendingFocusRef.current
+        if (pending === 'replace') {
+            if (!showReplace) return
+            pendingFocusRef.current = null
+            scheduleFocus('replace')
+        } else if (pending === 'search' || becameVisible) {
+            pendingFocusRef.current = null
+            scheduleFocus('search')
+        }
+    }, [visible, showReplace, scheduleFocus])
 
     // Debounced search-as-you-type across query, options, include, and exclude.
     const optionsKey = `${s.options.regex}|${s.options.caseSensitive}|${s.options.wholeWord}`

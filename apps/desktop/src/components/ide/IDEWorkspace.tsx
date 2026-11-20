@@ -145,6 +145,22 @@ export function IDEWorkspace({ space, active }: IDEWorkspaceProps) {
         if (path) void openFile(path)
     }, [folder, canEdit, openFile])
 
+    useEffect(() => {
+        const onOpenFileSide = (e: Event) => {
+            const detail = (e as CustomEvent<{ path?: string }>).detail
+            if (!detail?.path) return
+            e.preventDefault()
+            void openFile(detail.path, undefined, undefined, { preserveActive: true }).then(openedPath => {
+                if (!openedPath) return
+                setSecondaryPath(openedPath)
+                useLayoutStore.getState().setEditorPref({ splitEditor: true })
+                setFocusedPane('secondary')
+            })
+        }
+        window.addEventListener('kalynt-open-file-side', onOpenFileSide)
+        return () => window.removeEventListener('kalynt-open-file-side', onOpenFileSide)
+    }, [openFile])
+
     const handleOpenFolder = useCallback(async () => {
         if (files.files.some(f => f.isDirty)) {
             const ok = await files.confirmDirtyBeforeSwitch()
@@ -221,7 +237,7 @@ export function IDEWorkspace({ space, active }: IDEWorkspaceProps) {
     return (
         <div className="ide">
             <div className="ide__main">
-                <ActivityBar gitChanges={git.changes.length} />
+                <ActivityBar gitChanges={git.changes.length} debugActive={runner.isDebugging} />
 
                 <aside ref={sideRef} className="ide__side" style={{ width: sidebarWidth }} hidden={!sidebarOpen} aria-label="Side bar">
                     <SidePanel
@@ -234,6 +250,7 @@ export function IDEWorkspace({ space, active }: IDEWorkspaceProps) {
                         onRevealed={() => setReveal(null)}
                         git={git}
                         buffers={files}
+                        runner={runner}
                         onOpenFile={files.openFile}
                         onOpenFolder={actions.openFolder}
                         onCloseFolder={actions.closeFolder}

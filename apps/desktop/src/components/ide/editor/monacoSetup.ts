@@ -462,7 +462,7 @@ export function syncWorkspaceTypes(folder: string | null): () => void {
 
 /** Updates a single workspace file's extraLib entry when saved or edited externally. */
 export function updateWorkspaceExtraLib(filePath: string, content: string): void {
-    if (!/\.(?:d\.ts|tsx?|mts|cts)$/i.test(filePath)) return
+    if (!/\.(?:d\.ts|tsx?|jsx?|mts|cts|mjs|cjs)$/i.test(filePath)) return
     if (content.length > MAX_EXTRA_LIB_BYTES) return
     const normalized = filePath.replace(/\\/g, '/')
     const existing = fileExtraLibs.get(normalized)

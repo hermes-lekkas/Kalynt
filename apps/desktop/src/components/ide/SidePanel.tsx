@@ -12,7 +12,6 @@ import { SearchPanel } from './search/SearchPanel'
 import { GitPanel } from './git/GitPanel'
 import { OutlinePanel } from './outline/OutlinePanel'
 import { DebugPanel } from './debug/DebugPanel'
-import { useExtraSidePanelStore } from './ActivityBar'
 import type { GitApi } from './git/useGit'
 import type { OpenFilesApi } from './hooks/useOpenFiles'
 import type { RunnerApi } from './hooks/useRunner'
@@ -37,12 +36,10 @@ interface SidePanelProps {
 
 export function SidePanel(props: SidePanelProps) {
     const { panel, visible, folder } = props
-    const extraPanel = useExtraSidePanelStore(s => s.extraPanel)
-    const activeView = extraPanel ?? panel
 
     return (
         <>
-            <div className="side-view" hidden={activeView !== 'files'}>
+            <div className="side-view" hidden={panel !== 'files'}>
                 <RegionBoundary name="Explorer">
                     <FileExplorer
                         folder={folder}
@@ -58,17 +55,17 @@ export function SidePanel(props: SidePanelProps) {
                     />
                 </RegionBoundary>
             </div>
-            <div className="side-view" hidden={activeView !== 'search'}>
+            <div className="side-view" hidden={panel !== 'search'}>
                 <RegionBoundary name="Search">
-                    <SearchPanel folder={folder} buffers={props.buffers} visible={visible && activeView === 'search'} onOpenMatch={props.onOpenFile} />
+                    <SearchPanel folder={folder} buffers={props.buffers} visible={visible && panel === 'search'} onOpenMatch={props.onOpenFile} />
                 </RegionBoundary>
             </div>
-            <div className="side-view" hidden={activeView !== 'git'}>
+            <div className="side-view" hidden={panel !== 'git'}>
                 <RegionBoundary name="Source control">
                     <GitPanel folder={folder} git={props.git} onOpenFile={path => props.onOpenFile(path)} />
                 </RegionBoundary>
             </div>
-            <div className="side-view" hidden={activeView !== 'debug'}>
+            <div className="side-view" hidden={panel !== 'debug'}>
                 <RegionBoundary name="Run and Debug">
                     <DebugPanel
                         folder={folder}
@@ -78,12 +75,12 @@ export function SidePanel(props: SidePanelProps) {
                     />
                 </RegionBoundary>
             </div>
-            <div className="side-view" hidden={activeView !== 'outline'}>
+            <div className="side-view" hidden={panel !== 'outline'}>
                 <RegionBoundary name="Outline">
                     <OutlinePanel
                         activePath={props.activePath}
                         buffers={props.buffers}
-                        visible={visible && activeView === 'outline'}
+                        visible={visible && panel === 'outline'}
                         onOpenFile={props.onOpenFile}
                     />
                 </RegionBoundary>

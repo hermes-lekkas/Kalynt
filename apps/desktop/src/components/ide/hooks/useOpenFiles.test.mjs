@@ -17,6 +17,7 @@ const { outputFiles } = await build({
     plugins: [{ name: 'hook-test-boundaries', setup(build) {
         build.onResolve({ filter: /^react$/ }, args => ({ path: args.kind === 'require-call' ? require.resolve('react') : pathToFileURL(require.resolve('react')).href, external: true }))
         build.onLoad({ filter: /components[/\\]ui[/\\]index\.ts$/ }, () => ({ contents: 'export const chooseAction = options => globalThis.chooseTestAction(options)', loader: 'ts' }))
+        build.onLoad({ filter: /editor[/\\]monacoSetup\.ts$/ }, () => ({ contents: 'export const updateWorkspaceExtraLib = (p, c) => { globalThis.extraLibUpdates?.push([p, c]) }', loader: 'ts' }))
     } }]
 })
 const { useOpenFiles, useWorkspaceFolderStore: folders } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString('base64')}`)
@@ -175,4 +176,32 @@ test('failed recovery storage prevents closing with unsaved changes', async () =
     await act(async () => { window.dispatchEvent(closing) })
     assert.equal(closing.defaultPrevented, true)
     assert.equal(current.files[0].content, 'keep safe')
+})
+test('openFile with preserveActive loads file without replacing active primary tab', async () => {
+    await mount(['/project/a.txt'])
+    disks.set('/project/b.ts', 'export const b = 2\n')
+    let opened
+    await act(async () => {
+        opened = await current.openFile('/project/b.ts', undefined, undefined, { preserveActive: true })
+    })
+    assert.equal(opened, '/project/b.ts')
+    assert.equal(current.activePath, '/project/a.txt')
+    assert.equal(current.files.some(f => f.path === '/project/b.ts'), true)
+})
+test('saving or externally updating a TypeScript file updates Monaco extraLib live', async () => {
+    globalThis.extraLibUpdates = []
+    await mount(['/project/app.ts', '/project/notes.txt'])
+    await act(async () => current.updateContent('/project/app.ts', 'export const x = 1\n'))
+    await act(async () => { assert.equal(await current.saveFile('/project/app.ts'), true); await wait() })
+    await act(async () => current.updateContent('/project/notes.txt', 'plain text'))
+    await act(async () => { assert.equal(await current.saveFile('/project/notes.txt'), true); await wait() })
+    assert.deepEqual(globalThis.extraLibUpdates, [['/project/app.ts', 'export const x = 1\n']])
+    await act(async () => {
+        window.dispatchEvent(new CustomEvent('kalynt-file-changed', { detail: { path: '/project/app.ts', content: 'export const x = 2\n' } }))
+        await wait()
+    })
+    assert.deepEqual(globalThis.extraLibUpdates, [
+        ['/project/app.ts', 'export const x = 1\n'],
+        ['/project/app.ts', 'export const x = 2\n']
+    ])
 })

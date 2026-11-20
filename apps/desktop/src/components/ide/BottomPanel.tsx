@@ -56,6 +56,7 @@ export function BottomPanel({ folder, runner, active }: BottomPanelProps) {
         setProblemsActive(false)
     }, [bottomTab])
 
+    const addTerminal = terminals.add
     useEffect(() => {
         const onOpenProblems = () => {
             setBottomOpen(true)
@@ -64,13 +65,24 @@ export function BottomPanel({ folder, runner, active }: BottomPanelProps) {
         const onBottomTab = () => {
             setProblemsActive(false)
         }
+        const onOpenTerminalAt = (e: Event) => {
+            const detail = (e as CustomEvent<{ cwd?: string }>).detail
+            const cwd = typeof detail?.cwd === 'string' ? detail.cwd : undefined
+            e.preventDefault()
+            setProblemsActive(false)
+            setBottomTab('terminal')
+            setBottomOpen(true)
+            addTerminal(undefined, cwd)
+        }
         window.addEventListener('kalynt-open-problems', onOpenProblems)
         window.addEventListener('kalynt-bottom-tab', onBottomTab)
+        window.addEventListener('kalynt-open-terminal-at', onOpenTerminalAt)
         return () => {
             window.removeEventListener('kalynt-open-problems', onOpenProblems)
             window.removeEventListener('kalynt-bottom-tab', onBottomTab)
+            window.removeEventListener('kalynt-open-terminal-at', onOpenTerminalAt)
         }
-    }, [setBottomOpen])
+    }, [setBottomOpen, setBottomTab, addTerminal])
 
     // Handle Ctrl+F / Cmd+F inside the terminal without colliding with Ctrl+Shift+F Workspace Search.
     useEffect(() => {

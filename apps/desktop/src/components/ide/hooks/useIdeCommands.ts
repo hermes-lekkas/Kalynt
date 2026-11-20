@@ -46,7 +46,6 @@ export function focusWorkspaceSearch() {
 export function focusWorkspaceReplace() {
     useLayoutStore.getState().showSidePanel('search')
     window.dispatchEvent(new Event(FOCUS_REPLACE_EVENT))
-    window.dispatchEvent(new Event(FOCUS_SEARCH_EVENT))
 }
 
 /** Opens the Problems panel via custom event (handled by BottomPanel). */
@@ -78,6 +77,8 @@ export function useIdeCommands(actions: IdeActions) {
             { id: 'view.search', title: 'Search in files', shortcut: 'Ctrl+Shift+F', category: 'view', icon: 'Search', action: focusWorkspaceSearch },
             { id: 'view.replace', title: 'Replace in files', shortcut: 'Ctrl+Shift+H', category: 'view', icon: 'Replace', action: focusWorkspaceReplace },
             { id: 'view.git', title: 'Show source control', shortcut: 'Ctrl+Shift+G', category: 'view', icon: 'GitBranch', action: () => layout().showSidePanel('git') },
+            { id: 'view.debug', title: 'Show run & debug', shortcut: 'Ctrl+Shift+D', category: 'view', icon: 'Bug', action: () => layout().showSidePanel('debug') },
+            { id: 'view.outline', title: 'Show outline', shortcut: 'Ctrl+Shift+O', category: 'view', icon: 'ListTree', action: () => layout().showSidePanel('outline') },
             { id: 'view.problems', title: 'Show problems', shortcut: 'Ctrl+Shift+M', category: 'view', icon: 'AlertTriangle', action: openProblemsPanel },
             { id: 'view.terminal', title: 'Toggle terminal', shortcut: 'Ctrl+`', category: 'view', icon: 'TerminalSquare', action: () => layout().setBottomOpen(!layout().bottomOpen) },
             { id: 'view.agent', title: 'Toggle agent panel', shortcut: 'Ctrl+Shift+A', category: 'view', icon: 'PanelRight', action: () => layout().setRightOpen(!layout().rightOpen) },
