@@ -5,41 +5,20 @@
  * Content-Security-Policy applied to every response, and RAM-saving
  * lifecycle hooks.
  */
-import { app, BrowserWindow, session } from 'electron'
+import { BrowserWindow, session } from 'electron'
 import type { BrowserWindow as BrowserWindowType } from 'electron'
 import path from 'node:path'
+import { sendToWindow } from './utils/window'
 
 // VITE_DEV_SERVER_URL
 export const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL']
 
-// Window management
-export function createAppWindow(): BrowserWindowType {
-    const isLinux = process.platform === 'linux'
+// Register the CSP header hook once on the default session (not per window).
+let cspRegistered = false
 
-    const win = new BrowserWindow({
-        width: 1400,
-        height: 900,
-        minWidth: 800,
-        minHeight: 600,
-        frame: isLinux, // Enable frame on Linux for better compatibility
-        titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
-        ...(process.platform === 'darwin' && { trafficLightPosition: { x: 16, y: 16 } }),
-        icon: path.join(__dirname, VITE_DEV_SERVER_URL
-            ? (isLinux ? '../public/Kalynt.png' : '../public/Kalynt_256x256.ico')
-            : (isLinux ? '../dist/Kalynt.png' : '../dist/Kalynt_256x256.ico')),
-        webPreferences: {
-            preload: path.join(__dirname, 'preload.js'),
-            nodeIntegration: false,
-            contextIsolation: true,
-            sandbox: true,  // SECURITY FIX: Enable sandbox on all platforms for production security
-            spellcheck: false,  // RAM: Saves ~20-30MB (no dictionary loaded)
-            v8CacheOptions: 'bypassHeatCheck',  // RAM: Faster V8 code caching, less heap growth
-            backgroundThrottling: true,  // RAM: Throttle timers/requestAnimationFrame when hidden
-        },
-        transparent: !isLinux, // Disable transparency on Linux to prevent crashes
-        backgroundColor: isLinux ? '#1e1e1e' : '#00000000', // Use solid background on Linux
-        show: false
-    })
+function ensureCspHeaders() {
+    if (cspRegistered) return
+    cspRegistered = true
 
     // SECURITY FIX: Add Content Security Policy headers
     // HIGH-003: Strengthened CSP with additional directives
@@ -66,6 +45,48 @@ export function createAppWindow(): BrowserWindowType {
             }
         })
     })
+}
+
+// Window management
+export function createAppWindow(): BrowserWindowType {
+    const isLinux = process.platform === 'linux'
+
+    ensureCspHeaders()
+
+    const win = new BrowserWindow({
+        width: 1400,
+        height: 900,
+        minWidth: 800,
+        minHeight: 600,
+        frame: isLinux, // Enable frame on Linux for better compatibility
+        titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+        ...(process.platform === 'darwin' && { trafficLightPosition: { x: 16, y: 14 } }),
+        icon: path.join(__dirname, VITE_DEV_SERVER_URL
+            ? (isLinux ? '../public/Kalynt.png' : '../public/Kalynt_256x256.ico')
+            : (isLinux ? '../dist/Kalynt.png' : '../dist/Kalynt_256x256.ico')),
+        webPreferences: {
+            preload: path.join(__dirname, 'preload.js'),
+            nodeIntegration: false,
+            contextIsolation: true,
+            sandbox: true,  // SECURITY FIX: Enable sandbox on all platforms for production security
+            spellcheck: false,  // RAM: Saves ~20-30MB (no dictionary loaded)
+            v8CacheOptions: 'bypassHeatCheck',  // RAM: Faster V8 code caching, less heap growth
+            backgroundThrottling: true,  // RAM: Throttle timers/requestAnimationFrame when hidden
+        },
+        transparent: false,
+        backgroundColor: '#17161d',
+        show: false
+    })
+
+    const emitMaximized = () => {
+        if (!win.isDestroyed()) {
+            sendToWindow(win, 'window:maximized-changed', win.isMaximized())
+        }
+    }
+    win.on('maximize', emitMaximized)
+    win.on('unmaximize', emitMaximized)
+    win.on('enter-full-screen', emitMaximized)
+    win.on('leave-full-screen', emitMaximized)
 
     win.once('ready-to-show', () => {
         win.show()
@@ -80,9 +101,7 @@ export function createAppWindow(): BrowserWindowType {
     // When minimized, trigger aggressive GC + clear renderer back/forward cache
     win.on('minimize', () => {
         // Trigger GC in each renderer
-        if (!win.isDestroyed()) {
-            win.webContents.send('performance:request-gc')
-        }
+        sendToWindow(win, 'performance:request-gc', undefined)
         // Trigger main process GC
         if (typeof globalThis.gc === 'function') {
             try { globalThis.gc() } catch { /* ignore */ }

@@ -59,15 +59,17 @@ export async function openFolderAsWorkspace(): Promise<void> {
 /** Clones a repository into Kalynt's workspaces directory and opens it. */
 export async function cloneIntoWorkspace(url: string, name: string): Promise<{ ok: boolean; error?: string }> {
     const api = window.electronAPI
-    if (!api?.ipcRenderer) return { ok: false, error: 'Cloning needs the desktop app.' }
+    if (!api?.git?.clone || api.platform === 'browser') return { ok: false, error: 'Cloning needs the desktop app.' }
     try {
         const appPath = await api.getAppPath()
-        const safeName = name.trim().replace(/[\\/:*?"<>|]/g, '-')
+        const safeName = name.trim().replace(/[\\/:*?"<>|]/g, '-').replace(/^\.+/, '').replace(/\.{2,}/g, '-')
+        if (!safeName) return { ok: false, error: 'Enter a valid workspace name.' }
         const targetPath = `${appPath}/workspaces/${safeName}`
-        const result = await api.ipcRenderer.invoke('git:clone', { url: url.trim(), targetPath })
+        const result = await api.git.clone({ url: url.trim(), targetPath })
         if (!result?.success) return { ok: false, error: result?.error || 'The clone did not finish.' }
-        await api.fs?.setWorkspace?.(targetPath)
-        createWorkspace(name, targetPath)
+        const clonedPath = (typeof result.path === 'string' && result.path) ? result.path : targetPath
+        await api.fs?.setWorkspace?.(clonedPath)
+        createWorkspace(name, clonedPath)
         return { ok: true }
     } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : String(error) }

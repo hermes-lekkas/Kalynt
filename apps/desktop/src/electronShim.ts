@@ -1,4 +1,10 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ *
+ * Web/browser fallback shim matching the Electron preload API 1:1.
+ */
 const noopAsync = (..._args: any[]) => Promise.resolve({ success: false, error: 'Not available in web mode' })
+const noopVoidAsync = (..._args: any[]) => Promise.resolve()
 const noop = (..._args: any[]) => {}
 const noopReturn = (..._args: any[]) => () => {}
 
@@ -14,15 +20,16 @@ const terminalShim = {
     kill: noopAsync,
     sendSignal: noopAsync,
     getInfo: noopAsync,
-    getAll: noopAsync,
+    getAll: () => Promise.resolve({ success: true, terminals: [] }),
     fork: noopAsync,
     sendSequence: noopAsync,
     clearHistory: noopAsync,
     saveState: noopAsync,
     restoreState: noopAsync,
     broadcast: noopAsync,
-    getCommandHistory: noopAsync,
-    getCurrentCommand: noopAsync,
+    getCommandHistory: () => Promise.resolve({ success: true, history: [] }),
+    getCurrentCommand: () => Promise.resolve({ success: true, command: null }),
+    getDefaultShell: () => Promise.resolve({ success: false, shell: '', error: 'Not available in web mode' }),
     onData: noopReturn,
     onExit: noopReturn,
     onSpawned: noopReturn,
@@ -36,11 +43,11 @@ const runtimeShim = {
     startLSP: noopAsync,
     stopLSP: noopAsync,
     sendLSPRequest: noopAsync,
-    getLanguageServers: noopAsync,
+    getLanguageServers: () => Promise.resolve({ success: true, servers: [] }),
     startDebug: noopAsync,
     stopDebug: noopAsync,
     sendDebugRequest: noopAsync,
-    getDebugSessions: noopAsync,
+    getDebugSessions: () => Promise.resolve({ success: true, sessions: [] }),
     onLanguageServerStarted: noopReturn,
     onLanguageServerStopped: noopReturn,
     onDebugSessionStarted: noopReturn,
@@ -50,10 +57,10 @@ const runtimeShim = {
 }
 
 const tasksShim = {
-    detectTasks: noopAsync,
+    detectTasks: () => Promise.resolve({ success: true, tasks: [] }),
     executeTask: noopAsync,
     killTask: noopAsync,
-    getExecutions: noopAsync,
+    getExecutions: () => Promise.resolve({ success: true, executions: [] }),
     getExecution: noopAsync,
     onTaskOutput: noopReturn,
     onTaskCompleted: noopReturn,
@@ -67,14 +74,14 @@ const sessionsShim = {
     getSession: noopAsync,
     updateSession: noopAsync,
     deleteSession: noopAsync,
-    getAllSessions: noopAsync,
-    getActiveSessions: noopAsync,
+    getAllSessions: () => Promise.resolve({ success: true, sessions: [] }),
+    getActiveSessions: () => Promise.resolve({ success: true, sessions: [] }),
     saveSession: noopAsync,
     loadSession: noopAsync,
     exportSession: noopAsync,
     importSession: noopAsync,
     getStats: noopAsync,
-    clearOldSessions: noopAsync,
+    clearOldSessions: () => Promise.resolve({ success: true, count: 0 }),
     onSessionCreated: noopReturn,
     onSessionUpdated: noopReturn,
     onSessionDeleted: noopReturn,
@@ -82,7 +89,7 @@ const sessionsShim = {
 }
 
 const fsShim = {
-    openFolder: noopAsync,
+    openFolder: () => Promise.resolve({ success: false, canceled: true }),
     setWorkspace: noopAsync,
     readDir: noopAsync,
     stat: noopAsync,
@@ -104,10 +111,12 @@ const fsShim = {
 const codeShim = {
     execute: noopAsync,
     kill: noopAsync,
+    writeInput: noopAsync,
     runCommand: noopAsync,
     onOutput: noopReturn,
     onExit: noopReturn,
     removeListeners: noop,
+    clearBinaryCache: noopAsync,
     clearCache: noopAsync,
 }
 
@@ -118,8 +127,11 @@ const shellShim = {
 
 const runtimeMgmtShim = {
     check: noopAsync,
-    downloadAndInstall: noopAsync,
+    installable: () => Promise.resolve({ success: true, runtimes: [] as string[] }),
+    download: noopAsync,
+    install: noopAsync,
     uninstall: noopAsync,
+    downloadAndInstall: noopAsync,
     onDownloadProgress: noopReturn,
     onStatus: noopReturn,
     onLog: noopReturn,
@@ -127,9 +139,12 @@ const runtimeMgmtShim = {
 }
 
 const safeStorageShim = {
-    get: noopAsync,
+    isAvailable: () => Promise.resolve(false),
     set: noopAsync,
+    get: () => Promise.resolve({ success: false, value: null, error: 'Not available in web mode' }),
+    hasKey: () => Promise.resolve({ success: true, hasKey: false }),
     delete: noopAsync,
+    listKeys: () => Promise.resolve({ success: true, keys: [] as string[] }),
 }
 
 const updateShim = {
@@ -138,34 +153,40 @@ const updateShim = {
     downloadUpdate: noopAsync,
     installUpdate: noopAsync,
     getVersion: () => Promise.resolve({ success: true, version: '2.0.0-web' }),
+    getStatus: () => Promise.resolve({ success: true, checking: false, downloading: false }),
     onUpdateChecking: noopReturn,
     onUpdateAvailable: noopReturn,
     onUpdateNotAvailable: noopReturn,
-    onUpdateDownloaded: noopReturn,
     onDownloadProgress: noopReturn,
+    onUpdateDownloaded: noopReturn,
     onUpdateError: noopReturn,
-    onError: noopReturn,
     removeListeners: noop,
 }
 
 const gitShim = {
-    clone: noopAsync,
     status: noopAsync,
-    add: noopAsync,
-    commit: noopAsync,
-    push: noopAsync,
-    pull: noopAsync,
     log: noopAsync,
     diff: noopAsync,
+    add: noopAsync,
+    commit: noopAsync,
+    amend: noopAsync,
     branch: noopAsync,
     checkout: noopAsync,
-    getRemotes: noopAsync,
-    addRemote: noopAsync,
+    reset: noopAsync,
+    push: noopAsync,
+    publish: noopAsync,
+    pull: noopAsync,
     init: noopAsync,
+    discard: noopAsync,
+    createBranch: noopAsync,
+    fetch: noopAsync,
+    remote: noopAsync,
+    clone: noopAsync,
     stash: noopAsync,
     stashPop: noopAsync,
-    onProgress: noopReturn,
-    removeListeners: noop,
+    stashList: noopAsync,
+    commitFiles: noopAsync,
+    commitDiff: noopAsync,
 }
 
 const depsShim = {
@@ -175,21 +196,140 @@ const depsShim = {
     installAll: noopAsync,
     uninstall: noopAsync,
     update: noopAsync,
-    list: noopAsync,
+    list: () => Promise.resolve({ success: true, packages: [] }),
     init: noopAsync,
+    getSupportedManagers: () => Promise.resolve([]),
+    kill: () => Promise.resolve(false),
     onOutput: noopReturn,
     onComplete: noopReturn,
     removeListeners: noop,
+}
+
+const buildShim = {
+    getTasks: () => Promise.resolve({ success: true, tasks: [] }),
+    executeTask: noopAsync,
+    killTask: noopAsync,
+    onOutput: noopReturn,
+    onEnd: noopReturn,
+    onProblems: noopReturn,
+    removeListeners: noop,
+}
+
+const debugShim = {
+    getConfigurations: () => Promise.resolve({ success: true, configurations: [] }),
+    start: noopAsync,
+    stop: noopAsync,
+    setBreakpoints: noopAsync,
+    continue: noopAsync,
+    stepOver: noopAsync,
+    stepInto: noopAsync,
+    stepOut: noopAsync,
+    pause: noopAsync,
+    getCallStack: () => Promise.resolve({ success: true, callStack: [] }),
+    getVariables: () => Promise.resolve({ success: true, variables: [] }),
+    evaluate: noopAsync,
+    addWatch: noopAsync,
+    removeWatch: noopAsync,
+    getWatches: () => Promise.resolve({ success: true, watches: [] }),
+    updateWatches: () => Promise.resolve({ success: true, watches: [] }),
+    clearWatches: noopAsync,
+    onStarted: noopReturn,
+    onStopped: noopReturn,
+    onContinued: noopReturn,
+    onTerminated: noopReturn,
+    onOutput: noopReturn,
+    onBreakpoint: noopReturn,
+    onEvent: noopReturn,
+    onResponse: noopReturn,
+    onError: noopReturn,
+    onAdapterMissing: noopReturn,
+    removeListeners: noop,
+}
+
+const extensionsShim = {
+    scan: () => Promise.resolve([]),
+    activate: noopAsync,
+    deactivate: noopVoidAsync,
+    install: noopAsync,
+    uninstall: noopVoidAsync,
+    list: () => Promise.resolve([]),
+    active: () => Promise.resolve([]),
+    contributions: () => Promise.resolve({}),
+    startHost: noopVoidAsync,
+    stopHost: noopVoidAsync,
+    download: noopVoidAsync,
+    onActivated: noopReturn,
+    onDeactivated: noopReturn,
+    onExtensionActivated: noopReturn,
+    onExtensionDeactivated: noopReturn,
+    onShowMessage: noopReturn,
+    removeListeners: noop,
+}
+
+const performanceShim = {
+    setMode: noopAsync,
+    getStatus: () => Promise.resolve({
+        memory: { mode: 'balanced' as const, rss: 0, totalPrivateBytes: 0 },
+        platform: 'browser',
+        arch: 'web'
+    }),
+    requestGc: noopAsync,
+    scanWorkspace: () => Promise.resolve([] as string[]),
+    prewarmCache: noopAsync,
+    testDiskSpeed: () => Promise.resolve({ read: 0, write: 0 }),
+    getBootTime: () => Promise.resolve(0),
+    getInferenceConfig: () => Promise.resolve({
+        flashAttention: true,
+        batchSize: 256,
+        threads: 0,
+        useSpeculativeDecoding: false
+    }),
+    onRequestGc: noopReturn,
+    onSuspendBackgroundTasks: noopReturn,
+    onOptimizeMonaco: noopReturn,
+    onDisposeWorkers: noopReturn,
+}
+
+const windowControlsShim = {
+    minimize: noopVoidAsync,
+    maximize: noopVoidAsync,
+    close: noopVoidAsync,
+    isMaximized: () => Promise.resolve(false),
+    onMaximizedChange: noopReturn,
 }
 
 export const electronAPIShim = {
     platform: 'browser' as const,
     getAppPath: () => Promise.resolve('/'),
     getVersion: () => Promise.resolve('2.0.0-web'),
-    getAppVersion: () => Promise.resolve({ success: true, version: '2.0.0-web' }),
     getModelsDirectory: () => Promise.resolve('/models'),
-    getHardwareInfo: () => Promise.resolve({ cpu: 'Web Browser', ram: 0, gpu: 'N/A' }),
-    getRealTimeStats: () => Promise.resolve({ cpuUsage: 0, memUsage: 0 }),
+    getHardwareInfo: () => Promise.resolve({
+        cpuCores: typeof navigator !== 'undefined' ? (navigator.hardwareConcurrency || 4) : 4,
+        cpuThreads: typeof navigator !== 'undefined' ? (navigator.hardwareConcurrency || 4) : 4,
+        cpuModel: 'Web Browser',
+        totalRAM: 0,
+        availableRAM: 0,
+        usedRAM: 0,
+        hasGPU: false,
+        totalDiskSpace: null,
+        availableDiskSpace: null
+    }),
+    getPerformanceInferenceConfig: performanceShim.getInferenceConfig,
+    getRealTimeStats: () => Promise.resolve({
+        cpuUsage: 0,
+        ramUsage: 0,
+        ramTotal: 0,
+        diskUsage: null,
+        diskTotal: null,
+        diskIOSpeed: null,
+        networkConnected: typeof navigator !== 'undefined' ? navigator.onLine : false,
+        networkLatency: null,
+        gpuUsage: null,
+        vramUsage: null,
+        vramTotal: 0,
+        ivramUsage: null,
+        ivramTotal: 0
+    }),
     fileExists: () => Promise.resolve(false),
     deleteModel: noopAsync,
     downloadModel: noopAsync,
@@ -200,30 +340,36 @@ export const electronAPIShim = {
     loadModel: noopAsync,
     unloadModel: noopAsync,
     generateCompletion: noopAsync,
-    generateCompletionStream: noopAsync,
+    generateCompletionStream: (_options: any, _onToken: (token: string) => void, onComplete: (error?: string) => void): string => {
+        const requestId = `web-${Math.random().toString(36).slice(2, 9)}`
+        queueMicrotask(() => onComplete?.('Not available in web mode'))
+        return requestId
+    },
     cancelGeneration: noopAsync,
     loadDraftModel: noopAsync,
     unloadDraftModel: noopAsync,
-    getDraftModelStatus: noopAsync,
+    getDraftModelStatus: () => Promise.resolve({ success: true, loaded: false, modelId: null }),
+    getModelStatus: () => Promise.resolve({ success: true, loaded: false, modelId: null, generating: false }),
+    onLLMEvent: noopReturn,
     nukeProcesses: noopAsync,
 
-    minimizeWindow: noop,
-    maximizeWindow: noop,
-    closeWindow: noop,
+    minimizeWindow: windowControlsShim.minimize,
+    maximizeWindow: windowControlsShim.maximize,
+    closeWindow: windowControlsShim.close,
+    isMaximized: windowControlsShim.isMaximized,
+    onMaximizedChange: windowControlsShim.onMaximizedChange,
+    window: windowControlsShim,
 
     on: noopReturn,
-    ipcRenderer: {
-        invoke: noopAsync,
-        on: noopReturn,
-        removeAllListeners: noop,
-    },
 
+    dialog: {
+        showOpenDialog: () => Promise.resolve({ canceled: true, filePaths: [] as string[] }),
+    },
     app: {
         getPath: () => Promise.resolve('/tmp'),
     },
-    extensions: {
-        download: noopAsync,
-    },
+    extensions: extensionsShim,
+    performance: performanceShim,
     terminal: terminalShim,
     runtime: runtimeShim,
     tasks: tasksShim,
@@ -233,6 +379,8 @@ export const electronAPIShim = {
     shell: shellShim,
     runtimeMgmt: runtimeMgmtShim,
     safeStorage: safeStorageShim,
+    build: buildShim,
+    debug: debugShim,
     ai: {
         keyStatus: async () => ({}),
         models: async () => ({ models: [], live: false, error: 'AI connections need the desktop app.' }),
@@ -247,12 +395,19 @@ export const electronAPIShim = {
     // Conversation APIs return arrays/null, unlike generic IPC result objects.
     // An object here used to crash the agent panel on its first workspace.
     agent: {
+        exec: async () => ({ ok: false, output: '', exitCode: null, running: false, durationMs: 0, error: 'Running commands needs the desktop app.' }),
+        execRead: async () => ({ ok: false, output: '', running: false, exitCode: null, error: 'Running commands needs the desktop app.' }),
+        execKill: async () => ({ ok: false }),
+        onExecOutput: noopReturn,
+        glob: async () => ({ ok: false, error: 'Workspace search needs the desktop app.' }),
+        grep: async () => ({ ok: false, error: 'Workspace search needs the desktop app.' }),
+        webSearch: async () => ({ ok: false, error: 'Web search needs the desktop app.' }),
+        webFetch: async () => ({ ok: false, error: 'Fetching web pages needs the desktop app.' }),
         listSessions: async () => [],
         loadSession: async () => null,
         saveSession: async () => ({ ok: false, error: 'Saving conversations needs the desktop app.' }),
         flushSession: () => ({ ok: false, error: 'Saving conversations needs the desktop app.' }),
-        deleteSession: async () => ({ ok: false, error: 'Deleting conversations needs the desktop app.' }),
-        onExecOutput: noopReturn
+        deleteSession: async () => ({ ok: false, error: 'Deleting conversations needs the desktop app.' })
     },
     editorState: {
         load: async (spaceId: string, folder: string) => {
@@ -302,7 +457,7 @@ function withFallback<T extends object>(target: T, path: string): T {
                     ? withFallback(value, `${path}.${prop}`)
                     : value
             }
-            if (prop === 'then' || prop === 'toJSON') return undefined
+            if (prop === 'then' || prop === 'toJSON' || prop === 'ipcRenderer') return undefined
             return fallback(`${path}.${prop}`)
         }
     })

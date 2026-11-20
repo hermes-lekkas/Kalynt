@@ -34,7 +34,11 @@ export function registerRuntimeHandlers(ipcMain: Electron.IpcMain, runtimeManage
 
     ipcMain.handle('runtime:install', async (_event, options: { runtimeId: string; archivePath: string }) => {
         try {
+            if (!options || typeof options.runtimeId !== 'string' || typeof options.archivePath !== 'string') {
+                return { success: false, error: 'A runtime id and archive path are required' }
+            }
             const result = await runtimeManager.installRuntime(options.runtimeId, options.archivePath)
+            if (result.success) clearBinaryCache()
             return result
         } catch (error) {
             return { success: false, error: String(error) }

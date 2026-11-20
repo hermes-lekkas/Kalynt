@@ -4,10 +4,20 @@
  * Preload bridge: exposes window.electronAPI to the renderer.
  */
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
+import { subscribe } from './preload/subscribe'
 import { workspaceApi } from './preload/workspaceApi'
 import { toolsApi } from './preload/toolsApi'
 import { platformApi } from './preload/platformApi'
 import { agentApi } from './preload/agentApi'
+import type { WindowControlsAPI } from './preload/types'
+
+const windowControlsApi: WindowControlsAPI = {
+    minimize: () => ipcRenderer.invoke('minimize-window'),
+    maximize: () => ipcRenderer.invoke('maximize-window'),
+    close: () => ipcRenderer.invoke('close-window'),
+    isMaximized: () => ipcRenderer.invoke('is-window-maximized'),
+    onMaximizedChange: (callback: (maximized: boolean) => void) => subscribe('window:maximized-changed', callback)
+}
 
 contextBridge.exposeInMainWorld('electronAPI', {
     // Platform info
@@ -98,9 +108,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // ==========================================
     // Window Controls
     // ==========================================
-    minimizeWindow: () => ipcRenderer.invoke('minimize-window'),
-    maximizeWindow: () => ipcRenderer.invoke('maximize-window'),
-    closeWindow: () => ipcRenderer.invoke('close-window'),
+    minimizeWindow: windowControlsApi.minimize,
+    maximizeWindow: windowControlsApi.maximize,
+    closeWindow: windowControlsApi.close,
+    isMaximized: windowControlsApi.isMaximized,
+    onMaximizedChange: windowControlsApi.onMaximizedChange,
+    window: windowControlsApi,
 
     // ==========================================
     // Emergency Controls

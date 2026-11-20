@@ -210,6 +210,7 @@ export const workspaceApi = {
     code: {
         execute: (options: any) => ipcRenderer.invoke('code:execute', options),
         kill: (id: string) => ipcRenderer.invoke('code:kill', id),
+        writeInput: (id: string, data: string) => ipcRenderer.invoke('code:write-input', id, data),
         runCommand: (cwd: string, command: string, id?: string) => ipcRenderer.invoke('code:runCommand', cwd, command, id),
         onOutput: (callback: (data: any) => void) => {
             return subscribe('code:output', callback)
@@ -221,6 +222,7 @@ export const workspaceApi = {
             ipcRenderer.removeAllListeners('code:output')
             ipcRenderer.removeAllListeners('code:exit')
         },
+        clearBinaryCache: () => ipcRenderer.invoke('code:clearBinaryCache'),
         clearCache: () => ipcRenderer.invoke('code:clearCache')
     },
 
@@ -260,15 +262,23 @@ export const workspaceApi = {
         diff: (options: any) => ipcRenderer.invoke('git:diff', options),
         add: (options: any) => ipcRenderer.invoke('git:add', options),
         commit: (options: any) => ipcRenderer.invoke('git:commit', options),
+        amend: (options: { repoPath: string; message?: string }) => ipcRenderer.invoke('git:amend', options),
         branch: (repoPath: string) => ipcRenderer.invoke('git:branch', repoPath),
         checkout: (options: any) => ipcRenderer.invoke('git:checkout', options),
         reset: (options: any) => ipcRenderer.invoke('git:reset', options),
         push: (repoPath: string) => ipcRenderer.invoke('git:push', repoPath),
+        publish: (options: string | { repoPath: string; remote?: string; branch?: string }) => ipcRenderer.invoke('git:publish', options),
         pull: (repoPath: string) => ipcRenderer.invoke('git:pull', repoPath),
         init: (repoPath: string) => ipcRenderer.invoke('git:init', repoPath),
         discard: (options: any) => ipcRenderer.invoke('git:discard', options),
         createBranch: (options: any) => ipcRenderer.invoke('git:createBranch', options),
         fetch: (repoPath: string) => ipcRenderer.invoke('git:fetch', repoPath),
-        remote: (repoPath: string) => ipcRenderer.invoke('git:remote', repoPath)
+        remote: (repoPath: string) => ipcRenderer.invoke('git:remote', repoPath),
+        clone: (options: { url: string; targetPath: string }) => ipcRenderer.invoke('git:clone', options),
+        stash: (options: string | { repoPath: string; message?: string }) => ipcRenderer.invoke('git:stash', options),
+        stashPop: (repoPath: string) => ipcRenderer.invoke('git:stashPop', repoPath),
+        stashList: (repoPath: string) => ipcRenderer.invoke('git:stashList', repoPath),
+        commitFiles: (options: { repoPath: string; hash: string }) => ipcRenderer.invoke('git:commitFiles', options),
+        commitDiff: (options: { repoPath: string; hash: string; file?: string }) => ipcRenderer.invoke('git:commitDiff', options)
     }
 }

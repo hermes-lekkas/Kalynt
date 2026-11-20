@@ -6,19 +6,24 @@ import { logger } from '../utils/logger'
 
 /**
  * usePerformanceAcceleration
- * 
+ *
  * Hook to handle performance acceleration events from the main process.
  */
 export function usePerformanceAcceleration() {
     useEffect(() => {
-        if (!window.electronAPI?.on) return
+        // Clear any legacy persisted Monaco override so user editor preferences
+        // are never permanently clobbered across restarts.
+        try {
+            localStorage.removeItem('kalynt-monaco-optimization')
+        } catch { /* storage unavailable */ }
+
+        const perfApi = window.electronAPI?.performance
+        const fallbackOn = window.electronAPI?.on
+        if (!perfApi && !fallbackOn) return
 
         // Handle Garbage Collection Request
-        const removeGcListener = window.electronAPI.on('performance:request-gc', () => {
+        const onGc = () => {
             logger.general.info('[Performance] GC requested by main process')
-            // In a browser/electron environment, we can't force GC directly 
-            // without flags, but we can clear caches or trigger minor cleanup.
-            // If --expose-gc is used, we could call window.gc()
             if (typeof (window as any).gc === 'function') {
                 try {
                     (window as any).gc()
@@ -26,65 +31,97 @@ export function usePerformanceAcceleration() {
                     console.error('GC failed', e)
                 }
             }
-        })
+        }
+        const removeGcListener = perfApi?.onRequestGc
+            ? perfApi.onRequestGc(onGc)
+            : fallbackOn!('performance:request-gc', onGc)
 
         // Handle Suspend Background Tasks
-        const removeSuspendListener = window.electronAPI.on('performance:suspend-background-tasks', () => {
+        const onSuspend = () => {
             logger.general.warn('[Performance] Suspending background tasks due to memory pressure')
-            // Dispatch a global event for components to react
             window.dispatchEvent(new CustomEvent('kalynt-suspend-background'))
-        })
+        }
+        const removeSuspendListener = perfApi?.onSuspendBackgroundTasks
+            ? perfApi.onSuspendBackgroundTasks(onSuspend)
+            : fallbackOn!('performance:suspend-background-tasks', onSuspend)
 
-        // Handle Monaco Optimization
-        const removeMonacoListener = window.electronAPI.on('performance:optimize-monaco', (options: any) => {
+        // Handle Monaco Optimization (session-only; never persisted to localStorage)
+        const onOptimize = (options: Record<string, unknown>) => {
             logger.general.info('[Performance] Applying Monaco optimizations', options)
-            // Store these options globally so Editor component can pick them up
-            localStorage.setItem('kalynt-monaco-optimization', JSON.stringify(options))
             window.dispatchEvent(new CustomEvent('kalynt-monaco-optimize', { detail: options }))
-        })
+        }
+        const removeMonacoListener = perfApi?.onOptimizeMonaco
+            ? perfApi.onOptimizeMonaco(onOptimize)
+            : fallbackOn!('performance:optimize-monaco', onOptimize)
 
         // Handle Worker Disposal
-        const removeWorkerListener = window.electronAPI.on('performance:dispose-workers', () => {
+        const onDisposeWorkers = () => {
             logger.general.info('[Performance] Disposing idle workers and hibernating services')
             window.dispatchEvent(new CustomEvent('kalynt-dispose-workers'))
-            // Trigger hibernation for heavy services via orchestrator
             import('../services/ServiceOrchestrator').then(({ serviceOrchestrator }) => {
                 serviceOrchestrator.hibernateAll()
-            })
-        })
+            }).catch(() => undefined)
+        }
+        const removeWorkerListener = perfApi?.onDisposeWorkers
+            ? perfApi.onDisposeWorkers(onDisposeWorkers)
+            : fallbackOn!('performance:dispose-workers', onDisposeWorkers)
 
         // RAM Optimization: Proactive idle-time GC loop
-        // Runs renderer GC via requestIdleCallback every 10s when the browser is idle
+        // Runs renderer GC via requestIdleCallback every 10s when the browser is idle,
+        // cancelling both the idle callback and the reschedule timer on unmount.
+        let disposed = false
         let idleGcHandle: number | null = null
+        let idleTimerHandle: ReturnType<typeof setTimeout> | null = null
+
         const scheduleIdleGc = () => {
-            idleGcHandle = requestIdleCallback(() => {
+            if (disposed) return
+            const runGc = () => {
+                idleGcHandle = null
+                if (disposed) return
                 if (typeof (window as any).gc === 'function') {
                     try { (window as any).gc() } catch { /* ignore */ }
                 }
-                // Re-schedule after 10 seconds
-                setTimeout(scheduleIdleGc, 10_000)
-            }, { timeout: 5_000 })
+                if (!disposed) {
+                    idleTimerHandle = setTimeout(() => {
+                        idleTimerHandle = null
+                        scheduleIdleGc()
+                    }, 10_000)
+                }
+            }
+            if (typeof requestIdleCallback === 'function') {
+                idleGcHandle = requestIdleCallback(runGc, { timeout: 5_000 })
+            } else {
+                idleTimerHandle = setTimeout(runGc, 10_000)
+            }
         }
         scheduleIdleGc()
 
         return () => {
+            disposed = true
             removeGcListener()
             removeSuspendListener()
             removeMonacoListener()
             removeWorkerListener()
-            if (idleGcHandle !== null) cancelIdleCallback(idleGcHandle)
+            if (idleGcHandle !== null && typeof cancelIdleCallback === 'function') {
+                cancelIdleCallback(idleGcHandle)
+                idleGcHandle = null
+            }
+            if (idleTimerHandle !== null) {
+                clearTimeout(idleTimerHandle)
+                idleTimerHandle = null
+            }
         }
     }, [])
 
     const setPerformanceMode = async (mode: 'balanced' | 'high_performance' | 'power_saver') => {
-        if (window.electronAPI?.ipcRenderer?.invoke) {
-            return await window.electronAPI.ipcRenderer.invoke('performance:set-mode', mode)
+        if (window.electronAPI?.performance?.setMode) {
+            return await window.electronAPI.performance.setMode(mode)
         }
     }
 
     const getPerformanceStatus = async () => {
-        if (window.electronAPI?.ipcRenderer?.invoke) {
-            return await window.electronAPI.ipcRenderer.invoke('performance:get-status')
+        if (window.electronAPI?.performance?.getStatus) {
+            return await window.electronAPI.performance.getStatus()
         }
     }
 

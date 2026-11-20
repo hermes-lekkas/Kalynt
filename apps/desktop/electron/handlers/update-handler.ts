@@ -35,8 +35,22 @@ interface UpdateProgress {
 let updateCheckInProgress = false
 let downloadInProgress = false
 let installing = false
+let startupCheckTimer: NodeJS.Timeout | null = null
+let periodicCheckTimer: NodeJS.Timeout | null = null
 /** Kept so every later check uses it; configuring without a token would drop it. */
 let configuredToken: string | undefined
+
+/** Clears scheduled auto-update timers; called on app shutdown. */
+export function disposeAutoUpdater(): void {
+    if (startupCheckTimer) {
+        clearTimeout(startupCheckTimer)
+        startupCheckTimer = null
+    }
+    if (periodicCheckTimer) {
+        clearInterval(periodicCheckTimer)
+        periodicCheckTimer = null
+    }
+}
 
 /** True once "Install and restart" was chosen; quitting must not be delayed then. */
 export const isInstallingUpdate = () => installing
@@ -170,22 +184,21 @@ export function registerUpdateHandlers(
      * Check for updates manually
      */
     ipcMain.handle('update:check', async () => {
-        try {
-            if (updateCheckInProgress) {
-                return {
-                    success: false,
-                    error: 'Update check already in progress'
-                }
+        if (updateCheckInProgress) {
+            return {
+                success: false,
+                error: 'Update check already in progress'
             }
+        }
 
-            updateCheckInProgress = true
+        updateCheckInProgress = true
+        try {
             console.log('[Update] Checking for updates...')
-            
+
             // Re-configure right before check to ensure settings are fresh
             configureAutoUpdater()
 
             const result = await autoUpdater.checkForUpdates()
-            updateCheckInProgress = false
 
             if (!result) {
                 return {
@@ -208,7 +221,6 @@ export function registerUpdateHandlers(
                 currentVersion: autoUpdater.currentVersion.version
             }
         } catch (error) {
-            updateCheckInProgress = false
             const errorMessage = error instanceof Error ? error.message : String(error)
             console.error('[Update] Check error:', errorMessage)
             console.error('[Update] Current state:', {
@@ -232,6 +244,8 @@ export function registerUpdateHandlers(
                 error: userFriendlyError,
                 currentVersion: autoUpdater.currentVersion?.version || 'unknown'
             }
+        } finally {
+            updateCheckInProgress = false
         }
     })
 
@@ -347,30 +361,34 @@ function setupAutoUpdaterEvents(getMainWindow: () => BrowserWindow | null) {
  */
 export async function initializeAutoUpdater(_mainWindow: BrowserWindow) {
     try {
-        setTimeout(async () => {
+        disposeAutoUpdater()
+
+        const runScheduledCheck = async (label: string) => {
+            if (updateCheckInProgress || downloadInProgress || installing) return
+            updateCheckInProgress = true
             try {
-                console.log('[Update] Performing automatic update check...')
-                // Re-configure before automatic check
+                console.log(`[Update] Performing ${label} update check...`)
                 configureAutoUpdater()
                 await autoUpdater.checkForUpdates()
             } catch (error) {
-                console.error('[Update] Automatic check failed:', error)
+                console.error(`[Update] ${label} check failed:`, error)
+            } finally {
+                updateCheckInProgress = false
             }
+        }
+
+        startupCheckTimer = setTimeout(() => {
+            startupCheckTimer = null
+            void runScheduledCheck('automatic')
         }, 5000)
+        startupCheckTimer.unref?.()
 
-        const checkInterval = Number.parseInt(process.env.UPDATE_CHECK_INTERVAL_MS || '3600000', 10)
-        setInterval(async () => {
-            try {
-                if (!updateCheckInProgress && !downloadInProgress) {
-                    console.log('[Update] Performing periodic update check...')
-                    configureAutoUpdater()
-                    await autoUpdater.checkForUpdates()
-                }
-            } catch (error) {
-                console.error('[Update] Periodic check failed:', error)
-            }
+        const parsedInterval = Number.parseInt(process.env.UPDATE_CHECK_INTERVAL_MS || '3600000', 10)
+        const checkInterval = Number.isFinite(parsedInterval) && parsedInterval >= 60_000 ? parsedInterval : 3600000
+        periodicCheckTimer = setInterval(() => {
+            void runScheduledCheck('periodic')
         }, checkInterval)
-
+        periodicCheckTimer.unref?.()
     } catch (error) {
         console.error('[Update] Initialization error:', error)
     }

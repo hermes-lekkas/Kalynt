@@ -4,6 +4,7 @@
  */
 
 import { ExtensionMetadata, ExtensionContributes, ExtensionGallery, ExtensionQueryOptions } from '../../types/extensions'
+import { useNotificationStore } from '../../stores/notificationStore'
 import { marketplaceService } from './marketplaceService'
 
 // VS Code API types for extensions
@@ -251,30 +252,29 @@ class ExtensionService {
   }
 
   private setupIPCListeners(): void {
-    // Listen for extension host messages from main process
-    if (window.electronAPI?.ipcRenderer) {
-      window.electronAPI.ipcRenderer.on('extension:activated', (_, data: { id: string }) => {
-        this.activeExtensions.add(data.id)
-        this.activatedListeners.forEach(listener => listener(data.id))
-      })
+    // Listen for extension host messages from main process via typed preload APIs
+    const ext = window.electronAPI?.extensions
+    if (!ext) return
 
-      window.electronAPI.ipcRenderer.on('extension:deactivated', (_, data: { id: string }) => {
-        this.activeExtensions.delete(data.id)
-        this.deactivatedListeners.forEach(listener => listener(data.id))
-      })
+    ext.onActivated?.((data: { id: string }) => {
+      this.activeExtensions.add(data.id)
+      this.activatedListeners.forEach(listener => listener(data.id))
+    })
 
-      window.electronAPI.ipcRenderer.on('extension:show-message', (_, data: { type: string; message: string }) => {
-        this.showNotification(data.type as 'info' | 'warning' | 'error', data.message)
-      })
-    }
+    ext.onDeactivated?.((data: { id: string }) => {
+      this.activeExtensions.delete(data.id)
+      this.deactivatedListeners.forEach(listener => listener(data.id))
+    })
+
+    ext.onShowMessage?.((data: { type: string; message: string }) => {
+      const type = data.type === 'warning' || data.type === 'error' ? data.type : 'info'
+      this.showNotification(type, data.message)
+    })
   }
 
   private showNotification(type: 'info' | 'warning' | 'error', message: string): void {
-    // Use the app's notification system
-    const event = new CustomEvent('extension-notification', {
-      detail: { type, message }
-    })
-    window.dispatchEvent(event)
+    // Route extension messages to the app's notification system
+    useNotificationStore.getState().addNotification(message, type)
   }
 
   // Public API
@@ -292,7 +292,7 @@ class ExtensionService {
    */
   async startExtensionHost(): Promise<void> {
     try {
-      await window.electronAPI?.ipcRenderer?.invoke('extensions:start-host')
+      await window.electronAPI?.extensions?.startHost()
     } catch (error) {
       console.error('[ExtensionService] Failed to start extension host:', error)
       throw error
@@ -304,7 +304,7 @@ class ExtensionService {
    */
   async stopExtensionHost(): Promise<void> {
     try {
-      await window.electronAPI?.ipcRenderer?.invoke('extensions:stop-host')
+      await window.electronAPI?.extensions?.stopHost()
       this.activeExtensions.clear()
     } catch (error) {
       console.error('[ExtensionService] Failed to stop extension host:', error)
@@ -317,8 +317,9 @@ class ExtensionService {
    */
   async scanExtensions(): Promise<ExtensionMetadata[]> {
     try {
-      const extensions = await window.electronAPI?.ipcRenderer?.invoke('extensions:scan') as ExtensionMetadata[]
-      
+      const result = await window.electronAPI?.extensions?.scan()
+      const extensions = (Array.isArray(result) ? result : []) as ExtensionMetadata[]
+
       this.extensions.clear()
       extensions.forEach(ext => {
         this.extensions.set(ext.id, ext)
@@ -344,7 +345,8 @@ class ExtensionService {
    */
   async getActiveExtensions(): Promise<ExtensionMetadata[]> {
     try {
-      return await window.electronAPI?.ipcRenderer?.invoke('extensions:active') as ExtensionMetadata[]
+      const result = await window.electronAPI?.extensions?.active()
+      return (Array.isArray(result) ? result : []) as ExtensionMetadata[]
     } catch (error) {
       console.error('[ExtensionService] Failed to get active extensions:', error)
       return []
@@ -372,7 +374,7 @@ class ExtensionService {
     }
 
     try {
-      const result = await window.electronAPI?.ipcRenderer?.invoke('extensions:activate', id)
+      const result = await window.electronAPI?.extensions?.activate(id)
       this.activeExtensions.add(id)
       return result
     } catch (error) {
@@ -391,7 +393,7 @@ class ExtensionService {
     }
 
     try {
-      await window.electronAPI?.ipcRenderer?.invoke('extensions:deactivate', id)
+      await window.electronAPI?.extensions?.deactivate(id)
       this.activeExtensions.delete(id)
     } catch (error) {
       console.error(`[ExtensionService] Failed to deactivate extension ${id}:`, error)
@@ -404,7 +406,7 @@ class ExtensionService {
    */
   async installFromVSIX(vsixPath: string): Promise<ExtensionMetadata> {
     try {
-      const extension = await window.electronAPI?.ipcRenderer?.invoke('extensions:install', vsixPath) as ExtensionMetadata
+      const extension = await window.electronAPI?.extensions?.install(vsixPath) as ExtensionMetadata
       this.extensions.set(extension.id, extension)
       this.installedListeners.forEach(listener => listener(this.getExtensions()))
       return extension
@@ -473,7 +475,7 @@ class ExtensionService {
     }
 
     try {
-      await window.electronAPI?.ipcRenderer?.invoke('extensions:uninstall', id)
+      await window.electronAPI?.extensions?.uninstall(id)
       this.extensions.delete(id)
       this.installedListeners.forEach(listener => listener(this.getExtensions()))
     } catch (error) {
@@ -487,7 +489,7 @@ class ExtensionService {
    */
   async getContributions(): Promise<ExtensionContributes> {
     try {
-      return await window.electronAPI?.ipcRenderer?.invoke('extensions:contributions') as ExtensionContributes
+      return (await window.electronAPI?.extensions?.contributions() ?? {}) as ExtensionContributes
     } catch (error) {
       console.error('[ExtensionService] Failed to get contributions:', error)
       return {}

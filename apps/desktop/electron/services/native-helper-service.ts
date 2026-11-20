@@ -52,24 +52,44 @@ class NativeHelperService extends EventEmitter {
         }
 
         try {
-            this.process = spawn(helperPath)
-            
-            this.process.stdout?.on('data', (data) => {
+            const proc = spawn(helperPath)
+            this.process = proc
+
+            proc.on('error', (error) => {
+                console.error('[NativeHelper] Process error:', error)
+                if (this.process === proc) this.process = null
+                this.rejectAllPending(new Error(`Native helper error: ${error.message}`))
+            })
+
+            proc.stdin?.on('error', (error) => {
+                console.error('[NativeHelper] Stdin error:', error)
+            })
+
+            proc.stdout?.on('data', (data) => {
                 this.buffer += data.toString()
                 this.processBuffer()
             })
 
-            this.process.stderr?.on('data', (data) => {
+            proc.stderr?.on('data', (data) => {
                 console.error('[NativeHelper] Error:', data.toString())
             })
 
-            this.process.on('close', (code) => {
+            proc.on('close', (code) => {
                 console.log(`[NativeHelper] Closed with code ${code}`)
-                this.process = null
+                if (this.process === proc) this.process = null
+                this.buffer = ''
+                this.rejectAllPending(new Error(`Native helper exited with code ${code ?? 'unknown'}`))
             })
         } catch (error) {
             console.error('[NativeHelper] Failed to spawn:', error)
         }
+    }
+
+    private rejectAllPending(error: Error) {
+        for (const [, pending] of this.pendingRequests) {
+            pending.reject(error)
+        }
+        this.pendingRequests.clear()
     }
 
     private processBuffer() {
@@ -103,7 +123,7 @@ class NativeHelperService extends EventEmitter {
     }
 
     async request(method: string, params?: any): Promise<any> {
-        if (!this.process) {
+        if (!this.process || !this.process.stdin?.writable) {
             throw new Error('Native helper not running')
         }
 
@@ -117,7 +137,20 @@ class NativeHelperService extends EventEmitter {
 
         return new Promise((resolve, reject) => {
             this.pendingRequests.set(id, { resolve, reject })
-            this.process?.stdin?.write(JSON.stringify(req) + '\n')
+            try {
+                this.process?.stdin?.write(JSON.stringify(req) + '\n', (err) => {
+                    if (err) {
+                        const pending = this.pendingRequests.get(id)
+                        if (pending) {
+                            this.pendingRequests.delete(id)
+                            pending.reject(err)
+                        }
+                    }
+                })
+            } catch (err) {
+                this.pendingRequests.delete(id)
+                reject(err instanceof Error ? err : new Error(String(err)))
+            }
         })
     }
 
@@ -134,8 +167,11 @@ class NativeHelperService extends EventEmitter {
     }
 
     dispose() {
+        this.rejectAllPending(new Error('Native helper disposed'))
+        this.buffer = ''
+        this.mainWindow = null
         if (this.process) {
-            this.process.kill()
+            try { this.process.kill() } catch { /* already gone */ }
             this.process = null
         }
     }

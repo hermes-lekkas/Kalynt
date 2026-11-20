@@ -30,13 +30,15 @@ export default function PerformanceSettings() {
     const [running, setRunning] = useState(false)
     const [progress, setProgress] = useState(0)
     const [result, setResult] = useState<DiagnosticResult | null>(null)
-    const invoke = window.electronAPI?.ipcRenderer?.invoke
+    const perfApi = window.electronAPI?.performance
+    const isDesktop = window.electronAPI?.platform !== 'browser' && Boolean(perfApi)
 
     useEffect(() => {
+        if (!isDesktop || !perfApi) return
         let active = true
         const poll = async () => {
             try {
-                const status = await invoke?.('performance:get-status')
+                const status = await perfApi.getStatus()
                 if (!active || !status?.memory) return
                 setRss(status.memory.rss)
                 if (status.memory.mode) setMode(status.memory.mode)
@@ -46,11 +48,11 @@ export default function PerformanceSettings() {
         poll()
         const timer = setInterval(poll, 3000)
         return () => { active = false; clearInterval(timer) }
-    }, [invoke])
+    }, [isDesktop, perfApi])
 
     const changeMode = async (next: Mode) => {
         setMode(next)
-        await invoke?.('performance:set-mode', next)
+        await perfApi?.setMode(next)
     }
 
     const diagnose = async () => {
@@ -63,7 +65,7 @@ export default function PerformanceSettings() {
             setProgress(0.7)
             const disk = await performanceDiagnosticService.measureDiskSpeed()
             setProgress(0.9)
-            const bootTime = await invoke?.('performance:get-boot-time')
+            const bootTime = await perfApi?.getBootTime()
             setResult({
                 bootTime: bootTime || 0,
                 ipcLatency: Math.round(ipc * 100) / 100,
@@ -87,7 +89,7 @@ export default function PerformanceSettings() {
                     description="Power saver frees memory more aggressively; high performance keeps more cached."
                     htmlFor="perf-mode"
                     control={
-                        <Select id="perf-mode" size="sm" value={mode ?? 'balanced'} onChange={e => changeMode(e.target.value as Mode)} disabled={!invoke}>
+                        <Select id="perf-mode" size="sm" value={mode ?? 'balanced'} onChange={e => changeMode(e.target.value as Mode)} disabled={!isDesktop}>
                             <option value="balanced">Balanced</option>
                             <option value="high_performance">High performance</option>
                             <option value="power_saver">Power saver</option>
