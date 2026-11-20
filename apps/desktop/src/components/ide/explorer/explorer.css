@@ -10,7 +10,7 @@
 }
 
 .explorer__filter {
-    padding: 0 var(--sp-4) var(--sp-4);
+    padding: 0 var(--sp-4) var(--sp-3);
 }
 
 .explorer__loading {
@@ -55,9 +55,19 @@
     color: var(--text-3);
 }
 
+.tree-row.is-cut {
+    opacity: 0.48;
+}
+
 .tree-row.is-drop-target {
     background: var(--agent-soft);
     box-shadow: inset 0 0 0 1px var(--agent-line);
+}
+
+.tree-row--editing {
+    background: var(--hover);
+    overflow: visible;
+    z-index: 2;
 }
 
 .tree-row__guide {
@@ -87,16 +97,127 @@
 
 .tree-row__icon {
     color: var(--text-3);
+    flex-shrink: 0;
 }
 
 .tree-row.is-selected .tree-row__icon {
     color: var(--text-2);
 }
 
+/* Subtle, restrained syntax-keyed file icon hues */
+.file-icon--folder { color: #9a95ad; }
+.file-icon--ts { color: #5f9be6; }
+.file-icon--tsx { color: #56b6c2; }
+.file-icon--js { color: #d8ae4e; }
+.file-icon--css { color: #9f84e8; }
+.file-icon--html { color: #dc7e63; }
+.file-icon--json { color: #67bd8e; }
+.file-icon--md { color: #7ca3e6; }
+.file-icon--py { color: #6ca8d4; }
+.file-icon--rust { color: #cf825b; }
+.file-icon--go { color: #5bb7c9; }
+.file-icon--shell { color: #67bd8e; }
+.file-icon--image { color: #c77eb5; }
+.file-icon--data { color: #c79a5b; }
+.file-icon--config { color: var(--text-3); }
+
+:root[data-theme='light'] .file-icon--folder { color: #6e6a82; }
+:root[data-theme='light'] .file-icon--ts { color: #2b6cb8; }
+:root[data-theme='light'] .file-icon--tsx { color: #1f7f8c; }
+:root[data-theme='light'] .file-icon--js { color: #a37408; }
+:root[data-theme='light'] .file-icon--css { color: #6948c7; }
+:root[data-theme='light'] .file-icon--html { color: #b84b2c; }
+:root[data-theme='light'] .file-icon--json { color: #238052; }
+:root[data-theme='light'] .file-icon--md { color: #3664b5; }
+:root[data-theme='light'] .file-icon--py { color: #2d72a6; }
+:root[data-theme='light'] .file-icon--rust { color: #a85026; }
+:root[data-theme='light'] .file-icon--go { color: #1b7f91; }
+:root[data-theme='light'] .file-icon--shell { color: #238052; }
+:root[data-theme='light'] .file-icon--image { color: #994384; }
+:root[data-theme='light'] .file-icon--data { color: #9c6a1f; }
+
 .tree-row__name {
+    flex: 1;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+/* Inline create / rename input */
+.tree-row__inline-wrap {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+}
+
+.tree-row__inline-input {
+    width: 100%;
+    height: 20px;
+    padding: 0 var(--sp-2);
+    border-radius: var(--r-1);
+    border: 1px solid var(--focus);
+    background: var(--bg);
+    color: var(--text);
+    font-size: var(--fs-sm);
+    outline: none;
+}
+
+.tree-row__inline-input.is-invalid {
+    border-color: var(--danger);
+}
+
+.tree-row__inline-error {
+    position: absolute;
+    left: 0;
+    top: calc(100% + 2px);
+    z-index: 20;
+    max-width: 240px;
+    padding: var(--sp-1) var(--sp-3);
+    border-radius: var(--r-1);
+    background: var(--danger);
+    color: #ffffff;
+    font-size: var(--fs-xs);
+    white-space: normal;
+    box-shadow: var(--shadow-pop);
+}
+
+/* Git status decorations */
+.tree-row--git-modified .tree-row__name,
+.tree-row--git-modified .match-row__name { color: var(--info); }
+.tree-row--git-added .tree-row__name,
+.tree-row--git-untracked .tree-row__name,
+.tree-row--git-added .match-row__name,
+.tree-row--git-untracked .match-row__name { color: var(--success); }
+.tree-row--git-deleted .tree-row__name,
+.tree-row--git-conflicted .tree-row__name { color: var(--danger); }
+.tree-row--git-renamed .tree-row__name { color: var(--warning); }
+
+.tree-row__git {
+    flex-shrink: 0;
+    width: 14px;
+    text-align: center;
+    font-family: var(--font-code);
+    font-size: 10px;
+    font-weight: var(--fw-semibold);
+}
+
+.tree-row__git--modified { color: var(--info); }
+.tree-row__git--added,
+.tree-row__git--untracked { color: var(--success); }
+.tree-row__git--deleted,
+.tree-row__git--conflicted { color: var(--danger); }
+.tree-row__git--renamed { color: var(--warning); }
+
+.tree-row__git-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    margin-right: 4px;
+    background: var(--info);
+    opacity: 0.8;
 }
 
 /* Filter results */
@@ -107,6 +228,7 @@
     overflow: auto;
     flex: 1;
     min-height: 0;
+    outline: none;
 }
 
 .match-row {
@@ -115,7 +237,7 @@
     gap: var(--sp-3);
     width: 100%;
     height: 26px;
-    padding: 0 var(--sp-5);
+    padding: 0 var(--sp-4);
     text-align: left;
     color: var(--text-2);
 }
@@ -126,11 +248,21 @@
     color: var(--text);
 }
 
+.match-row.is-focused {
+    background: var(--active);
+    color: var(--text);
+}
+
+.match-row--editing {
+    background: var(--hover);
+}
+
 .match-row__name {
     flex-shrink: 0;
 }
 
 .match-row__dir {
+    flex: 1;
     min-width: 0;
     font-size: var(--fs-xs);
     color: var(--text-3);

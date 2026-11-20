@@ -10,10 +10,14 @@ for (const file of ['index.html', 'website/styles.css', 'website/main.js']) {
   await mkdir(path.dirname(destination), { recursive: true });
   await cp(path.join(root, file), destination);
 }
-for (const asset of ['Kalynt.png', ...['Editor', 'Settings', 'Diff', 'Team_and_Collaboration'].map(n => `Kalynt_showcase/${n}.png`)]) {
-  const target = path.join(out, 'apps/desktop/public', asset);
+const logoTarget = path.join(out, 'apps/desktop/public/Kalynt.png');
+await mkdir(path.dirname(logoTarget), { recursive: true });
+await cp(path.join(root, 'apps/desktop/public/Kalynt.png'), logoTarget);
+for (const name of ['Editor', 'Settings', 'Diff', 'Team_and_Collaboration']) {
+  const rel = `website/assets/showcase/${name}.png`;
+  const target = path.join(out, rel);
   await mkdir(path.dirname(target), { recursive: true });
-  await cp(path.join(root, 'apps/desktop/public', asset), target);
+  await cp(path.join(root, rel), target);
 }
 await cp(path.join(root, 'website/fonts'), path.join(out, 'website/fonts'), { recursive: true });
 await writeFile(path.join(out, '.nojekyll'), '');

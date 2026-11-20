@@ -5,6 +5,7 @@
  * needs change events (explorer, source control, file index).
  */
 import { useEffect, useRef } from 'react'
+import { samePath } from '../languages'
 
 export interface FsChange {
     event: 'add' | 'addDir' | 'change' | 'unlink' | 'unlinkDir' | string
@@ -22,11 +23,12 @@ interface Watch {
 }
 
 let active: Watch | null = null
+let watchSeq = 0
 
 function start(folder: string): Watch {
-    if (active && active.folder === folder) return active
+    if (active && samePath(active.folder, folder)) return active
     if (active) stop(active)
-    const watch: Watch = { folder, id: `kalynt-watch-${Date.now()}`, refs: 0, listeners: new Set() }
+    const watch: Watch = { folder, id: `kalynt-watch-${++watchSeq}-${Date.now()}`, refs: 0, listeners: new Set() }
     const api = window.electronAPI
     api?.fs?.watchDir?.({ id: watch.id, dirPath: folder })
     const off = api?.fs?.onChange?.((data: { id: string; event: string; path: string }) => {

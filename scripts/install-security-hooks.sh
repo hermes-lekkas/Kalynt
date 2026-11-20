@@ -9,21 +9,31 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 HOOK_SOURCE="$REPO_ROOT/.github/hooks/pre-commit"
-HOOK_DEST="$REPO_ROOT/.git/hooks/pre-commit"
 
 echo "🔒 Kalynt Security Hook Installer"
 echo "================================="
 echo ""
 
-# Check if we're in a git repository
-if [ ! -d "$REPO_ROOT/.git" ]; then
+# Check if we're in a git repository (supports standard clones and git worktrees)
+if ! git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
     echo "❌ Error: Not a git repository!"
     exit 1
+fi
+
+HOOK_DEST="$(git -C "$REPO_ROOT" rev-parse --git-path hooks/pre-commit)"
+if [[ "$HOOK_DEST" != /* ]]; then
+    HOOK_DEST="$REPO_ROOT/$HOOK_DEST"
 fi
 
 # Check if hook source exists
 if [ ! -f "$HOOK_SOURCE" ]; then
     echo "❌ Error: Hook source not found at $HOOK_SOURCE"
+    exit 1
+fi
+
+# Verify hook syntax before installing
+if ! bash -n "$HOOK_SOURCE"; then
+    echo "❌ Error: Hook source has invalid shell syntax!"
     exit 1
 fi
 
@@ -39,31 +49,46 @@ if [ -f "$HOOK_DEST" ]; then
 fi
 
 # Copy and make executable
+mkdir -p "$(dirname "$HOOK_DEST")"
 cp "$HOOK_SOURCE" "$HOOK_DEST"
 chmod +x "$HOOK_DEST"
 
 echo "✅ Pre-commit hook installed successfully!"
 echo ""
 
-# Run a quick test
-echo "🧪 Running test..."
-cd "$REPO_ROOT"
+# Run a real self-test in an isolated temporary repository so we never mutate the working tree
+echo "🧪 Running self-test..."
+TEST_REPO="$(mktemp -d)"
+cleanup() {
+    rm -rf "$TEST_REPO"
+}
+trap cleanup EXIT
 
-# Create a test file with fake secret
-TEST_FILE="/tmp/kalynt_hook_test_$$.txt"
-echo "api_key=test-secret-12345678901234567890123456789012" > "$TEST_FILE"
-git add "$TEST_FILE" 2>/dev/null || true
+git -C "$TEST_REPO" init -q
+git -C "$TEST_REPO" config user.email "hook-check@example.invalid"
+git -C "$TEST_REPO" config user.name "Hook Check"
+mkdir -p "$TEST_REPO/.git/hooks"
+cp "$HOOK_DEST" "$TEST_REPO/.git/hooks/pre-commit"
+chmod +x "$TEST_REPO/.git/hooks/pre-commit"
 
-# Try to commit (should fail)
-if git commit -m "Test secret detection" --no-verify 2>/dev/null; then
-    echo "⚠️  Warning: Hook test inconclusive (commit succeeded)"
-else
-    echo "✅ Hook is working correctly (would block secrets)"
+# 1. Staged secret must be blocked (filename avoids test/spec/fixture/example/sample skip rule)
+printf 'api_key="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n' > "$TEST_REPO/credentials.env"
+git -C "$TEST_REPO" add credentials.env
+if git -C "$TEST_REPO" commit -m "Verify secret block" >/dev/null 2>&1; then
+    echo "❌ Error: Hook self-test failed — staged secret was NOT blocked!"
+    exit 1
 fi
+git -C "$TEST_REPO" rm -q --cached credentials.env
+rm -f "$TEST_REPO/credentials.env"
 
-# Cleanup
-rm -f "$TEST_FILE"
-git reset HEAD "$TEST_FILE" 2>/dev/null || true
+# 2. Clean file must be allowed
+printf 'export const ok = true\n' > "$TEST_REPO/clean.ts"
+git -C "$TEST_REPO" add clean.ts
+if ! git -C "$TEST_REPO" commit -m "Verify clean commit" >/dev/null 2>&1; then
+    echo "❌ Error: Hook self-test failed — clean commit was unexpectedly blocked!"
+    exit 1
+fi
+echo "✅ Hook is working correctly (blocks staged secrets and allows clean commits)"
 
 echo ""
 echo "📋 Next steps:"

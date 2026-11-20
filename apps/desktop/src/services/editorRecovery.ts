@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: AGPL-3.0-only */
 import type { OpenFile } from '../types/ide'
+
 export interface EditorRecoveryState {
     spaceId: string
     folder: string
@@ -7,14 +8,30 @@ export interface EditorRecoveryState {
     activePath: string | null
     files: OpenFile[]
 }
+
 const memory = new Map<string, EditorRecoveryState>()
 const timers = new Map<string, ReturnType<typeof setTimeout>>()
 const keyFor = (spaceId: string, folder: string) => JSON.stringify([spaceId, folder])
 const subscribers = new Set<(message: string) => void>()
-export const onRecoveryError = (callback: (message: string) => void) => { subscribers.add(callback); return () => { subscribers.delete(callback) } }
 
-export function captureEditorState(spaceId: string, folder: string, files: OpenFile[], activePath: string | null): EditorRecoveryState {
-    const state = { spaceId, folder, paths: files.map(f => f.path), activePath, files: files.filter(f => f.isDirty).map(f => ({ ...f })) }
+export const onRecoveryError = (callback: (message: string) => void) => {
+    subscribers.add(callback)
+    return () => { subscribers.delete(callback) }
+}
+
+export function captureEditorState(
+    spaceId: string,
+    folder: string,
+    files: OpenFile[],
+    activePath: string | null
+): EditorRecoveryState {
+    const state: EditorRecoveryState = {
+        spaceId,
+        folder,
+        paths: files.map(f => f.path),
+        activePath,
+        files: files.filter(f => f.isDirty).map(f => ({ ...f }))
+    }
     const key = keyFor(spaceId, folder)
     memory.set(key, state)
     clearTimeout(timers.get(key))
@@ -39,15 +56,24 @@ export async function readEditorState(spaceId: string, folder: string): Promise<
 
 /** Flush every workspace, including buffers belonging to a previous workspace. */
 export function flushEditorStates(): { success: boolean; error?: string } {
+    if (memory.size === 0) return { success: true }
     const api = window.electronAPI?.editorState
-    if (!api) return { success: false, error: 'Editor recovery is unavailable. Save your files before closing.' }
+    if (!api) {
+        const hasDirty = Array.from(memory.values()).some(s => s.files.length > 0)
+        return hasDirty
+            ? { success: false, error: 'Editor recovery is unavailable. Save your files before closing.' }
+            : { success: true }
+    }
     for (const state of memory.values()) {
-        clearTimeout(timers.get(keyFor(state.spaceId, state.folder)))
-        timers.delete(keyFor(state.spaceId, state.folder))
+        const key = keyFor(state.spaceId, state.folder)
+        clearTimeout(timers.get(key))
+        timers.delete(key)
         try {
             const result = api.flush(state)
             if (!result?.success) return { success: false, error: result?.error ?? 'Editor recovery could not be saved.' }
-        } catch (error) { return { success: false, error: error instanceof Error ? error.message : String(error) } }
+        } catch (error) {
+            return { success: false, error: error instanceof Error ? error.message : String(error) }
+        }
     }
     return { success: true }
 }

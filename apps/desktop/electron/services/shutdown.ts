@@ -5,7 +5,7 @@
  * sessions, downloads and package manager commands. Used by "Stop all processes"
  * and when the app quits, so nothing is left running in the background.
  */
-import * as terminalHandlers from '../handlers/terminal'
+import { disposeTerminalService, killAllTerminals } from '../handlers/terminal'
 import { cleanupHtmlPreviewFiles, stopAllCodeProcesses } from '../handlers/code-execution'
 import { stopAllBuilds } from '../handlers/build'
 import { stopAllDebugSessions } from '../handlers/debug'
@@ -42,7 +42,7 @@ export async function stopEverything(): Promise<StopReport> {
     cancelAllAiRequests()
     const downloads = abortAllModelDownloads()
     const [terminals, programs, builds, debugSessions, packageCommands, agentCommands] = await Promise.all([
-        settle(terminalHandlers.killAllTerminals()),
+        settle(killAllTerminals()),
         settle(stopAllCodeProcesses()),
         settle(stopAllBuilds()),
         settle(stopAllDebugSessions()),
@@ -61,11 +61,10 @@ export async function shutdownApp(): Promise<StopReport> {
     disposeAutoUpdater()
     performanceAcceleration.dispose()
     const report = await stopEverything()
-    const disposeTerminalService = (terminalHandlers as { disposeTerminalService?: () => void }).disposeTerminalService
     await Promise.all([
         settleVoid(unloadLocalModel()),
         settleVoid(cleanupHtmlPreviewFiles()),
-        settleVoid(disposeTerminalService?.()),
+        settleVoid(disposeTerminalService()),
         settleVoid(nativeHelperService.dispose())
     ])
     return report

@@ -363,13 +363,9 @@ export const useModelStore = create<ModelState>()(
     )
 )
 
-// Initialize listeners when the module loads (browser only)
+// Verify downloaded models on startup (browser only; IPC listeners are
+// lifecycle-managed via ref-counted setupListeners() in useAppBootstrap).
 if (typeof window !== 'undefined') {
-    useModelStore.getState().setupListeners()
-    console.log('[ModelStore] Listeners initialized')
-
-    // Verify downloaded models on startup (async, runs in background)
-    // This removes stale entries for models whose files no longer exist
     setTimeout(() => {
         useModelStore.getState().verifyDownloadedModels()
     }, 1000) // Delay to allow electronAPI to be ready

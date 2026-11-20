@@ -25,35 +25,35 @@ No Kalynt subscription or account is required. Local models use your hardware; c
 ---
 
 <div align="center">
-  <img src="apps/desktop/public/Kalynt_showcase/Editor.png" alt="The Kalynt code view: explorer, editor and agent panel" width="100%" />
+  <img src="website/assets/showcase/Editor.png" alt="The Kalynt code view: explorer, editor and agent panel" width="100%" />
 </div>
 
 <details>
   <summary><b>More screenshots</b></summary>
 
   ### Source control and diffs
-  ![Diff view](apps/desktop/public/Kalynt_showcase/Diff.png)
+  ![Diff view](website/assets/showcase/Diff.png)
 
   ### Task board
-  ![Tasks](apps/desktop/public/Kalynt_showcase/Tasks.png)
+  ![Tasks](website/assets/showcase/Tasks.png)
 
   ### History
-  ![History](apps/desktop/public/Kalynt_showcase/History.png)
+  ![History](website/assets/showcase/History.png)
 
   ### Inviting people
-  ![Team and collaboration](apps/desktop/public/Kalynt_showcase/Team_and_Collaboration.png)
+  ![Team and collaboration](website/assets/showcase/Team_and_Collaboration.png)
 
   ### Shared files
-  ![Shared files](apps/desktop/public/Kalynt_showcase/Files.png)
+  ![Shared files](website/assets/showcase/Files.png)
 
   ### Models and keys
-  ![Settings](apps/desktop/public/Kalynt_showcase/Settings.png)
+  ![Settings](website/assets/showcase/Settings.png)
 
   ### Local model memory (AIME)
-  ![AIME](apps/desktop/public/Kalynt_showcase/AIME.png)
+  ![AIME](website/assets/showcase/AIME.png)
 
   ### Language runtimes
-  ![Language runtimes](apps/desktop/public/Kalynt_showcase/Built_in_language_support.png)
+  ![Language runtimes](website/assets/showcase/Built_in_language_support.png)
 
 </details>
 

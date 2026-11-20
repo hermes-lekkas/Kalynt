@@ -14,12 +14,8 @@ import { usePerformanceAcceleration } from '../../hooks/usePerformanceAccelerati
 import { flushEditorStates, onRecoveryError } from '../../services/editorRecovery'
 import { setModelsDirectory } from '../../services/modelDownloadService'
 import { p2pService } from '../../services/p2pService'
-import * as roomPasswordStore from '../../services/roomPasswordStore'
+import { markEncryptionEnabled, migrateLegacyRoomPasswords, setVolatileRoomPassword } from '../../services/roomPasswordStore'
 import { logger } from '../../utils/logger'
-
-interface VolatilePasswordApi {
-    setVolatileRoomPassword?: (spaceId: string, password: string) => void
-}
 
 export function useAppBootstrap(): { ready: boolean } {
     const initialize = useAppStore(s => s.initialize)
@@ -52,12 +48,7 @@ export function useAppBootstrap(): { ready: boolean } {
     }, [initialize])
 
     // Subscribe to local model lifecycle & download progress IPC events at boot.
-    useEffect(() => {
-        const cleanup = useModelStore.getState().setupListeners() as unknown
-        return () => {
-            if (typeof cleanup === 'function') (cleanup as () => void)()
-        }
-    }, [])
+    useEffect(() => useModelStore.getState().setupListeners(), [])
 
     useEffect(() => {
         window.electronAPI?.getModelsDirectory?.()
@@ -76,7 +67,7 @@ export function useAppBootstrap(): { ready: boolean } {
     }, [initializeUpdates])
 
     // Older versions kept room passwords in localStorage; move them to secure storage.
-    useEffect(() => { roomPasswordStore.migrateLegacyRoomPasswords() }, [])
+    useEffect(() => { migrateLegacyRoomPasswords() }, [])
 
     // Root beforeunload guard so pending editor recovery drafts flush cleanly
     // even if the user navigated back to HomeScreen before closing the window.
@@ -114,9 +105,8 @@ export function useAppBootstrap(): { ready: boolean } {
             if (parsed.password) {
                 // Keep the link password only in volatile in-memory storage (never persisted)
                 // so the room decrypts immediately on join.
-                const volatileApi = roomPasswordStore as unknown as VolatilePasswordApi
-                volatileApi.setVolatileRoomPassword?.(parsed.roomId, parsed.password)
-                void roomPasswordStore.markEncryptionEnabled(parsed.roomId)
+                setVolatileRoomPassword(parsed.roomId, parsed.password)
+                void markEncryptionEnabled(parsed.roomId)
             }
             const store = useAppStore.getState()
             const existing = store.spaces.find(s => s.id === parsed.roomId)
