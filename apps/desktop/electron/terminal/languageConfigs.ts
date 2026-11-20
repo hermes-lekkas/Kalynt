@@ -2,7 +2,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  *
  * Default language-server and debug-adapter launch configurations.
- * Language servers are expected to be installed globally / on PATH.
+ * Language servers and DAP adapters are expected to be installed on PATH
+ * or registered explicitly via `configureLanguageServer` / `configureDebugAdapter`.
  */
 
 export interface LanguageServerConfig {
@@ -27,7 +28,7 @@ export const languageServerConfigurations: Record<string, LanguageServerConfig> 
     python: {
         command: 'python',
         args: ['-m', 'pylsp']
-        // NOTE: Removed PYTHONPATH clearing - it breaks virtualenvs
+        // NOTE: Keep PYTHONPATH intact so virtualenvs resolve properly
     },
     javascript: {
         command: 'typescript-language-server',
@@ -48,8 +49,6 @@ export const languageServerConfigurations: Record<string, LanguageServerConfig> 
     java: {
         command: 'jdtls',
         args: []
-        // NOTE: jdtls may require --data and --configuration args
-        // User should configure via configureLanguageServer() if needed
     },
     cpp: {
         command: 'clangd',
@@ -101,20 +100,17 @@ export const languageServerConfigurations: Record<string, LanguageServerConfig> 
     }
 }
 
+/**
+ * Only real DAP-speaking adapters are registered by default.
+ * Languages without a standard globally-installed DAP binary (e.g. Node, Java, PHP)
+ * are handled by the IDE's dedicated debugger (`handlers/debug/**`) or can be
+ * registered at runtime via `configureDebugAdapter()`.
+ */
 export const debugAdapterConfigurations: Record<string, DebugAdapterConfig> = {
-    // NOTE: Node.js debug config needs a proper DAP adapter
-    // 'node' with --inspect-brk uses Chrome Inspector Protocol, NOT DAP
-    // Use 'js-debug' or similar DAP adapter binary instead
-    node: {
-        type: 'node',
-        command: 'js-debug',  // Placeholder - needs actual DAP adapter
-        args: ['${program}'],
-        transport: 'stdio'
-    },
     python: {
         type: 'python',
         command: 'python',
-        args: ['-m', 'debugpy', '--listen', '${port}', '--wait-for-client', '${program}'],
+        args: ['-m', 'debugpy', '--listen', '127.0.0.1:${port}', '--wait-for-client', '${program}'],
         transport: 'socket'
     },
     go: {
@@ -123,31 +119,16 @@ export const debugAdapterConfigurations: Record<string, DebugAdapterConfig> = {
         args: ['dap', '--listen', '127.0.0.1:${port}'],
         transport: 'socket'
     },
-    // NOTE: Java debug config needs a proper DAP adapter
-    // 'java' with -agentlib:jdwp uses JDWP protocol, NOT DAP
-    // Use 'java-debug-adapter' or similar DAP adapter binary instead
-    java: {
-        type: 'java',
-        command: 'java-debug',  // Placeholder - needs actual DAP adapter
-        args: ['--server', '--port', '${port}'],
-        transport: 'socket'
-    },
     cpp: {
         type: 'cppdbg',
-        command: 'lldb-vscode',
+        command: 'lldb-dap',
         args: [],
         transport: 'stdio'
     },
     rust: {
         type: 'lldb',
-        command: 'lldb-vscode',
+        command: 'lldb-dap',
         args: [],
         transport: 'stdio'
-    },
-    php: {
-        type: 'php',
-        command: 'php',
-        args: ['-dxdebug.start_with_request=yes', '-S', 'localhost:0'],
-        transport: 'socket'
     }
 }

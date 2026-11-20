@@ -2,11 +2,23 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 // main-process/terminalManager.ts
-import { EventEmitter } from 'events'
-import fs from 'fs'
-import path from 'path'
+import { EventEmitter } from 'node:events'
+import fs from 'node:fs'
+import path from 'node:path'
 import { app } from 'electron'
-import crypto from 'crypto'
+import crypto from 'node:crypto'
+import { validatePath } from '../utils/pathValidator'
+
+const SAFE_SESSION_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/
+const MAX_IMPORT_BYTES = 5 * 1024 * 1024 // 5 MB
+
+export function isValidSessionId(sessionId: string): boolean {
+    if (typeof sessionId !== 'string' || !sessionId) return false
+    if (sessionId.includes('..') || sessionId.includes('/') || sessionId.includes('\\') || sessionId.includes('\0')) {
+        return false
+    }
+    return SAFE_SESSION_ID.test(sessionId)
+}
 
 export interface TerminalSession {
     id: string
@@ -44,9 +56,8 @@ export class TerminalSessionManager extends EventEmitter {
 
     constructor(storagePath?: string) {
         super()
-        // Use app.getPath('userData') instead of process.cwd() to avoid permission issues on Linux
-        const defaultPath = path.join(app.getPath('userData'), 'terminal-sessions')
-        this.sessionStoragePath = storagePath || defaultPath
+        // Use app.getPath('userData') when no explicit path is provided
+        this.sessionStoragePath = storagePath || path.join(app.getPath('userData'), 'terminal-sessions')
 
         // Ensure storage directory exists
         if (!fs.existsSync(this.sessionStoragePath)) {
@@ -59,6 +70,46 @@ export class TerminalSessionManager extends EventEmitter {
 
         // Load saved sessions
         this.loadSessions()
+    }
+
+    /** Resolves `<sessionStoragePath>/<sessionId>.json` safely, rejecting path traversal. */
+    private resolveSessionFile(sessionId: string): string | null {
+        if (!isValidSessionId(sessionId)) {
+            console.warn(`[SessionManager] Rejected invalid sessionId: ${String(sessionId).slice(0, 64)}`)
+            return null
+        }
+        try {
+            return validatePath(this.sessionStoragePath, `${sessionId}.json`)
+        } catch (error) {
+            console.warn('[SessionManager] Blocked unsafe session file path:', error)
+            return null
+        }
+    }
+
+    /**
+     * Validates an export/import JSON path against allowed base directories
+     * (the active workspace directory and the session storage directory).
+     */
+    private resolveTransferPath(targetPath: string, workspacePath?: string | null): string | null {
+        if (typeof targetPath !== 'string' || !targetPath.trim() || targetPath.includes('\0')) {
+            return null
+        }
+        if (!targetPath.toLowerCase().endsWith('.json')) {
+            return null
+        }
+
+        const allowedBases = [workspacePath, this.sessionStoragePath].filter(
+            (base): base is string => typeof base === 'string' && base.trim().length > 0
+        )
+
+        for (const base of allowedBases) {
+            try {
+                return validatePath(base, targetPath)
+            } catch {
+                // Try next allowed base directory
+            }
+        }
+        return null
     }
 
     createSession(options: {
@@ -75,6 +126,11 @@ export class TerminalSessionManager extends EventEmitter {
         const sessionId =
             options.id ||
             `session_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`
+
+        if (!isValidSessionId(sessionId)) {
+            throw new Error(`Invalid session id: ${sessionId}`)
+        }
+
         const now = Date.now()
 
         const session: TerminalSession = {
@@ -104,30 +160,33 @@ export class TerminalSessionManager extends EventEmitter {
     }
 
     getSession(sessionId: string): TerminalSession | undefined {
+        if (!isValidSessionId(sessionId)) return undefined
         return this.sessions.get(sessionId)
     }
 
     updateSession(sessionId: string, updates: Partial<TerminalSession>): boolean {
+        if (!isValidSessionId(sessionId)) return false
         const session = this.sessions.get(sessionId)
         if (!session) return false
 
-        Object.assign(session, updates)
+        // Prevent mutating session id via updates
+        const { id: _ignoredId, ...safeUpdates } = updates
+        Object.assign(session, safeUpdates)
         session.lastActive = Date.now()
 
-        this.emit('session_updated', { sessionId, updates })
+        this.emit('session_updated', { sessionId, updates: safeUpdates })
         this.saveSession(sessionId)
 
         return true
     }
 
     addToSessionHistory(sessionId: string, data: string): boolean {
-        const session = this.sessions.get(sessionId)
+        const session = this.getSession(sessionId)
         if (!session) return false
 
         session.history.push(data)
         session.lastActive = Date.now()
 
-        // Limit history size
         if (session.history.length > 10000) {
             session.history = session.history.slice(-10000)
         }
@@ -136,7 +195,7 @@ export class TerminalSessionManager extends EventEmitter {
     }
 
     addToCommandHistory(sessionId: string, command: string, exitCode?: number): boolean {
-        const session = this.sessions.get(sessionId)
+        const session = this.getSession(sessionId)
         if (!session) return false
 
         session.commandHistory.push({
@@ -145,7 +204,6 @@ export class TerminalSessionManager extends EventEmitter {
             exitCode
         })
 
-        // Limit command history size
         if (session.commandHistory.length > 1000) {
             session.commandHistory = session.commandHistory.slice(-1000)
         }
@@ -167,14 +225,15 @@ export class TerminalSessionManager extends EventEmitter {
     }
 
     deleteSession(sessionId: string): boolean {
+        const sessionFile = this.resolveSessionFile(sessionId)
+        if (!sessionFile) return false
+
         const session = this.sessions.get(sessionId)
         if (!session) return false
 
         this.sessions.delete(sessionId)
         this.emit('session_deleted', sessionId)
 
-        // Delete session file
-        const sessionFile = path.join(this.sessionStoragePath, `${sessionId}.json`)
         if (fs.existsSync(sessionFile)) {
             fs.unlinkSync(sessionFile)
         }
@@ -191,7 +250,7 @@ export class TerminalSessionManager extends EventEmitter {
     }
 
     createGroup(name: string, sessionIds: string[], layout?: 'horizontal' | 'vertical' | 'grid'): SessionGroup {
-        const groupId = `group_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+        const groupId = `group_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`
 
         const group: SessionGroup = {
             id: groupId,
@@ -253,16 +312,18 @@ export class TerminalSessionManager extends EventEmitter {
     }
 
     saveSession(sessionId: string): boolean {
+        const sessionFile = this.resolveSessionFile(sessionId)
+        if (!sessionFile) return false
+
         const session = this.sessions.get(sessionId)
         if (!session) return false
 
         try {
-            const sessionFile = path.join(this.sessionStoragePath, `${sessionId}.json`)
             const sessionData = {
                 ...session,
                 // Don't save full history to disk to avoid large files
                 history: [],
-                commandHistory: session.commandHistory.slice(-100) // Keep last 100 commands
+                commandHistory: session.commandHistory.slice(-100)
             }
 
             fs.writeFileSync(sessionFile, JSON.stringify(sessionData, null, 2))
@@ -274,15 +335,21 @@ export class TerminalSessionManager extends EventEmitter {
     }
 
     loadSession(sessionId: string): TerminalSession | null {
+        const sessionFile = this.resolveSessionFile(sessionId)
+        if (!sessionFile) return null
+
         try {
-            const sessionFile = path.join(this.sessionStoragePath, `${sessionId}.json`)
             if (!fs.existsSync(sessionFile)) return null
 
             const sessionData = JSON.parse(fs.readFileSync(sessionFile, 'utf8'))
+            if (!sessionData || typeof sessionData !== 'object') return null
+
             const session: TerminalSession = {
                 ...sessionData,
+                id: sessionId,
                 status: 'stopped', // Sessions are stopped when loaded from disk
                 history: [],
+                commandHistory: Array.isArray(sessionData.commandHistory) ? sessionData.commandHistory : [],
                 lastActive: Date.now()
             }
 
@@ -296,12 +363,15 @@ export class TerminalSessionManager extends EventEmitter {
 
     private loadSessions(): void {
         try {
+            if (!fs.existsSync(this.sessionStoragePath)) return
             const files = fs.readdirSync(this.sessionStoragePath)
 
             for (const file of files) {
                 if (file.endsWith('.json')) {
                     const sessionId = path.basename(file, '.json')
-                    this.loadSession(sessionId)
+                    if (isValidSessionId(sessionId)) {
+                        this.loadSession(sessionId)
+                    }
                 }
             }
         } catch (error) {
@@ -309,9 +379,16 @@ export class TerminalSessionManager extends EventEmitter {
         }
     }
 
-    exportSession(sessionId: string, exportPath: string): boolean {
+    exportSession(sessionId: string, exportPath: string, workspacePath?: string | null): boolean {
+        if (!isValidSessionId(sessionId)) return false
         const session = this.sessions.get(sessionId)
         if (!session) return false
+
+        const validatedPath = this.resolveTransferPath(exportPath, workspacePath)
+        if (!validatedPath) {
+            console.warn('[SessionManager] Blocked unsafe export path:', exportPath)
+            return false
+        }
 
         try {
             const exportData = {
@@ -321,7 +398,8 @@ export class TerminalSessionManager extends EventEmitter {
                 app: 'Kalynt Terminal'
             }
 
-            fs.writeFileSync(exportPath, JSON.stringify(exportData, null, 2))
+            fs.mkdirSync(path.dirname(validatedPath), { recursive: true })
+            fs.writeFileSync(validatedPath, JSON.stringify(exportData, null, 2))
             return true
         } catch (error) {
             console.error(`[SessionManager] Error exporting session ${sessionId}:`, error)
@@ -329,22 +407,47 @@ export class TerminalSessionManager extends EventEmitter {
         }
     }
 
-    importSession(importPath: string): string | null {
+    importSession(importPath: string, workspacePath?: string | null): string | null {
+        const validatedPath = this.resolveTransferPath(importPath, workspacePath)
+        if (!validatedPath) {
+            console.warn('[SessionManager] Blocked unsafe import path:', importPath)
+            return null
+        }
+
         try {
-            if (!fs.existsSync(importPath)) return null
+            if (!fs.existsSync(validatedPath)) return null
 
-            const importData = JSON.parse(fs.readFileSync(importPath, 'utf8'))
+            const stat = fs.statSync(validatedPath)
+            if (!stat.isFile() || stat.size > MAX_IMPORT_BYTES) {
+                throw new Error('Invalid session file size')
+            }
 
-            if (importData.app !== 'Kalynt Terminal') {
+            const importData = JSON.parse(fs.readFileSync(validatedPath, 'utf8'))
+
+            if (!importData || importData.app !== 'Kalynt Terminal' || !importData.session || typeof importData.session !== 'object') {
                 throw new Error('Invalid session file format')
             }
 
-            const session = importData.session as TerminalSession
-            const newSessionId = `imported_${Date.now()}_${session.id}`
+            const raw = importData.session as Partial<TerminalSession>
+            const safeSuffix = String(raw.id || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 32)
+            const newSessionId = `imported_${Date.now()}_${crypto.randomBytes(4).toString('hex')}${safeSuffix ? `_${safeSuffix}` : ''}`
 
-            session.id = newSessionId
-            session.status = 'stopped'
-            session.lastActive = Date.now()
+            const session: TerminalSession = {
+                id: newSessionId,
+                title: typeof raw.title === 'string' ? raw.title : `Imported ${newSessionId}`,
+                shell: typeof raw.shell === 'string' ? raw.shell : '',
+                cwd: typeof raw.cwd === 'string' ? raw.cwd : '',
+                env: raw.env && typeof raw.env === 'object' && !Array.isArray(raw.env) ? raw.env : {},
+                cols: typeof raw.cols === 'number' && raw.cols > 0 ? raw.cols : 80,
+                rows: typeof raw.rows === 'number' && raw.rows > 0 ? raw.rows : 24,
+                status: 'stopped',
+                processType: raw.processType === 'task' || raw.processType === 'debug' ? raw.processType : 'shell',
+                metadata: raw.metadata && typeof raw.metadata === 'object' ? raw.metadata : {},
+                createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : Date.now(),
+                lastActive: Date.now(),
+                history: [],
+                commandHistory: Array.isArray(raw.commandHistory) ? raw.commandHistory.slice(-100) : []
+            }
 
             this.sessions.set(newSessionId, session)
             this.saveSession(newSessionId)
@@ -390,7 +493,6 @@ export class TerminalSessionManager extends EventEmitter {
     }
 
     dispose(): void {
-        // Save all sessions before disposing
         for (const sessionId of this.sessions.keys()) {
             this.saveSession(sessionId)
         }

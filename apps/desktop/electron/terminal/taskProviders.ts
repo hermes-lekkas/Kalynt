@@ -8,6 +8,43 @@ import path from 'node:path'
 import fs from 'node:fs'
 import type { TaskDefinition, TaskProvider } from './taskTypes'
 
+const SKIP_DIRS = new Set([
+    'node_modules',
+    '.git',
+    '.hg',
+    '.svn',
+    'dist',
+    'build',
+    'out',
+    'target',
+    'venv',
+    '.venv',
+    'env',
+    '__pycache__',
+    '.pytest_cache',
+    '.mypy_cache',
+    '.next',
+    '.nuxt',
+    'coverage',
+    'bin',
+    'obj',
+    '.gradle',
+    '.idea',
+    '.vscode'
+])
+
+const PYTHON_MARKERS = [
+    'requirements.txt',
+    'pyproject.toml',
+    'setup.py',
+    'setup.cfg',
+    'Pipfile',
+    'poetry.lock',
+    'pytest.ini',
+    'tox.ini',
+    'manage.py'
+]
+
 /** Guesses a task group from conventional script/target names. */
 function determineTaskGroup(taskName: string): 'build' | 'test' | 'run' | 'clean' {
     const lowerName = taskName.toLowerCase()
@@ -25,32 +62,60 @@ function determineTaskGroup(taskName: string): 'build' | 'test' | 'run' | 'clean
     return 'build'
 }
 
-/** Finds files matching a simple glob (*.csproj) under dir, recursively. */
-function findFiles(dir: string, pattern: string): string[] {
-    const files: string[] = []
-
+async function fileExists(targetPath: string): Promise<boolean> {
     try {
-        const entries = fs.readdirSync(dir, { withFileTypes: true })
-
-        for (const entry of entries) {
-            const fullPath = path.join(dir, entry.name)
-
-            if (entry.isDirectory()) {
-                files.push(...findFiles(fullPath, pattern))
-            } else if (entry.isFile() && globToRegex(pattern).exec(entry.name)) {
-                files.push(fullPath)
-            }
-        }
-    } catch (error) {
-        console.error(`[TaskRunner] Error finding files in ${dir}:`, error)
+        await fs.promises.access(targetPath)
+        return true
+    } catch {
+        return false
     }
-
-    return files
 }
 
 function globToRegex(pattern: string): RegExp {
     const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')
     return new RegExp(`^${escaped}$`)
+}
+
+/**
+ * Bounded async directory scan for files matching a simple glob (e.g. `*.csproj`),
+ * skipping heavy/VCS directories such as `node_modules` and `.git`.
+ */
+export async function findFiles(
+    dir: string,
+    pattern: string,
+    options: { maxDepth?: number; maxMatches?: number } = {}
+): Promise<string[]> {
+    const maxDepth = options.maxDepth ?? 4
+    const maxMatches = options.maxMatches ?? 20
+    const regex = globToRegex(pattern)
+    const files: string[] = []
+
+    const walk = async (currentDir: string, depth: number): Promise<void> => {
+        if (depth > maxDepth || files.length >= maxMatches) return
+
+        let entries: fs.Dirent[]
+        try {
+            entries = await fs.promises.readdir(currentDir, { withFileTypes: true })
+        } catch {
+            return
+        }
+
+        for (const entry of entries) {
+            if (files.length >= maxMatches) return
+            if (entry.isSymbolicLink()) continue
+
+            const fullPath = path.join(currentDir, entry.name)
+            if (entry.isDirectory()) {
+                if (SKIP_DIRS.has(entry.name)) continue
+                await walk(fullPath, depth + 1)
+            } else if (entry.isFile() && regex.test(entry.name)) {
+                files.push(fullPath)
+            }
+        }
+    }
+
+    await walk(dir, 0)
+    return files
 }
 
 /** The task providers registered by default, keyed by task type. */
@@ -63,12 +128,12 @@ export function createDefaultTaskProviders(): Map<string, TaskProvider> {
             const tasks: TaskDefinition[] = []
             const packageJsonPath = path.join(workspacePath, 'package.json')
 
-            if (fs.existsSync(packageJsonPath)) {
+            if (await fileExists(packageJsonPath)) {
                 try {
-                    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'))
+                    const packageJson = JSON.parse(await fs.promises.readFile(packageJsonPath, 'utf8'))
 
-                    if (packageJson.scripts) {
-                        Object.entries(packageJson.scripts).forEach(([name, _command]) => {
+                    if (packageJson.scripts && typeof packageJson.scripts === 'object') {
+                        Object.entries(packageJson.scripts).forEach(([name]) => {
                             tasks.push({
                                 id: `npm.${name}`,
                                 label: `npm run ${name}`,
@@ -96,8 +161,7 @@ export function createDefaultTaskProviders(): Map<string, TaskProvider> {
             const tasks: TaskDefinition[] = []
             const pomPath = path.join(workspacePath, 'pom.xml')
 
-            if (fs.existsSync(pomPath)) {
-                // Common Maven tasks
+            if (await fileExists(pomPath)) {
                 const mavenTasks = [
                     { name: 'compile', label: 'Maven: Compile' },
                     { name: 'test', label: 'Maven: Test' },
@@ -124,14 +188,37 @@ export function createDefaultTaskProviders(): Map<string, TaskProvider> {
         resolveTask: async (task: TaskDefinition) => task
     })
 
-    // Python tasks
+    // Python tasks — gated on actual Python project markers or Python source files
     providers.set('python', {
         provideTasks: async (workspacePath: string) => {
             const tasks: TaskDefinition[] = []
 
-            // Check for requirements.txt
             const requirementsPath = path.join(workspacePath, 'requirements.txt')
-            if (fs.existsSync(requirementsPath)) {
+            const setupPath = path.join(workspacePath, 'setup.py')
+            const hasRequirements = await fileExists(requirementsPath)
+            const hasSetup = await fileExists(setupPath)
+
+            let hasPythonMarker = hasRequirements || hasSetup
+            if (!hasPythonMarker) {
+                for (const marker of PYTHON_MARKERS) {
+                    if (await fileExists(path.join(workspacePath, marker))) {
+                        hasPythonMarker = true
+                        break
+                    }
+                }
+            }
+
+            let pyFiles: string[] = []
+            if (!hasPythonMarker) {
+                pyFiles = await findFiles(workspacePath, '*.py', { maxDepth: 2, maxMatches: 1 })
+                hasPythonMarker = pyFiles.length > 0
+            }
+
+            if (!hasPythonMarker) {
+                return tasks
+            }
+
+            if (hasRequirements) {
                 tasks.push({
                     id: 'python.install',
                     label: 'Python: Install Dependencies',
@@ -143,9 +230,7 @@ export function createDefaultTaskProviders(): Map<string, TaskProvider> {
                 })
             }
 
-            // Check for setup.py
-            const setupPath = path.join(workspacePath, 'setup.py')
-            if (fs.existsSync(setupPath)) {
+            if (hasSetup) {
                 tasks.push({
                     id: 'python.setup',
                     label: 'Python: Setup Development',
@@ -157,14 +242,19 @@ export function createDefaultTaskProviders(): Map<string, TaskProvider> {
                 })
             }
 
-            // Add common Python tasks
+            const entryCandidate = (await fileExists(path.join(workspacePath, 'main.py')))
+                ? 'main.py'
+                : (await fileExists(path.join(workspacePath, 'app.py')))
+                    ? 'app.py'
+                    : '.'
+
             tasks.push(
                 {
                     id: 'python.run',
                     label: 'Python: Run',
                     type: 'python',
                     command: 'python',
-                    args: ['.'],
+                    args: [entryCandidate],
                     cwd: workspacePath,
                     group: 'run'
                 },
@@ -190,12 +280,11 @@ export function createDefaultTaskProviders(): Map<string, TaskProvider> {
             const tasks: TaskDefinition[] = []
             const makefilePath = path.join(workspacePath, 'Makefile')
 
-            if (fs.existsSync(makefilePath)) {
+            if (await fileExists(makefilePath)) {
                 try {
-                    // Read Makefile and extract targets
-                    const makefileContent = fs.readFileSync(makefilePath, 'utf8')
+                    const makefileContent = await fs.promises.readFile(makefilePath, 'utf8')
                     const targetRegex = /^([a-zA-Z0-9_.-]+):/gm
-                    let match
+                    let match: RegExpExecArray | null
 
                     while ((match = targetRegex.exec(makefileContent)) !== null) {
                         const target = match[1]
@@ -225,9 +314,7 @@ export function createDefaultTaskProviders(): Map<string, TaskProvider> {
     providers.set('dotnet', {
         provideTasks: async (workspacePath: string) => {
             const tasks: TaskDefinition[] = []
-
-            // Find .csproj files
-            const csprojFiles = findFiles(workspacePath, '*.csproj')
+            const csprojFiles = await findFiles(workspacePath, '*.csproj')
 
             if (csprojFiles.length > 0) {
                 const csprojPath = csprojFiles[0]
@@ -285,13 +372,20 @@ export function createDefaultTaskProviders(): Map<string, TaskProvider> {
             const gradleBuildPath = path.join(workspacePath, 'build.gradle')
             const gradleBuildKtsPath = path.join(workspacePath, 'build.gradle.kts')
 
-            if (fs.existsSync(gradleBuildPath) || fs.existsSync(gradleBuildKtsPath)) {
+            if ((await fileExists(gradleBuildPath)) || (await fileExists(gradleBuildKtsPath))) {
+                const hasWrapper = await fileExists(
+                    path.join(workspacePath, process.platform === 'win32' ? 'gradlew.bat' : 'gradlew')
+                )
+                const gradleCmd = hasWrapper
+                    ? (process.platform === 'win32' ? 'gradlew.bat' : './gradlew')
+                    : 'gradle'
+
                 tasks.push(
                     {
                         id: 'gradle.build',
                         label: 'Gradle: Build',
                         type: 'gradle',
-                        command: './gradlew',
+                        command: gradleCmd,
                         args: ['build'],
                         cwd: workspacePath,
                         group: 'build'
@@ -300,7 +394,7 @@ export function createDefaultTaskProviders(): Map<string, TaskProvider> {
                         id: 'gradle.test',
                         label: 'Gradle: Test',
                         type: 'gradle',
-                        command: './gradlew',
+                        command: gradleCmd,
                         args: ['test'],
                         cwd: workspacePath,
                         group: 'test'
@@ -309,7 +403,7 @@ export function createDefaultTaskProviders(): Map<string, TaskProvider> {
                         id: 'gradle.clean',
                         label: 'Gradle: Clean',
                         type: 'gradle',
-                        command: './gradlew',
+                        command: gradleCmd,
                         args: ['clean'],
                         cwd: workspacePath,
                         group: 'clean'
@@ -318,7 +412,7 @@ export function createDefaultTaskProviders(): Map<string, TaskProvider> {
                         id: 'gradle.run',
                         label: 'Gradle: Run',
                         type: 'gradle',
-                        command: './gradlew',
+                        command: gradleCmd,
                         args: ['run'],
                         cwd: workspacePath,
                         group: 'run'

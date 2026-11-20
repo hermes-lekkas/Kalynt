@@ -51,16 +51,29 @@ export interface ExtensionContribution {
     uiTheme: string
     path: string
   }>
+  grammars?: Array<{
+    language?: string
+    scopeName: string
+    path: string
+  }>
+  snippets?: Array<{
+    language: string
+    path: string
+  }>
+  languages?: Array<{
+    id: string
+    aliases?: string[]
+    extensions?: string[]
+  }>
 }
 
 /** Reads one extension folder's package.json into metadata, or null if it is not a usable extension. */
-function readMetadata(extensionPath: string): ExtensionMetadata | null {
+export function readMetadata(extensionPath: string): ExtensionMetadata | null {
   const packageJsonPath = path.join(extensionPath, 'package.json')
   if (!fs.existsSync(packageJsonPath)) return null
 
   try {
     const rawData = fs.readFileSync(packageJsonPath, 'utf-8')
-    // CRITICAL-002 FIX: Validate manifest is an object
     const manifest = JSON.parse(rawData)
     if (typeof manifest !== 'object' || manifest === null || Array.isArray(manifest)) {
       console.warn(`[ExtensionHost] Invalid manifest in ${extensionPath}: not an object`)
@@ -69,6 +82,12 @@ function readMetadata(extensionPath: string): ExtensionMetadata | null {
 
     if (!manifest.engines?.vscode) return null
 
+    // Only set `main` when the manifest explicitly declares a JS entrypoint;
+    // declarative extensions (themes, grammars, snippets) have no `main` file.
+    const main = typeof manifest.main === 'string' && manifest.main.trim().length > 0
+      ? manifest.main.trim()
+      : undefined
+
     return {
       id: `${manifest.publisher}.${manifest.name}`,
       name: manifest.name,
@@ -76,9 +95,9 @@ function readMetadata(extensionPath: string): ExtensionMetadata | null {
       version: manifest.version,
       description: manifest.description || '',
       publisher: manifest.publisher || 'unknown',
-      main: manifest.main || 'index.js',
+      main,
       contributes: manifest.contributes || {},
-      activationEvents: manifest.activationEvents || [],
+      activationEvents: Array.isArray(manifest.activationEvents) ? manifest.activationEvents : [],
       extensionPath,
       isBuiltin: false,
       isActive: false
@@ -94,6 +113,7 @@ export function scanExtensionDir(extensionsDir: string): Map<string, ExtensionMe
   const extensions = new Map<string, ExtensionMetadata>()
 
   try {
+    if (!fs.existsSync(extensionsDir)) return extensions
     const entries = fs.readdirSync(extensionsDir)
 
     for (const entry of entries) {
@@ -122,7 +142,10 @@ export function mergeContributions(allExtensions: ExtensionMetadata[]): Extensio
     keybindings: [],
     views: {},
     configuration: {},
-    themes: []
+    themes: [],
+    grammars: [],
+    snippets: [],
+    languages: []
   }
 
   for (const extension of allExtensions) {
@@ -158,13 +181,32 @@ export function mergeContributions(allExtensions: ExtensionMetadata[]): Extensio
       }
     }
 
-    // Collect themes
     if (contributes.themes) {
       contributions.themes!.push(...contributes.themes.map(theme => ({
         ...theme,
         extensionId: extension.id,
         extensionPath: extension.extensionPath
       })))
+    }
+
+    if (contributes.grammars) {
+      contributions.grammars!.push(...contributes.grammars.map(grammar => ({
+        ...grammar,
+        extensionId: extension.id,
+        extensionPath: extension.extensionPath
+      })))
+    }
+
+    if (contributes.snippets) {
+      contributions.snippets!.push(...contributes.snippets.map(snippet => ({
+        ...snippet,
+        extensionId: extension.id,
+        extensionPath: extension.extensionPath
+      })))
+    }
+
+    if (contributes.languages) {
+      contributions.languages!.push(...contributes.languages)
     }
   }
 
