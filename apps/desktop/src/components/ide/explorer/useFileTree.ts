@@ -2,8 +2,8 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  *
  * Lazily loaded folder tree. Children are cached per directory, so refreshing
- * keeps expanded folders open, and file-system events reload only the folder
- * that changed.
+ * keeps expanded folders open, generation guards prevent folder-switch races,
+ * and deleted subtrees are pruned on `unlinkDir`.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FileSystemItem } from '../../../vite-env'
@@ -36,14 +36,16 @@ export function useFileTree(folder: string | null) {
     const expandedRef = useRef(expanded)
     expandedRef.current = expanded
     const pending = useRef(new Map<string, ReturnType<typeof setTimeout>>())
+    const generation = useRef(0)
 
     const root = folder ? norm(folder) : null
 
-    const loadDir = useCallback(async (dir: string): Promise<FileSystemItem[]> => {
+    const loadDir = useCallback(async (dir: string, gen = generation.current): Promise<FileSystemItem[]> => {
         const key = norm(dir)
         setLoading(prev => new Set(prev).add(key))
         try {
             const result = await window.electronAPI?.fs?.readDir(dir)
+            if (gen !== generation.current) return []
             if (!result?.success) {
                 if (key === root) setError(result?.error || 'This folder could not be read.')
                 return []
@@ -53,19 +55,30 @@ export function useFileTree(folder: string | null) {
             if (key === root) setError(null)
             return items
         } finally {
-            setLoading(prev => {
-                const next = new Set(prev)
-                next.delete(key)
-                return next
-            })
+            if (gen === generation.current) {
+                setLoading(prev => {
+                    const next = new Set(prev)
+                    next.delete(key)
+                    return next
+                })
+            }
         }
     }, [root])
 
     useEffect(() => {
+        const gen = ++generation.current
+        pending.current.forEach(clearTimeout)
+        pending.current.clear()
         setChildren(new Map())
         setExpanded(new Set())
+        setLoading(new Set())
         setError(null)
-        if (root) loadDir(root)
+        if (root) void loadDir(root, gen)
+        return () => {
+            generation.current++
+            pending.current.forEach(clearTimeout)
+            pending.current.clear()
+        }
     }, [root, loadDir])
 
     const toggle = useCallback((dir: string) => {
@@ -79,13 +92,14 @@ export function useFileTree(folder: string | null) {
             return
         }
         setExpanded(prev => new Set(prev).add(key))
-        if (!childrenRef.current.has(key)) loadDir(key)
+        if (!childrenRef.current.has(key)) void loadDir(key)
     }, [loadDir])
 
-    const expand = useCallback(async (dir: string) => {
+    const expand = useCallback(async (dir: string, gen = generation.current) => {
         const key = norm(dir)
+        if (gen !== generation.current) return
         setExpanded(prev => new Set(prev).add(key))
-        if (!childrenRef.current.has(key)) await loadDir(key)
+        if (!childrenRef.current.has(key)) await loadDir(key, gen)
     }, [loadDir])
 
     const collapseAll = useCallback(() => setExpanded(new Set()), [])
@@ -93,37 +107,74 @@ export function useFileTree(folder: string | null) {
     /** Reloads the root and every open folder without collapsing anything. */
     const refresh = useCallback(async () => {
         if (!root) return
-        await Promise.all([root, ...Array.from(expandedRef.current)].map(dir => loadDir(dir)))
+        const gen = generation.current
+        await Promise.all([root, ...Array.from(expandedRef.current)].map(dir => loadDir(dir, gen)))
     }, [root, loadDir])
 
     /** Opens every ancestor of `path` so it becomes visible. */
     const reveal = useCallback(async (path: string) => {
         if (!root) return
+        const gen = generation.current
         const target = norm(path)
-        if (!target.startsWith(root)) return
+        if (!target.startsWith(root + '/') && target !== root) return
         const parts = target.slice(root.length).split('/').filter(Boolean)
         let current = root
         for (const part of parts.slice(0, -1)) {
+            if (gen !== generation.current) return
             current = `${current}/${part}`
-            await expand(current)
+            await expand(current, gen)
         }
     }, [root, expand])
 
-    // Reload only the parent folder of whatever changed, debounced per folder.
+    // Reload only the parent folder of whatever changed, debounced per folder,
+    // and prune deleted subtrees on `unlinkDir`.
     useFolderChanges(folder, change => {
         if (!['add', 'addDir', 'unlink', 'unlinkDir'].includes(change.event)) return
-        const parent = norm(dirName(norm(change.path)))
+        const changedNorm = norm(change.path)
+
+        if (change.event === 'unlinkDir') {
+            const isUnder = (k: string) => k === changedNorm || k.startsWith(changedNorm + '/')
+            pending.current.forEach((timer, key) => {
+                if (isUnder(key)) {
+                    clearTimeout(timer)
+                    pending.current.delete(key)
+                }
+            })
+            setChildren(prev => {
+                let mutated = false
+                const next = new Map(prev)
+                for (const key of next.keys()) {
+                    if (isUnder(key)) {
+                        next.delete(key)
+                        mutated = true
+                    }
+                }
+                return mutated ? next : prev
+            })
+            setExpanded(prev => {
+                let mutated = false
+                const next = new Set(prev)
+                for (const key of next) {
+                    if (isUnder(key)) {
+                        next.delete(key)
+                        mutated = true
+                    }
+                }
+                return mutated ? next : prev
+            })
+        }
+
+        const parent = norm(dirName(changedNorm))
         if (!childrenRef.current.has(parent)) return
+        const gen = generation.current
         const timers = pending.current
         const existing = timers.get(parent)
         if (existing) clearTimeout(existing)
         timers.set(parent, setTimeout(() => {
             timers.delete(parent)
-            loadDir(parent)
+            if (gen === generation.current) void loadDir(parent, gen)
         }, 250))
     })
-
-    useEffect(() => () => pending.current.forEach(clearTimeout), [])
 
     const rows = useMemo<TreeRow[]>(() => {
         if (!root) return []

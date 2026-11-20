@@ -18,10 +18,10 @@ const { outputFiles } = await build({
         build.onLoad({ filter: /components[/\\]ui[/\\]index\.ts$/ }, () => ({ contents: 'export const confirmAction = async () => true', loader: 'ts' }))
     } }]
 })
-const { useWorkspaceSearch, buildPattern, matchesInclude, splitList } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString('base64')}`)
+const { useWorkspaceSearch, buildPattern, matchesInclude, splitList, isBinaryFile, formatReplacementPreview } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString('base64')}`)
 let instance, current, disks, writes, buffers
 function Harness({ folder }) { current = useWorkspaceSearch(folder, buffers); return null }
-async function mount(entries, openFiles = []) {
+async function mount(entries, openFiles = [], extraFs = {}, folder = '/project') {
     disks = new Map(entries); writes = []
     buffers = { files: openFiles, updateContent(file, content) { const found = this.files.find(f => f.path === file); found.content = content; found.isDirty = true } }
     // Match the production callback's lexical receiver (not a class method).
@@ -37,9 +37,10 @@ async function mount(entries, openFiles = []) {
             return { success: true, items: [...items.values()] }
         },
         readFile: async file => ({ success: true, content: disks.get(file) }),
-        writeFile: async options => { writes.push(options); if (options.expectedContent !== disks.get(options.path)) return { success: false, conflict: true }; disks.set(options.path, options.content); return { success: true } }
+        writeFile: async options => { writes.push(options); if (options.expectedContent !== disks.get(options.path)) return { success: false, conflict: true }; disks.set(options.path, options.content); return { success: true } },
+        ...extraFs
     } }
-    await act(async () => { instance = create(React.createElement(Harness, { folder: '/project' })) })
+    await act(async () => { instance = create(React.createElement(Harness, { folder })) })
 }
 afterEach(async () => { if (instance) await act(async () => instance.unmount()); instance = null })
 async function search(query, replacement = '', regex = false) {
@@ -49,6 +50,15 @@ async function search(query, replacement = '', regex = false) {
 test('whole-word regex alternatives honor both boundaries', () => {
     const pattern = buildPattern('foo|bar', { regex: true, caseSensitive: true, wholeWord: true })
     assert.deepEqual('foobar foo bar barista'.match(pattern), ['foo', 'bar'])
+})
+test('svg files are searchable text files, not binary', () => {
+    assert.equal(isBinaryFile('icon.svg'), false)
+    assert.equal(isBinaryFile('photo.png'), true)
+})
+test('replacement preview respects preserveCase and empty deletion', () => {
+    assert.equal(formatReplacementPreview('FOO', 'bar', true, false), 'BAR')
+    assert.equal(formatReplacementPreview('Foo', 'bar', true, false), 'Bar')
+    assert.equal(formatReplacementPreview('foo', '', true, false), '')
 })
 test('include patterns support nested paths, braces, extension shorthand and single-directory stars', () => {
     const patterns = splitList('src/**/*.{ts,tsx}, .json')
@@ -61,7 +71,7 @@ test('include patterns support nested paths, braces, extension shorthand and sin
 })
 test('search and replacement use dirty buffers and leave their disk version intact', async () => {
     const file = '/project/a.txt'
-    await mount([[file, 'disk version']], [{ path: file, content: 'unsaved needle', isDirty: true }])
+    await mount([[file, 'disk version']], [{ path: file, name: 'a.txt', content: 'unsaved needle', isDirty: true }])
     await search('needle', 'replacement')
     assert.equal(current.results.length, 1)
     await act(async () => current.replaceOne(current.results[0]))
@@ -69,6 +79,49 @@ test('search and replacement use dirty buffers and leave their disk version inta
     assert.equal(buffers.files[0].isDirty, true)
     assert.equal(disks.get(file), 'disk version')
     assert.equal(writes.length, 0)
+})
+test('fs.search fast path merges dirty buffers matched via samePath (Windows separators)', async () => {
+    let readDirCalls = 0
+    const diskMap = new Map([
+        ['C:\\project/disk.ts', 'const needle = 1'],
+        ['C:\\project/open.ts', 'const needle = "stale disk"']
+    ])
+    await mount(
+        [...diskMap.entries()],
+        [{ path: 'C:\\project\\open.ts', name: 'open.ts', content: 'const needle = "live buffer"', isDirty: true }],
+        {
+            readDir: async () => { readDirCalls++; return { success: true, items: [] } },
+            search: async () => ({
+                success: true,
+                results: [
+                    { file: 'disk.ts', line: 1, content: 'const needle = 1' },
+                    { file: 'open.ts', line: 1, content: 'const needle = "stale disk"' }
+                ]
+            })
+        },
+        'C:\\project'
+    )
+    await search('needle', 'target')
+    assert.equal(readDirCalls, 0)
+    assert.equal(current.results.length, 2)
+    const openMatch = current.results.find(r => r.fileName === 'open.ts')
+    assert.ok(openMatch.after.includes('live buffer'))
+    await act(async () => current.replaceOne(openMatch))
+    assert.equal(buffers.files[0].content, 'const target = "live buffer"')
+    assert.equal(writes.length, 0)
+})
+test('dismissMatch and dismissFile remove results and update progress counts', async () => {
+    await mount([['/project/a.txt', 'needle one\nneedle two'], ['/project/b.txt', 'needle three']])
+    await search('needle')
+    assert.equal(current.results.length, 3)
+    await act(async () => current.dismissMatch(current.results[0]))
+    assert.equal(current.results.length, 2)
+    assert.equal(current.progress.matches, 2)
+    assert.equal(current.progress.files, 2)
+    await act(async () => current.dismissFile('/project/a.txt'))
+    assert.equal(current.results.length, 1)
+    assert.equal(current.progress.matches, 1)
+    assert.equal(current.progress.files, 1)
 })
 test('single-match regex replacement retains lookahead and capture-group context', async () => {
     const file = '/project/a.txt'
@@ -93,7 +146,10 @@ test('changing query without rerunning search cannot replace stale results', asy
     await mount([[file, 'old needle']]); await search('needle', 'replacement')
     const match = current.results[0]
     await act(async () => current.setQuery('old'))
+    assert.equal(current.isStale, true)
     await act(async () => current.replaceOne(match))
+    assert.equal(disks.get(file), 'old needle')
+    await act(async () => current.replaceInFile(file))
     assert.equal(disks.get(file), 'old needle')
 })
 test('changing workspaces clears results and invalidates an in-flight search', async () => {
