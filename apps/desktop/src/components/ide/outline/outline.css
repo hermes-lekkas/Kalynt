@@ -1,0 +1,171 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ * Document Outline sidebar view.
+ */
+
+.outline-panel {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+}
+
+.outline-panel__file {
+    padding: 0 var(--sp-5) var(--sp-2);
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.outline-panel__search {
+    padding: 0 var(--sp-4) var(--sp-3);
+    flex-shrink: 0;
+}
+
+.outline-panel__input-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.outline-panel__input-icon {
+    position: absolute;
+    left: var(--sp-3);
+    color: var(--text-3);
+    pointer-events: none;
+}
+
+.outline-panel__input {
+    width: 100%;
+    height: 26px;
+    padding: 0 var(--sp-6) 0 26px;
+    border-radius: var(--r-2);
+    border: 1px solid var(--line);
+    background: var(--bg);
+    color: var(--text);
+    font-size: var(--fs-sm);
+}
+
+.outline-panel__input:focus {
+    outline: none;
+    border-color: var(--focus);
+}
+
+.outline-panel__input::placeholder {
+    color: var(--text-4);
+}
+
+.outline-panel__clear {
+    position: absolute;
+    right: 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: var(--r-1);
+    color: var(--text-3);
+}
+
+.outline-panel__clear:hover {
+    background: var(--hover);
+    color: var(--text);
+}
+
+.outline-panel__body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding-bottom: var(--sp-7);
+}
+
+.outline-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.outline-row {
+    display: flex;
+    align-items: center;
+    height: 24px;
+    padding-right: var(--sp-4);
+    color: var(--text-2);
+    font-size: var(--fs-sm);
+}
+
+.outline-row:hover {
+    background: var(--hover);
+    color: var(--text);
+}
+
+.outline-row.is-current {
+    background: var(--agent-soft);
+    color: var(--text);
+}
+
+.outline-row__toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    color: var(--text-3);
+}
+
+.outline-row__btn {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    height: 100%;
+    text-align: left;
+    color: inherit;
+}
+
+.outline-row__kind {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 15px;
+    height: 15px;
+    border-radius: 3px;
+    flex-shrink: 0;
+    font-family: var(--font-code);
+    font-size: 10px;
+    font-weight: var(--fw-semibold);
+}
+
+.outline-row__kind--function,
+.outline-row__kind--method { background: var(--agent-soft); color: var(--agent); }
+.outline-row__kind--class,
+.outline-row__kind--struct { background: var(--warning-soft); color: var(--warning); }
+.outline-row__kind--interface,
+.outline-row__kind--type,
+.outline-row__kind--enum { background: var(--info-soft); color: var(--info); }
+.outline-row__kind--variable,
+.outline-row__kind--property { background: var(--success-soft); color: var(--success); }
+.outline-row__kind--heading,
+.outline-row__kind--module,
+.outline-row__kind--selector { background: var(--hover); color: var(--text-2); }
+
+.outline-row__name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.outline-row__line {
+    flex-shrink: 0;
+    font-family: var(--font-code);
+    font-size: var(--fs-xs);
+    font-variant-numeric: tabular-nums;
+    color: var(--text-3);
+}

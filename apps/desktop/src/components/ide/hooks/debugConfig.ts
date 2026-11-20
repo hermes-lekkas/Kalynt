@@ -4,8 +4,15 @@
 
 export interface DebugConfig {
     type: string
-    request: 'launch'
+    request: 'launch' | 'attach'
     name: string
+    program?: string
+    args?: string[]
+    cwd?: string
+    env?: Record<string, string>
+    mode?: string
+    console?: string
+    stopOnEntry?: boolean
     [key: string]: unknown
 }
 
@@ -22,11 +29,15 @@ export function autoDebugConfig(filePath: string): DebugConfig {
         case 'c':
         case 'cc':
         case 'cpp':
+        case 'cxx':
             // The backend builds the source with debug information first.
             return { type: 'cppdbg', request: 'launch', name: 'C/C++: debug', program: filePath }
         case 'java':
             return { type: 'java', request: 'launch', name: 'Java: debug', mainClass: filePath }
         case 'ts':
+        case 'tsx':
+        case 'mts':
+        case 'cts':
             return {
                 type: 'node', request: 'launch', name: 'TypeScript: current file', program: filePath,
                 runtimeArgs: ['-r', 'ts-node/register'], skipFiles: ['<node_internals>/**']
@@ -38,11 +49,29 @@ export function autoDebugConfig(filePath: string): DebugConfig {
 
 /** Groups adapter types by the language they debug, to match launch.json entries to a file. */
 export function debugFamily(type: string): string {
-    const families: Record<string, string> = {
-        debugpy: 'python', python: 'python',
-        node: 'node', 'pwa-node': 'node', 'node-terminal': 'node',
-        delve: 'go', go: 'go',
-        lldb: 'native', 'rust-lldb': 'native', codelldb: 'native', cppdbg: 'native', gdb: 'native'
+    switch (type) {
+        case 'debugpy':
+        case 'python':
+            return 'python'
+        case 'node':
+        case 'pwa-node':
+        case 'node-terminal':
+            return 'node'
+        case 'delve':
+        case 'go':
+            return 'go'
+        case 'lldb':
+        case 'rust-lldb':
+        case 'codelldb':
+        case 'cppdbg':
+        case 'gdb':
+            return 'native'
+        default:
+            return type
     }
-    return families[type] ?? type
+}
+
+/** Short label for displaying a debug configuration in pickers. */
+export function describeDebugConfig(config: DebugConfig): string {
+    return `${config.name} (${config.type})`
 }

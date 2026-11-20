@@ -1,8 +1,8 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
  *
- * The side bar's three views stay mounted while hidden so the tree keeps its
- * expanded folders and search keeps its results.
+ * The side bar's views stay mounted while hidden so the tree keeps its
+ * expanded folders, search keeps its results, and debug keeps its watches.
  */
 import type { SidePanel as SidePanelId } from '../../stores/layoutStore'
 import type { FileItem } from '../../types/ide'
@@ -10,8 +10,12 @@ import { RegionBoundary } from '../ui'
 import { FileExplorer } from './explorer/FileExplorer'
 import { SearchPanel } from './search/SearchPanel'
 import { GitPanel } from './git/GitPanel'
+import { OutlinePanel } from './outline/OutlinePanel'
+import { DebugPanel } from './debug/DebugPanel'
+import { useExtraSidePanelStore } from './ActivityBar'
 import type { GitApi } from './git/useGit'
 import type { OpenFilesApi } from './hooks/useOpenFiles'
+import type { RunnerApi } from './hooks/useRunner'
 
 interface SidePanelProps {
     panel: SidePanelId
@@ -23,6 +27,7 @@ interface SidePanelProps {
     onRevealed: () => void
     git: GitApi
     buffers: OpenFilesApi
+    runner?: RunnerApi
     onOpenFile: (path: string, line?: number) => void
     onOpenFolder: () => void
     onCloseFolder: () => void
@@ -32,9 +37,12 @@ interface SidePanelProps {
 
 export function SidePanel(props: SidePanelProps) {
     const { panel, visible, folder } = props
+    const extraPanel = useExtraSidePanelStore(s => s.extraPanel)
+    const activeView = extraPanel ?? panel
+
     return (
         <>
-            <div className="side-view" hidden={panel !== 'files'}>
+            <div className="side-view" hidden={activeView !== 'files'}>
                 <RegionBoundary name="Explorer">
                     <FileExplorer
                         folder={folder}
@@ -50,14 +58,34 @@ export function SidePanel(props: SidePanelProps) {
                     />
                 </RegionBoundary>
             </div>
-            <div className="side-view" hidden={panel !== 'search'}>
+            <div className="side-view" hidden={activeView !== 'search'}>
                 <RegionBoundary name="Search">
-                    <SearchPanel folder={folder} buffers={props.buffers} visible={visible && panel === 'search'} onOpenMatch={props.onOpenFile} />
+                    <SearchPanel folder={folder} buffers={props.buffers} visible={visible && activeView === 'search'} onOpenMatch={props.onOpenFile} />
                 </RegionBoundary>
             </div>
-            <div className="side-view" hidden={panel !== 'git'}>
+            <div className="side-view" hidden={activeView !== 'git'}>
                 <RegionBoundary name="Source control">
                     <GitPanel folder={folder} git={props.git} onOpenFile={path => props.onOpenFile(path)} />
+                </RegionBoundary>
+            </div>
+            <div className="side-view" hidden={activeView !== 'debug'}>
+                <RegionBoundary name="Run and Debug">
+                    <DebugPanel
+                        folder={folder}
+                        activePath={props.activePath}
+                        runner={props.runner}
+                        onOpenFile={props.onOpenFile}
+                    />
+                </RegionBoundary>
+            </div>
+            <div className="side-view" hidden={activeView !== 'outline'}>
+                <RegionBoundary name="Outline">
+                    <OutlinePanel
+                        activePath={props.activePath}
+                        buffers={props.buffers}
+                        visible={visible && activeView === 'outline'}
+                        onOpenFile={props.onOpenFile}
+                    />
                 </RegionBoundary>
             </div>
         </>
