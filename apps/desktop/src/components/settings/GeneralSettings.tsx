@@ -4,19 +4,26 @@
 import { useEffect, useRef, useState } from 'react'
 import { Monitor, Moon, RotateCcw, Sun } from 'lucide-react'
 import { useAppStore, type ThemePreference } from '../../stores/appStore'
-import { useLayoutStore } from '../../stores/layoutStore'
+import {
+    EDITOR_PREF_DEFAULTS,
+    useLayoutStore,
+    type AutoSaveMode,
+    type LineNumbersMode,
+    type RenderWhitespaceMode
+} from '../../stores/layoutStore'
 import { Button, Select, Switch, TextInput } from '../ui'
 import { inlineCompletionsEnabled, setInlineCompletionsEnabled } from '../ide/editor/inlineCompletionsPref'
 import { SavedNote, SettingRow, SettingsPage, SettingsSection } from './parts'
 import { pickProvider } from '../../services/aiService'
 import { providerInfo } from '../../types/aiProviders'
 
-const EDITOR_DEFAULTS = {
-    editorFontSize: 13,
-    wordWrap: true,
-    minimap: false,
-    stickyScroll: true
-} as const
+const FONT_PRESETS: ReadonlyArray<{ value: string; label: string }> = [
+    { value: '', label: 'JetBrains Mono (Default)' },
+    { value: "'Fira Code', 'JetBrains Mono', ui-monospace, monospace", label: 'Fira Code' },
+    { value: "'Cascadia Code', 'JetBrains Mono', ui-monospace, monospace", label: 'Cascadia Code' },
+    { value: "'SF Mono', Menlo, Consolas, ui-monospace, monospace", label: 'SF Mono / Consolas' },
+    { value: 'ui-monospace, monospace', label: 'System monospace' }
+]
 
 export function GeneralSettings() {
     const userName = useAppStore(s => s.userName)
@@ -27,6 +34,13 @@ export function GeneralSettings() {
     const apiKeys = useAppStore(s => s.apiKeys)
 
     const editorFontSize = useLayoutStore(s => s.editorFontSize)
+    const fontFamily = useLayoutStore(s => s.fontFamily)
+    const tabSize = useLayoutStore(s => s.tabSize)
+    const insertSpaces = useLayoutStore(s => s.insertSpaces)
+    const autoSave = useLayoutStore(s => s.autoSave)
+    const formatOnSave = useLayoutStore(s => s.formatOnSave)
+    const lineNumbers = useLayoutStore(s => s.lineNumbers)
+    const renderWhitespace = useLayoutStore(s => s.renderWhitespace)
     const wordWrap = useLayoutStore(s => s.wordWrap)
     const minimap = useLayoutStore(s => s.minimap)
     const stickyScroll = useLayoutStore(s => s.stickyScroll)
@@ -56,10 +70,17 @@ export function GeneralSettings() {
         savedTimerRef.current = setTimeout(() => setSaved(false), 1800)
     }
 
-    const editorCustomized = editorFontSize !== EDITOR_DEFAULTS.editorFontSize
-        || wordWrap !== EDITOR_DEFAULTS.wordWrap
-        || minimap !== EDITOR_DEFAULTS.minimap
-        || stickyScroll !== EDITOR_DEFAULTS.stickyScroll
+    const editorCustomized = editorFontSize !== EDITOR_PREF_DEFAULTS.editorFontSize
+        || fontFamily !== EDITOR_PREF_DEFAULTS.fontFamily
+        || tabSize !== EDITOR_PREF_DEFAULTS.tabSize
+        || insertSpaces !== EDITOR_PREF_DEFAULTS.insertSpaces
+        || autoSave !== EDITOR_PREF_DEFAULTS.autoSave
+        || formatOnSave !== EDITOR_PREF_DEFAULTS.formatOnSave
+        || lineNumbers !== EDITOR_PREF_DEFAULTS.lineNumbers
+        || renderWhitespace !== EDITOR_PREF_DEFAULTS.renderWhitespace
+        || wordWrap !== EDITOR_PREF_DEFAULTS.wordWrap
+        || minimap !== EDITOR_PREF_DEFAULTS.minimap
+        || stickyScroll !== EDITOR_PREF_DEFAULTS.stickyScroll
 
     const themeChoices: ReadonlyArray<{ id: ThemePreference; label: string; icon: JSX.Element }> = [
         { id: 'dark', label: 'Dark', icon: <Moon size={14} /> },
@@ -114,7 +135,7 @@ export function GeneralSettings() {
                         size="sm"
                         variant="ghost"
                         icon={<RotateCcw size={13} />}
-                        onClick={() => setEditorPref({ ...EDITOR_DEFAULTS })}
+                        onClick={() => setEditorPref({ ...EDITOR_PREF_DEFAULTS })}
                     >
                         Reset defaults
                     </Button>
@@ -127,6 +148,73 @@ export function GeneralSettings() {
                     control={
                         <Select id="set-font-size" size="sm" value={editorFontSize} onChange={e => setEditorPref({ editorFontSize: Number(e.target.value) })}>
                             {[11, 12, 13, 14, 15, 16, 18, 20].map(n => <option key={n} value={n}>{n} px</option>)}
+                        </Select>
+                    }
+                />
+                <SettingRow
+                    label="Font family"
+                    description="Monospace typeface used in code editors."
+                    htmlFor="set-font-family"
+                    control={
+                        <Select id="set-font-family" size="sm" value={fontFamily} onChange={e => setEditorPref({ fontFamily: e.target.value })}>
+                            {FONT_PRESETS.map(p => <option key={p.label} value={p.value}>{p.label}</option>)}
+                        </Select>
+                    }
+                />
+                <SettingRow
+                    label="Tab size"
+                    description="Number of spaces equal to one indentation level."
+                    htmlFor="set-tab-size"
+                    control={
+                        <Select id="set-tab-size" size="sm" value={tabSize} onChange={e => setEditorPref({ tabSize: Number(e.target.value) })}>
+                            {[2, 4, 8].map(n => <option key={n} value={n}>{n} spaces</option>)}
+                        </Select>
+                    }
+                />
+                <SettingRow
+                    label="Insert spaces"
+                    description="Insert spaces when pressing Tab instead of literal tab characters."
+                    control={<Switch label="Insert spaces" checked={insertSpaces} onChange={v => setEditorPref({ insertSpaces: v })} />}
+                />
+                <SettingRow
+                    label="Auto-save"
+                    description="Automatically write dirty files to disk after a pause or when switching tabs."
+                    htmlFor="set-auto-save"
+                    control={
+                        <Select id="set-auto-save" size="sm" value={autoSave} onChange={e => setEditorPref({ autoSave: e.target.value as AutoSaveMode })}>
+                            <option value="off">Off</option>
+                            <option value="afterDelay">After delay (1 s)</option>
+                            <option value="onFocusChange">On focus change</option>
+                        </Select>
+                    }
+                />
+                <SettingRow
+                    label="Format on save"
+                    description="Run the active language formatter automatically before saving."
+                    control={<Switch label="Format on save" checked={formatOnSave} onChange={v => setEditorPref({ formatOnSave: v })} />}
+                />
+                <SettingRow
+                    label="Line numbers"
+                    description="Control how line numbers appear in the editor gutter."
+                    htmlFor="set-line-numbers"
+                    control={
+                        <Select id="set-line-numbers" size="sm" value={lineNumbers} onChange={e => setEditorPref({ lineNumbers: e.target.value as LineNumbersMode })}>
+                            <option value="on">On</option>
+                            <option value="relative">Relative</option>
+                            <option value="off">Off</option>
+                        </Select>
+                    }
+                />
+                <SettingRow
+                    label="Render whitespace"
+                    description="Show subtle dots and arrows for spaces and tabs."
+                    htmlFor="set-render-whitespace"
+                    control={
+                        <Select id="set-render-whitespace" size="sm" value={renderWhitespace} onChange={e => setEditorPref({ renderWhitespace: e.target.value as RenderWhitespaceMode })}>
+                            <option value="selection">Selection</option>
+                            <option value="boundary">Boundary</option>
+                            <option value="all">All</option>
+                            <option value="none">None</option>
                         </Select>
                     }
                 />

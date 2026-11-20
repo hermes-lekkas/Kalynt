@@ -2,6 +2,15 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
+.resource-meter {
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+}
+
+.resource-meter__stat {
+    font-variant-numeric: tabular-nums;
+}
+
 .resource-pop {
     display: flex;
     flex-direction: column;

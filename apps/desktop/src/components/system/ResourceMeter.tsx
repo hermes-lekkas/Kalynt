@@ -38,14 +38,14 @@ export function ResourceMeter() {
             <button
                 ref={triggerRef}
                 type="button"
-                className={`statusbar__item ${high ? 'is-warning' : ''}`}
+                className={`statusbar__item resource-meter tabular-nums ${high ? 'is-warning' : ''}`}
                 onClick={() => setOpen(o => !o)}
                 aria-expanded={open}
                 title="System resources"
             >
                 <Activity size={12} aria-hidden />
-                <span>CPU {stats.cpu === null ? '–' : `${Math.round(stats.cpu)}%`}</span>
-                <span>RAM {ram === undefined ? '–' : `${Math.round(ram * 100)}%`}</span>
+                <span className="resource-meter__stat">CPU {stats.cpu === null ? '–' : `${Math.round(stats.cpu)}%`}</span>
+                <span className="resource-meter__stat">RAM {ram === undefined ? '–' : `${Math.round(ram * 100)}%`}</span>
             </button>
             <Popover open={open} onClose={() => setOpen(false)} anchor={triggerRef.current} placement="top-end" width={300} ariaLabel="System resources">
                 <div className="resource-pop">
@@ -61,7 +61,7 @@ export function ResourceMeter() {
                         </div>
                     ))}
                     {stats.appMemoryMB !== null && (
-                        <p className="resource-pop__note">Kalynt is using {formatMB(stats.appMemoryMB)}.</p>
+                        <p className="resource-pop__note tabular-nums">Kalynt is using {formatMB(stats.appMemoryMB)}.</p>
                     )}
                     <button
                         type="button"
