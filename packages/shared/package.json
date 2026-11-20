@@ -10,7 +10,7 @@
     "types": "src/index.ts",
     "scripts": {
         "build": "tsc",
-        "test": "tsc --noEmit --strict --skipLibCheck --target ES2022 src/index.ts"
+        "test": "tsc --noEmit"
     },
     "devDependencies": {
         "typescript": "^5.3.0"

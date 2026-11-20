@@ -53,7 +53,7 @@ class AuditLogService {
     private initPromise: Promise<void> | null = null
     private inMemoryQueue: AuditEvent[] = []
     private flushInterval: ReturnType<typeof setInterval> | null = null
-    // private isOnline: boolean = true
+    private onlineHandler: (() => void) | null = null
 
     async initialize(): Promise<void> {
         if (this.initPromise) return this.initPromise
@@ -91,21 +91,21 @@ class AuditLogService {
     }
 
     private startFlushInterval(): void {
+        if (this.flushInterval) {
+            clearInterval(this.flushInterval)
+        }
         // Flush in-memory queue every 5 seconds
         this.flushInterval = setInterval(() => {
-            this.flushQueue()
+            void this.flushQueue()
         }, 5000)
 
-        // Handle online/offline status
-        window.addEventListener('online', () => {
-            // this.isOnline = true
-            this.flushQueue()
-        })
-        /*
-        window.addEventListener('offline', () => {
-            this.isOnline = false
-        })
-        */
+        // Handle online status without leaking duplicate listeners
+        if (typeof window !== 'undefined' && !this.onlineHandler) {
+            this.onlineHandler = () => {
+                void this.flushQueue()
+            }
+            window.addEventListener('online', this.onlineHandler)
+        }
     }
 
     private async flushQueue(): Promise<void> {
@@ -219,15 +219,16 @@ class AuditLogService {
             const request = store.index('timestamp').openCursor(null, 'prev')
             
             const events: AuditEvent[] = []
+            let total = 0
             let skipped = 0
             const offset = query.offset || 0
             const limit = query.limit || 100
 
             request.onsuccess = (event) => {
                 const cursor = (event.target as IDBRequest).result
-                
+
                 if (!cursor) {
-                    resolve({ events, total: events.length + skipped + (cursor ? 1 : 0) })
+                    resolve({ events, total })
                     return
                 }
 
@@ -259,20 +260,16 @@ class AuditLogService {
                     return
                 }
 
+                total++
+
                 // Pagination
                 if (skipped < offset) {
                     skipped++
-                    cursor.continue()
-                    return
+                } else if (events.length < limit) {
+                    events.push(auditEvent)
                 }
 
-                events.push(auditEvent)
-
-                if (events.length >= limit) {
-                    resolve({ events, total: events.length + skipped })
-                } else {
-                    cursor.continue()
-                }
+                cursor.continue()
             }
 
             request.onerror = () => reject(request.error)
@@ -355,11 +352,16 @@ class AuditLogService {
             clearInterval(this.flushInterval)
             this.flushInterval = null
         }
-        this.flushQueue() // Final flush
+        if (typeof window !== 'undefined' && this.onlineHandler) {
+            window.removeEventListener('online', this.onlineHandler)
+            this.onlineHandler = null
+        }
+        void this.flushQueue() // Final flush
         if (this.db) {
             this.db.close()
             this.db = null
         }
+        this.initPromise = null
     }
 }
 

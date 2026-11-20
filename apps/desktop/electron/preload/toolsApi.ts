@@ -4,7 +4,6 @@
  * Build tasks and the debugger.
  */
 import { ipcRenderer, type IpcRendererEvent } from 'electron'
-import { subscribe } from './subscribe'
 
 export const toolsApi = {
 

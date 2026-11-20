@@ -7,21 +7,6 @@
 import { useEffect, useState } from 'react'
 import { Minus, Square, X } from 'lucide-react'
 
-interface WindowControlBridge {
-    window?: {
-        isMaximized?: () => Promise<boolean>
-        onMaximizedChange?: (cb: (maximized: boolean) => void) => () => void
-        minimize?: () => Promise<void>
-        maximize?: () => Promise<void>
-        close?: () => Promise<void>
-    }
-    isMaximized?: () => Promise<boolean>
-    onMaximizedChange?: (cb: (maximized: boolean) => void) => () => void
-    minimizeWindow?: () => Promise<void>
-    maximizeWindow?: () => Promise<void>
-    closeWindow?: () => Promise<void>
-}
-
 function RestoreGlyph() {
     return (
         <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden>
@@ -37,7 +22,7 @@ function inferMaximized(): boolean {
 }
 
 export function WindowControls() {
-    const api = window.electronAPI as unknown as WindowControlBridge | undefined
+    const api = window.electronAPI
     const [maximized, setMaximized] = useState(inferMaximized)
 
     useEffect(() => {

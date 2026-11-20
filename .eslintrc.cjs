@@ -7,10 +7,17 @@ module.exports = {
     extends: ['eslint:recommended'],
     ignorePatterns: ['**/node_modules/**', '**/dist/**', '**/dist-electron/**', '**/release/**', '**/build/**', '**/bin/**', '.claude/**'],
     rules: {
-        // TypeScript checks declarations and unused symbols in these sources.
+        // TypeScript checks type/global declarations; @typescript-eslint/no-unused-vars enforces unused symbols.
         'no-undef': 'off',
         'no-unused-vars': 'off',
+        '@typescript-eslint/no-unused-vars': ['error', {
+            argsIgnorePattern: '^_',
+            varsIgnorePattern: '^_',
+            caughtErrors: 'none'
+        }],
         'no-empty': ['error', { allowEmptyCatch: true }],
-        'react-hooks/rules-of-hooks': 'error'
+        'react-hooks/rules-of-hooks': 'error',
+        'react-hooks/exhaustive-deps': 'warn',
+        'security/detect-unsafe-regex': 'warn'
     }
 }

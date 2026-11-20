@@ -21,13 +21,11 @@ export default defineConfig({
             '@': path.resolve(__dirname, './src'),
             '@collabforge/crdt': path.resolve(__dirname, '../../packages/crdt/src'),
             '@collabforge/networking': path.resolve(__dirname, '../../packages/networking/src'),
-            '@collabforge/crypto': path.resolve(__dirname, '../../packages/crypto/src'),
             '@collabforge/shared': path.resolve(__dirname, '../../packages/shared/src')
         }
     },
     optimizeDeps: {
-        include: ['react-window', 'lodash.debounce'],
-        exclude: ['better-sqlite3', 'node-pty', 'electron']
+        exclude: ['node-pty', 'electron']
     },
     server: {
         host: '0.0.0.0',
@@ -45,15 +43,14 @@ export default defineConfig({
     build: {
         outDir: 'dist',
         rollupOptions: {
-            external: ['better-sqlite3', 'electron'],
+            external: ['electron'],
             output: {
                 chunkFileNames: isProduction ? 'assets/[hash].js' : 'assets/[name]-[hash].js',
                 entryFileNames: isProduction ? 'assets/[hash].js' : 'assets/[name]-[hash].js',
                 assetFileNames: isProduction ? 'assets/[hash][extname]' : 'assets/[name]-[hash][extname]'
             }
         },
-        minify: isProduction ? 'esbuild' : 'esbuild',
+        minify: 'esbuild',
         sourcemap: !isProduction
     },
 })
-

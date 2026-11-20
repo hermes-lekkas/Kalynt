@@ -348,16 +348,6 @@ export interface ElectronAPI {
     saveSession: (session: unknown) => Promise<{ ok: boolean; error?: string }>
     deleteSession: (id: string) => Promise<{ ok: boolean; error?: string }>
   }
-
-  /**
-   * @deprecated Removed from preload at runtime for IPC isolation.
-   * Kept optional here only until parallel Wave 1 branches merge.
-   */
-  ipcRenderer?: {
-    invoke: (channel: string, ...args: any[]) => Promise<any>
-    on: (channel: string, callback: (event: any, ...args: any[]) => void) => () => void
-    removeAllListeners: (channel: string) => void
-  }
 }
 
 declare global {

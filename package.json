@@ -26,10 +26,8 @@
         "@types/node": "^20.10.0",
         "@typescript-eslint/eslint-plugin": "^8.53.0",
         "@typescript-eslint/parser": "^8.53.0",
-        "app-builder-bin": "^5.0.0-alpha.10",
         "electron": "^40.6.1",
         "eslint": "^8.57.1",
-        "eslint-plugin-react": "^7.37.5",
         "eslint-plugin-react-hooks": "^7.0.1",
         "eslint-plugin-security": "^2.1.1",
         "typescript": "5.7.3"

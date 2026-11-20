@@ -31,9 +31,6 @@
             "@collabforge/networking": [
                 "../../packages/networking/src"
             ],
-            "@collabforge/crypto": [
-                "../../packages/crypto/src"
-            ],
             "@collabforge/shared": [
                 "../../packages/shared/src"
             ]

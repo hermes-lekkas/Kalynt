@@ -56,11 +56,8 @@ export function usePerformanceAcceleration() {
 
         // Handle Worker Disposal
         const onDisposeWorkers = () => {
-            logger.general.info('[Performance] Disposing idle workers and hibernating services')
+            logger.general.info('[Performance] Disposing idle workers')
             window.dispatchEvent(new CustomEvent('kalynt-dispose-workers'))
-            import('../services/ServiceOrchestrator').then(({ serviceOrchestrator }) => {
-                serviceOrchestrator.hibernateAll()
-            }).catch(() => undefined)
         }
         const removeWorkerListener = perfApi?.onDisposeWorkers
             ? perfApi.onDisposeWorkers(onDisposeWorkers)
