@@ -23,10 +23,10 @@ async function updateDownloads() {
       if (typeof asset.size === 'number' && asset.size > 0) link.querySelector('.download-meta').textContent += ` · ${Math.round(asset.size / 1_000_000)} MB`;
     });
     document.querySelectorAll('[data-version]').forEach(label => { label.textContent = `Version ${version}`; });
-    document.querySelector('[data-release-label]').textContent = version === '2.0.0' ? '2.0 — the first stable release' : `${version} — available now`;
+    document.querySelector('[data-release-label]').textContent = `${version} — available now`;
     document.querySelector('[data-release-status]').textContent = 'Downloads checked against the latest GitHub release.';
   } catch {
-    document.querySelector('[data-release-status]').textContent = 'Showing the 2.0.0 downloads. Check release notes for the latest availability.';
+    document.querySelector('[data-release-status]').textContent = 'Showing the downloads listed on this page. Check GitHub Releases for the latest version.';
   } finally { clearTimeout(timeout); }
 }
 document.querySelectorAll('[data-copy]').forEach(button => {
