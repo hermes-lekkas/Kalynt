@@ -422,7 +422,7 @@ test('QA-23: renderer lspClient sends notifications via sendLSPNotification and 
             ['textDocument/didOpen', 'textDocument/didChange', 'textDocument/didSave']
         )
         assert.equal(sentRequests.length, 0, 'Lifecycle methods must never be sent via sendLSPRequest')
-        assert.equal(sentNotifications[0].params.textDocument.uri, pathToFileURL(filePath).href)
+        assert.equal(fileURLToPath(sentNotifications[0].params.textDocument.uri), filePath)
 
         // Simulate server pushing publishDiagnostics
         assert.equal(typeof notifCallback, 'function')

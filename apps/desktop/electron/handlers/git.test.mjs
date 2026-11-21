@@ -30,7 +30,7 @@ const { outputFiles } = await build({
                 external: true
             }))
             b.onLoad({ filter: /safeStorage\.ts$/ }, () => ({
-                contents: 'export const readSecret = () => null',
+                contents: 'export const readSecret = () => process.env.KALYNT_TEST_GIT_TOKEN ?? null',
                 loader: 'ts'
             }))
         }
@@ -124,7 +124,7 @@ test('QA-19: checking out same-named remote branches across two remotes never de
 
     // 1. Select origin/shared-name when no local shared-name exists yet.
     const resOrigin = await invoke('git:checkout', { repoPath: work, branch: 'origin/shared-name', remoteRef: 'origin/shared-name' })
-    assert.equal(resOrigin.success, true)
+    assert.equal(resOrigin.success, true, resOrigin.error)
     assert.equal(resOrigin.branch, 'shared-name')
     assert.equal(resOrigin.tracking, 'origin/shared-name')
     assert.equal(resOrigin.created, true)
@@ -149,8 +149,17 @@ test('QA-19: checking out same-named remote branches across two remotes never de
     assert.equal((await invoke('git:add', { repoPath: work, files: ['second-only.txt'] })).success, true)
     assert.equal((await invoke('git:commit', { repoPath: work, message: 'second branch update' })).success, true)
     const pushedSecondSha = runGit(work, ['rev-parse', 'HEAD'])
-    const pushSecondRes = await invoke('git:push', work)
-    assert.equal(pushSecondRes.success, true, pushSecondRes.error)
+    const previousPager = process.env.GIT_PAGER
+    process.env.GIT_PAGER = 'cat'
+    process.env.KALYNT_TEST_GIT_TOKEN = 'test-token'
+    try {
+        const pushSecondRes = await invoke('git:push', work)
+        assert.equal(pushSecondRes.success, true, pushSecondRes.error)
+    } finally {
+        if (previousPager === undefined) delete process.env.GIT_PAGER
+        else process.env.GIT_PAGER = previousPager
+        delete process.env.KALYNT_TEST_GIT_TOKEN
+    }
     assert.equal(runGit(secondBare, ['rev-parse', 'refs/heads/shared-name']), pushedSecondSha)
     assert.equal(runGit(originBare, ['rev-parse', 'refs/heads/shared-name']), originSharedSha)
 
@@ -195,7 +204,7 @@ test('QA-19: existing untracked local branch of same name is preserved when chec
 
     // Selecting origin/shared-name must NOT detach HEAD and must NOT overwrite local shared-name.
     const resOrigin = await invoke('git:checkout', { repoPath: work, branch: 'origin/shared-name' })
-    assert.equal(resOrigin.success, true)
+    assert.equal(resOrigin.success, true, resOrigin.error)
     assert.equal(resOrigin.branch, 'origin-shared-name')
     assert.equal(resOrigin.tracking, 'origin/shared-name')
     assert.equal(runGit(work, ['branch', '--show-current']), 'origin-shared-name')

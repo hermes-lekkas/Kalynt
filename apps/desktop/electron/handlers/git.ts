@@ -8,7 +8,8 @@
  */
 import path from 'node:path'
 import fs from 'node:fs'
-import simpleGit, { type SimpleGit } from 'simple-git'
+import { simpleGit, type SimpleGit } from 'simple-git'
+import { isGuardedEnvKey } from '@simple-git/argv-parser'
 import { readSecret } from './safeStorage'
 import { validatePath } from '../utils/pathValidator'
 
@@ -201,21 +202,21 @@ export function registerGitHandlers(ipcMain: Electron.IpcMain, getCurrentWorkspa
 
     // Pass GitHub token via Git's env-based config instead of CLI -c args so it
     // never appears in process listings (`ps` / `/proc/<pid>/cmdline`).
-    const authEnv = (): NodeJS.ProcessEnv => {
-        const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0' }
+    const authenticatedGit = (baseDir = process.cwd()): SimpleGit => {
+        const inheritedEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !isGuardedEnvKey(key)))
+        const auth: Record<string, string> = { GIT_TERMINAL_PROMPT: '0' }
         const token = readSecret(getUserDataPath(), TOKEN_KEY)
-        if (!token) return env
-        const basic = Buffer.from(`x-access-token:${token}`).toString('base64')
-        const existingCount = Number.parseInt(process.env.GIT_CONFIG_COUNT || '0', 10)
-        const idx = Number.isFinite(existingCount) && existingCount >= 0 ? existingCount : 0
-        env.GIT_CONFIG_COUNT = String(idx + 1)
-        env[`GIT_CONFIG_KEY_${idx}`] = GITHUB_HEADER_KEY
-        env[`GIT_CONFIG_VALUE_${idx}`] = `AUTHORIZATION: basic ${basic}`
-        return env
+        if (token) {
+            const basic = Buffer.from(`x-access-token:${token}`).toString('base64')
+            auth.GIT_CONFIG_COUNT = '1'
+            auth.GIT_CONFIG_KEY_0 = GITHUB_HEADER_KEY
+            auth.GIT_CONFIG_VALUE_0 = `AUTHORIZATION: basic ${basic}`
+        }
+        return simpleGit({ baseDir, allowEnvironment: Object.keys(auth) }).env({ ...inheritedEnv, ...auth })
     }
 
     const gitFor = (repoPath: string, withAuth = false): SimpleGit =>
-        withAuth ? simpleGit({ baseDir: repoPath }).env(authEnv()) : simpleGit({ baseDir: repoPath })
+        withAuth ? authenticatedGit(repoPath) : simpleGit({ baseDir: repoPath })
 
     // Earlier versions stored the token in .git/config; take it out again.
     const removeStoredToken = async (repoPath: string) => {
@@ -462,7 +463,7 @@ export function registerGitHandlers(ipcMain: Electron.IpcMain, getCurrentWorkspa
                 return { success: false, error: 'The destination folder already exists and is not empty' }
             }
             await fs.promises.mkdir(path.dirname(target), { recursive: true })
-            await simpleGit().env(authEnv()).raw(['clone', '--', url, target])
+            await authenticatedGit().raw(['clone', '--', url, target])
             return { success: true, path: target }
         } catch (error) {
             console.error('[Git] Clone failed:', errorText(error))
