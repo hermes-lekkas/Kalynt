@@ -203,12 +203,20 @@ test('QA-12: examples/test-extension cold-start command discovery, execution, di
     await fs.copyFile(path.join(repoExampleDir, 'package.json'), path.join(testExtDir, 'package.json'))
     await build({
         entryPoints: [path.join(repoExampleDir, 'src/extension.ts')],
-        outfile: path.join(testExtOut, 'extension.js'),
+        outfile: path.join(testExtOut, 'example.cjs'),
         bundle: true,
         platform: 'node',
         format: 'cjs',
         external: ['vscode']
     })
+    await fs.writeFile(path.join(testExtOut, 'extension.js'), `
+        const example = require('./example.cjs')
+        exports.activate = example.activate
+        exports.deactivate = async () => {
+            await new Promise(resolve => setTimeout(resolve, 120))
+            example.deactivate()
+        }
+    `)
 
     // Compile the real extension host process script into our temp dir
     const hostScriptPath = path.join(root, 'extensionHostProcess.cjs')

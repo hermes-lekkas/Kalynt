@@ -58,6 +58,7 @@ export class ExtensionHost {
   }> = new Map()
 
   private extensionPaths: Map<string, string> = new Map()
+  private lifecycleTasks = new Map<string, Promise<void>>()
   private apiFactory: Map<string, unknown> = new Map()
   private commandHandlers: Map<string, { extensionId: string; callback: (...args: unknown[]) => unknown }> = new Map()
   private configurationStore: Map<string, unknown> = new Map()
@@ -145,15 +146,21 @@ export class ExtensionHost {
     process.on('message', async (message: HostMessage) => {
       try {
         switch (message.type) {
-          case 'load-extension':
-            await this.handleLoadExtension(message.payload as { id: string; path: string })
+          case 'load-extension': {
+            const payload = message.payload as { id: string; path: string }
+            await this.runLifecycleTask(payload.id, () => this.handleLoadExtension(payload))
             break
-          case 'activate-extension':
-            await this.handleActivateExtension(message.payload as { id: string })
+          }
+          case 'activate-extension': {
+            const payload = message.payload as { id: string }
+            await this.runLifecycleTask(payload.id, () => this.handleActivateExtension(payload))
             break
-          case 'deactivate-extension':
-            await this.handleDeactivateExtension(message.payload as { id: string })
+          }
+          case 'deactivate-extension': {
+            const payload = message.payload as { id: string }
+            await this.runLifecycleTask(payload.id, () => this.handleDeactivateExtension(payload))
             break
+          }
           case 'invoke-command':
             await this.handleInvokeCommand(
               message.payload as { extensionId: string; command: string; args?: unknown[]; invocationId?: number }
@@ -187,6 +194,18 @@ export class ExtensionHost {
 
     // Signal ready to main process
     this.sendMessage({ type: 'ready' })
+  }
+
+  private async runLifecycleTask(id: string, run: () => Promise<void>): Promise<void> {
+    // A reactivation must wait until the outgoing extension disposes its commands.
+    const previous = this.lifecycleTasks.get(id)
+    const task = previous ? previous.then(run, run) : run()
+    this.lifecycleTasks.set(id, task)
+    try {
+      await task
+    } finally {
+      if (this.lifecycleTasks.get(id) === task) this.lifecycleTasks.delete(id)
+    }
   }
 
   private createExtensionContext(extensionPath: string, manifest: Record<string, unknown>): ExtensionContext {
@@ -352,25 +371,20 @@ export class ExtensionHost {
         await Promise.resolve(extension.module.deactivate())
       }
 
-      for (const subscription of extension.context.subscriptions) {
-        try {
-          subscription.dispose()
-        } catch (error) {
-          console.error(`Error disposing subscription for ${id}:`, error)
-        }
-      }
-
-      this.cleanupCommandsForExtension(id)
-      this.extensions.delete(id)
-      this.apiFactory.delete(id)
-
-      this.sendMessage({
-        type: 'extension-deactivated',
-        payload: { id }
-      })
     } catch (error) {
       this.sendError('deactivate-failed', `Failed to deactivate extension ${id}: ${error instanceof Error ? error.message : String(error)}`)
     }
+    for (const subscription of extension.context.subscriptions) {
+      try {
+        subscription.dispose()
+      } catch (error) {
+        console.error(`Error disposing subscription for ${id}:`, error)
+      }
+    }
+    this.cleanupCommandsForExtension(id)
+    this.extensions.delete(id)
+    this.apiFactory.delete(id)
+    this.sendMessage({ type: 'extension-deactivated', payload: { id } })
   }
 
   private cleanupCommandsForExtension(extensionId: string): void {
@@ -528,6 +542,7 @@ export class ExtensionHost {
   }
 
   private async dispose(): Promise<void> {
+    await Promise.allSettled(this.lifecycleTasks.values())
     const extensionIds = Array.from(this.extensions.keys())
     for (const id of extensionIds) {
       await this.handleDeactivateExtension({ id })
