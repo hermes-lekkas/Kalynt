@@ -30,6 +30,14 @@ test('extractFileLinks parses POSIX, Windows, MSBuild, and Python traceback link
     assert.equal(msbuildLinks[0].line, 18)
     assert.equal(msbuildLinks[0].column, 5)
 
+    const windowsPath = 'C:\\Workspace\\src\\app.ts'
+    const windowsLinks = extractFileLinks(`${windowsPath}:18:5`)
+    assert.equal(windowsLinks[0].filePath, windowsPath)
+
+    const nestedPath = `./${'src//generated/'.repeat(20)}app.ts`
+    const nestedLinks = extractFileLinks(`${nestedPath}:18:5`)
+    assert.equal(nestedLinks[0].filePath, nestedPath)
+
     const pyLinks = extractFileLinks('  File "/workspace/app.py", line 99, in main')
     assert.equal(pyLinks.length, 1)
     assert.equal(pyLinks[0].filePath, '/workspace/app.py')

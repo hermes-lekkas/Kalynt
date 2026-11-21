@@ -27,7 +27,7 @@ const PYTHON_TRACE_RE = /File "([^"\r\n]+)", line (\d+)/g
 // 2. Standard file:line(:col) or file(line(,col)) paths
 // Matches POSIX (/a/b.ts:10:2, ./a/b.ts:10, src/a.ts:10:2) and Windows (C:\a\b.ts:10:2, a\b.ts(10,2))
 const FILE_LOC_RE =
-    /(?:^|[\s(['"`])((?:[A-Za-z]:[\\/]|\/|\.\.?[\\/])?(?:[^\s:'"()[\]<>|*?`]+[\\/])*[^\s:'"()[\]<>|*?`/\\]+\.[A-Za-z0-9]{1,10})(?::(\d+)(?::(\d+))?|\((\d+)(?:,\s*(\d+))?\))/g
+    /(?:^|[\s(['"`])((?:[A-Za-z]:[\\/]+|[\\/]+)?(?:[^\s:'"()[\]<>|*?`/\\]+[\\/]+)*[^\s:'"()[\]<>|*?`/\\]+\.[A-Za-z0-9]{1,10})(?::(\d+)(?::(\d+))?|\((\d+)(?:,\s*(\d+))?\))/g
 
 function isAbsolutePath(filePath: string): boolean {
     return filePath.startsWith('/') || /^[A-Za-z]:[\\/]/.test(filePath) || filePath.startsWith('\\\\')
