@@ -352,8 +352,8 @@ test('QA-23: renderer lspClient sends notifications via sendLSPNotification and 
     let notifCallback = null
     const markerCalls = []
 
-    const ws = '/tmp/qa23-ws'
-    const filePath = '/tmp/qa23-ws/main.rs'
+    const ws = path.join(root, 'qa23 workspace')
+    const filePath = path.join(ws, 'main.rs')
     let content = 'fn main() {}'
     let version = 1
     let disposeHandler = null
@@ -422,6 +422,7 @@ test('QA-23: renderer lspClient sends notifications via sendLSPNotification and 
             ['textDocument/didOpen', 'textDocument/didChange', 'textDocument/didSave']
         )
         assert.equal(sentRequests.length, 0, 'Lifecycle methods must never be sent via sendLSPRequest')
+        assert.equal(sentNotifications[0].params.textDocument.uri, pathToFileURL(filePath).href)
 
         // Simulate server pushing publishDiagnostics
         assert.equal(typeof notifCallback, 'function')

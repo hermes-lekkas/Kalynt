@@ -191,6 +191,9 @@ test('marketplaceService: uses Open VSX files.download and maps allVersions', as
 
 test('QA-12: examples/test-extension cold-start command discovery, execution, disable/uninstall removal, and reactivation', async () => {
     const extRoot = path.join(root, 'qa12-extensions')
+    const storageDir = path.join(root, 'qa12-storage')
+    await fs.mkdir(storageDir)
+    await fs.symlink(storageDir, extRoot, 'junction')
     const testExtDir = path.join(extRoot, 'kalynt.kalynt-test-extension')
     const testExtOut = path.join(testExtDir, 'out')
     await fs.mkdir(testExtOut, { recursive: true })

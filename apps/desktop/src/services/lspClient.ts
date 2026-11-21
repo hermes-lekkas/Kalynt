@@ -77,11 +77,13 @@ const LSP_MARKER_OWNER = 'kalynt-lsp'
 function toFileUri(filePath: string): string {
     const normalized = filePath.replace(/\\/g, '/')
     if (normalized.startsWith('file://')) return normalized
-    const encoded = normalized
+    const drivePath = /^[A-Za-z]:\//.test(normalized)
+    const leadingDrive = drivePath ? normalized.slice(0, 2) : ''
+    const encoded = normalized.slice(leadingDrive.length)
         .split('/')
         .map(seg => encodeURIComponent(seg))
         .join('/')
-    return /^[A-Za-z]:\//.test(normalized) ? `file:///${encoded}` : `file://${encoded.startsWith('/') ? '' : '/'}${encoded}`
+    return drivePath ? `file:///${leadingDrive}${encoded}` : `file://${encoded.startsWith('/') ? '' : '/'}${encoded}`
 }
 
 function fromFileUri(uri: string): string {

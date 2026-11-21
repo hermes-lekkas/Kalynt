@@ -114,6 +114,14 @@ jobs:
           npx vite build
           npx electron-builder --mac --publish never
 
+      - name: Verify macOS disk image and bundled helper
+        working-directory: apps/desktop
+        run: |
+          hdiutil verify release/*.dmg
+          helper=$(find release -path '*/Kalynt.app/Contents/Resources/bin/KalyntHelper' -print -quit)
+          test -x "$helper"
+          file "$helper"
+
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:

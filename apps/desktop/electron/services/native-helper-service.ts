@@ -38,13 +38,9 @@ class NativeHelperService extends EventEmitter {
     }
 
     private init() {
-        // Path to the Swift binary
-        // During development: packages/native-macos/.build/debug/KalyntHelper
-        // In production: Contents/Resources/bin/KalyntHelper
-        const devPath = path.join(app.getAppPath(), '..', '..', 'packages', 'native-macos', '.build', 'debug', 'KalyntHelper')
-        const prodPath = path.join(process.resourcesPath, 'bin', 'KalyntHelper')
-        
-        const helperPath = fs.existsSync(devPath) ? devPath : prodPath
+        const helperPath = app.isPackaged
+            ? path.join(process.resourcesPath, 'bin', 'KalyntHelper')
+            : path.join(app.getAppPath(), '..', '..', 'packages', 'native-macos', '.build', 'debug', 'KalyntHelper')
 
         if (!fs.existsSync(helperPath)) {
             console.warn('[NativeHelper] Swift binary not found. Native features disabled.')

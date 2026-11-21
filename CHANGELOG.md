@@ -17,6 +17,7 @@ All notable changes to this project will be documented in this file.
 
 ### Packaging, updates & platform notes
 
+- **Dependency updates:** Updated the Git integration, installer updater, WebSocket library, and local inference engine and refreshed their production dependencies to address published advisories.
 - **Workspace-aware packaging & native rebuilds:** Set `build.npmRebuild: false`, added direct `@electron/rebuild` (`^4.0.3`) and `npm run rebuild:native`, updated local packaging scripts to rebuild `node-pty` and pass `--publish never`, aligned Node.js engine requirement to `>=22.12.0`, and refreshed `package-lock.json` (removing obsolete `better-sqlite3` and native Tree-sitter entries).
 - **macOS update path:** macOS builds now generate both `.dmg` and `.zip` (plus `latest-mac.yml`) for `electron-updater` compatibility. In-app macOS auto-updates require a signed release `.zip` alongside the `.dmg`; unsigned or manual macOS users should update by downloading the `.dmg` directly from GitHub Releases.
 - **Installer size vs installed footprint:** On Linux x64, measured pre-release 2.1 builds are ~312 MB compressed for `.deb` (~502 MB AppImage) and ~1.12 GB extracted on disk (compared to 2.0.0's 328 MB `.deb`, 542 MB AppImage, and 1.38 GB extracted footprint; `app.asar` dropped from 201 MB to 29.5 MB). Final sizes for all platforms are measured from the published 2.1.0 release artifacts.

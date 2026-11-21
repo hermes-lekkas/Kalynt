@@ -73,6 +73,7 @@ Additional platform checks:
   ```bash
   npm run build --workspace=apps/desktop
   ```
+  On macOS, first run `swift build --package-path packages/native-macos -c release` to include the native helper.
 - **Website changes:**
   ```bash
   npm run website:build

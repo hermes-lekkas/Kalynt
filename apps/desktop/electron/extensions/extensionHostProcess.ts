@@ -232,7 +232,8 @@ export class ExtensionHost {
         throw new Error(`Extension ${id} is not VS Code compatible (missing engines.vscode)`)
       }
 
-      this.extensionPaths.set(id, extensionPath)
+      // Node resolves CommonJS module filenames through filesystem aliases.
+      this.extensionPaths.set(id, fs.realpathSync(extensionPath))
 
       this.sendMessage({
         type: 'extension-loaded',
