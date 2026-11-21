@@ -6,7 +6,7 @@
  * OpenAI's side, so each turn's output items, including encrypted reasoning,
  * are sent back with the next request.
  */
-import type { AssistantItem, ChatRequest, ChatResult, ConversationItem, StreamEvent } from '../../src/types/aiProtocol'
+import type { AssistantItem, ChatRequest, ChatResult, ConversationItem, Effort, StreamEvent } from '../../src/types/aiProtocol'
 import { parseArguments, postJson, ProviderError, readSse } from './http'
 
 interface ResponseItem {
@@ -64,7 +64,7 @@ function toInput(items: ConversationItem[]): unknown[] {
     return input
 }
 
-const EFFORT = { low: 'low', medium: 'medium', high: 'high', max: 'max' } as const
+const EFFORT: Record<Effort, 'low' | 'medium' | 'high'> = { low: 'low', medium: 'medium', high: 'high', max: 'high' }
 
 export interface OpenAIOptions {
     apiKey: string

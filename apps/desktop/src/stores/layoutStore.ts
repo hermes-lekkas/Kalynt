@@ -5,20 +5,61 @@
  * display preferences. Pure UI state — nothing here reaches the main process.
  */
 import { create } from 'zustand'
-import { persist, createJSONStorage } from 'zustand/middleware'
+import { persist, createJSONStorage, type StateStorage } from 'zustand/middleware'
 
 export type MainView = 'code' | 'tasks' | 'history' | 'files'
-export type SidePanel = 'files' | 'search' | 'git'
+export type SidePanel = 'files' | 'search' | 'git' | 'debug' | 'outline'
 export type BottomTab = 'terminal' | 'output' | 'build' | 'debug'
+
+const VALID_SIDE_PANELS: ReadonlySet<SidePanel> = new Set(['files', 'search', 'git', 'debug', 'outline'])
+
+function sanitizeSidePanel(value: unknown): SidePanel {
+    return typeof value === 'string' && VALID_SIDE_PANELS.has(value as SidePanel)
+        ? (value as SidePanel)
+        : 'files'
+}
 export type RightTab = 'agent' | 'team'
+export type AutoSaveMode = 'off' | 'afterDelay' | 'onFocusChange'
+export type LineNumbersMode = 'on' | 'off' | 'relative'
+export type RenderWhitespaceMode = 'none' | 'selection' | 'boundary' | 'all'
 
 export const LAYOUT_LIMITS = {
-    sidebar: { min: 200, max: 520, default: 264 },
-    right: { min: 320, max: 720, default: 400 },
+    sidebar: { min: 180, max: 520, default: 264 },
+    right: { min: 280, max: 720, default: 400 },
     bottom: { min: 120, max: 640, default: 240 }
 } as const
 
-interface LayoutState {
+export const EDITOR_PREF_DEFAULTS = {
+    wordWrap: true,
+    minimap: false,
+    stickyScroll: true,
+    editorFontSize: 13,
+    tabSize: 2,
+    insertSpaces: true,
+    autoSave: 'off' as AutoSaveMode,
+    formatOnSave: false,
+    lineNumbers: 'on' as LineNumbersMode,
+    renderWhitespace: 'selection' as RenderWhitespaceMode,
+    fontFamily: ''
+} as const
+
+export interface EditorPrefs {
+    wordWrap: boolean
+    minimap: boolean
+    stickyScroll: boolean
+    editorFontSize: number
+    splitEditor: boolean
+    splitRatio: number
+    tabSize: number
+    insertSpaces: boolean
+    autoSave: AutoSaveMode
+    formatOnSave: boolean
+    lineNumbers: LineNumbersMode
+    renderWhitespace: RenderWhitespaceMode
+    fontFamily: string
+}
+
+interface LayoutState extends EditorPrefs {
     mainView: MainView
 
     sidebarOpen: boolean
@@ -32,13 +73,6 @@ interface LayoutState {
     rightOpen: boolean
     rightWidth: number
     rightTab: RightTab
-
-    wordWrap: boolean
-    minimap: boolean
-    stickyScroll: boolean
-    editorFontSize: number
-    splitEditor: boolean
-    splitRatio: number
 
     setMainView: (view: MainView) => void
     setSidebarOpen: (open: boolean) => void
@@ -54,8 +88,60 @@ interface LayoutState {
     setRightWidth: (width: number) => void
     showRightTab: (tab: RightTab) => void
     setRightTab: (tab: RightTab) => void
-    setEditorPref: (pref: Partial<Pick<LayoutState, 'wordWrap' | 'minimap' | 'stickyScroll' | 'editorFontSize' | 'splitEditor' | 'splitRatio'>>) => void
+    setEditorPref: (pref: Partial<EditorPrefs>) => void
 }
+
+function createDebouncedStorage(delayMs = 200): StateStorage {
+    const pending = new Map<string, string>()
+    let timer: ReturnType<typeof setTimeout> | null = null
+
+    const flush = () => {
+        if (timer !== null) {
+            clearTimeout(timer)
+            timer = null
+        }
+        if (pending.size === 0) return
+        try {
+            pending.forEach((value, key) => {
+                localStorage.setItem(key, value)
+            })
+        } catch {
+            // Storage may be unavailable or full; fail silently for UI layout state.
+        }
+        pending.clear()
+    }
+
+    if (typeof window !== 'undefined') {
+        window.addEventListener('pagehide', flush)
+        window.addEventListener('beforeunload', flush)
+    }
+
+    return {
+        getItem: (name) => {
+            if (pending.has(name)) return pending.get(name)!
+            try {
+                return localStorage.getItem(name)
+            } catch {
+                return null
+            }
+        },
+        setItem: (name, value) => {
+            pending.set(name, value)
+            if (timer !== null) clearTimeout(timer)
+            timer = setTimeout(flush, delayMs)
+        },
+        removeItem: (name) => {
+            pending.delete(name)
+            try {
+                localStorage.removeItem(name)
+            } catch {
+                // Ignore storage errors.
+            }
+        }
+    }
+}
+
+const debouncedStorage = createDebouncedStorage(200)
 
 export const useLayoutStore = create<LayoutState>()(
     persist(
@@ -74,10 +160,7 @@ export const useLayoutStore = create<LayoutState>()(
             rightWidth: LAYOUT_LIMITS.right.default,
             rightTab: 'agent',
 
-            wordWrap: true,
-            minimap: false,
-            stickyScroll: true,
-            editorFontSize: 13,
+            ...EDITOR_PREF_DEFAULTS,
             splitEditor: false,
             splitRatio: 0.5,
 
@@ -102,8 +185,24 @@ export const useLayoutStore = create<LayoutState>()(
         }),
         {
             name: 'kalynt-layout',
-            version: 1,
-            storage: createJSONStorage(() => localStorage)
+            version: 3,
+            storage: createJSONStorage(() => debouncedStorage),
+            migrate: (persisted) => {
+                const state = (persisted && typeof persisted === 'object' ? persisted : {}) as Partial<LayoutState>
+                return {
+                    ...EDITOR_PREF_DEFAULTS,
+                    ...state,
+                    sidePanel: sanitizeSidePanel(state.sidePanel)
+                }
+            },
+            merge: (persisted, current) => {
+                const state = (persisted && typeof persisted === 'object' ? persisted : {}) as Partial<LayoutState>
+                return {
+                    ...current,
+                    ...state,
+                    sidePanel: sanitizeSidePanel(state.sidePanel ?? current.sidePanel)
+                }
+            }
         }
     )
 )

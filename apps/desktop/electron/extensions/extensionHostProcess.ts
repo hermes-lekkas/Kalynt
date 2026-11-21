@@ -7,7 +7,16 @@
 import * as path from 'path'
 import * as fs from 'fs'
 import Module from 'module'
-import { createVSCodeAPI as returnVsCodeAPI } from './vscodeApiShim'
+import {
+  createVSCodeAPI as returnVsCodeAPI,
+  createMemento,
+  createSecretStorage,
+  ExtensionMode,
+  Uri,
+  type GlobalMemento,
+  type Memento,
+  type SecretStorage
+} from './vscodeApiShim'
 
 // Message types for communication with main process
 interface HostMessage {
@@ -25,24 +34,40 @@ interface ExtensionModule {
 interface ExtensionContext {
   subscriptions: Array<{ dispose(): void }>
   extensionPath: string
+  extensionUri: Uri
   asAbsolutePath: (relativePath: string) => string
   storagePath: string
   globalStoragePath: string
+  storageUri: Uri
+  globalStorageUri: Uri
   logPath: string
+  logUri: Uri
+  globalState: GlobalMemento
+  workspaceState: Memento
+  secrets: SecretStorage
+  extensionMode: ExtensionMode
+  packageJSON: Record<string, unknown>
 }
 
-class ExtensionHost {
+export class ExtensionHost {
   private extensions: Map<string, {
     module: ExtensionModule
     context: ExtensionContext
-    manifest: unknown
+    manifest: Record<string, unknown>
     exports: unknown
   }> = new Map()
 
   private extensionPaths: Map<string, string> = new Map()
+  private lifecycleTasks = new Map<string, Promise<void>>()
   private apiFactory: Map<string, unknown> = new Map()
+  private commandHandlers: Map<string, { extensionId: string; callback: (...args: unknown[]) => unknown }> = new Map()
+  private configurationStore: Map<string, unknown> = new Map()
+  private workspaceFolders: Array<{ uri: Uri; name: string; index: number }> | undefined =
+    process.env.KALYNT_WORKSPACE_PATH
+      ? [{ uri: Uri.file(process.env.KALYNT_WORKSPACE_PATH), name: path.basename(process.env.KALYNT_WORKSPACE_PATH), index: 0 }]
+      : undefined
   private nextRequestId = 1
-  private pendingResponses: Map<number, { resolve: (value: unknown) => void }> = new Map()
+  private pendingResponses: Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }> = new Map()
 
   constructor() {
     this.hookModuleLoader()
@@ -55,28 +80,28 @@ class ExtensionHost {
     const originalWarn = console.warn
     const originalError = console.error
 
-    console.log = (..._args: unknown[]) => {
+    console.log = (...args: unknown[]) => {
       this.sendMessage({
         type: 'log-message',
-        payload: { level: 'info', message: _args.map(String).join(' ') }
+        payload: { level: 'info', message: args.map(String).join(' ') }
       })
-      originalLog.apply(console, _args)
+      originalLog.apply(console, args)
     }
 
-    console.warn = (..._args: unknown[]) => {
+    console.warn = (...args: unknown[]) => {
       this.sendMessage({
         type: 'log-message',
-        payload: { level: 'warn', message: _args.map(String).join(' ') }
+        payload: { level: 'warn', message: args.map(String).join(' ') }
       })
-      originalWarn.apply(console, _args)
+      originalWarn.apply(console, args)
     }
 
-    console.error = (..._args: unknown[]) => {
+    console.error = (...args: unknown[]) => {
       this.sendMessage({
         type: 'log-message',
-        payload: { level: 'error', message: _args.map(String).join(' ') }
+        payload: { level: 'error', message: args.map(String).join(' ') }
       })
-      originalError.apply(console, _args)
+      originalError.apply(console, args)
     }
   }
 
@@ -84,47 +109,78 @@ class ExtensionHost {
     const originalLoad = (Module as any)._load
     ;(Module as any)._load = (request: string, parent: any, isMain: boolean) => {
       if (request === 'vscode') {
-        const extensionId = this.findExtensionIdByPath(parent.filename)
-        if (extensionId) {
-          const api = this.apiFactory.get(extensionId)
-          if (api) return api
+        const filename = parent?.filename
+        if (typeof filename === 'string' && filename.length > 0) {
+          const extensionId = this.findExtensionIdByPath(filename)
+          if (extensionId) {
+            const api = this.apiFactory.get(extensionId)
+            if (api) return api
+          }
         }
       }
       return originalLoad.apply(Module, [request, parent, isMain])
     }
   }
 
-  private findExtensionIdByPath(filePath: string): string | undefined {
+  public findExtensionIdByPath(filePath: string): string | undefined {
+    if (!filePath) return undefined
     const normalizedPath = filePath.replace(/\\/g, '/')
+    let bestId: string | undefined
+    let bestLength = -1
+
     for (const [id, rootPath] of this.extensionPaths) {
-      const normalizedRoot = rootPath.replace(/\\/g, '/')
-      if (normalizedPath.startsWith(normalizedRoot)) {
-        return id
+      const normalizedRoot = rootPath.replace(/\\/g, '/').replace(/\/+$/, '')
+      const rootWithSep = `${normalizedRoot}/`
+      if (
+        (normalizedPath === normalizedRoot || normalizedPath.startsWith(rootWithSep)) &&
+        normalizedRoot.length > bestLength
+      ) {
+        bestId = id
+        bestLength = normalizedRoot.length
       }
     }
-    return undefined
+    return bestId
   }
 
   private setupMessageHandlers(): void {
     process.on('message', async (message: HostMessage) => {
       try {
         switch (message.type) {
-          case 'load-extension':
-            await this.handleLoadExtension(message.payload as { id: string; path: string })
+          case 'load-extension': {
+            const payload = message.payload as { id: string; path: string }
+            await this.runLifecycleTask(payload.id, () => this.handleLoadExtension(payload))
             break
-          case 'activate-extension':
-            await this.handleActivateExtension(message.payload as { id: string })
+          }
+          case 'activate-extension': {
+            const payload = message.payload as { id: string }
+            await this.runLifecycleTask(payload.id, () => this.handleActivateExtension(payload))
             break
-          
-          case 'deactivate-extension':
-            await this.handleDeactivateExtension(message.payload as { id: string })
+          }
+          case 'deactivate-extension': {
+            const payload = message.payload as { id: string }
+            await this.runLifecycleTask(payload.id, () => this.handleDeactivateExtension(payload))
+            break
+          }
+          case 'invoke-command':
+            await this.handleInvokeCommand(
+              message.payload as { extensionId: string; command: string; args?: unknown[]; invocationId?: number }
+            )
             break
           case 'invoke-api':
-            await this.handleInvokeAPI(message.payload as { extensionId: string; api: string; args: unknown[] })
+            await this.handleInvokeAPI(
+              message.payload as { extensionId: string; api: string; args?: unknown[]; messageId?: number }
+            )
             break
           case 'command-result':
-            this.handleCommandResult(message.payload as { messageId: number; result: unknown })
+            this.handleCommandResult(message.payload as { messageId: number; result?: unknown; error?: string })
             break
+          case 'update-workspace-folders': {
+            const folders = (message.payload as { folders?: string[] })?.folders
+            this.workspaceFolders = Array.isArray(folders) && folders.length > 0
+              ? folders.map((f, index) => ({ uri: Uri.file(f), name: path.basename(f), index }))
+              : undefined
+            break
+          }
           case 'dispose':
             await this.dispose()
             break
@@ -140,16 +196,50 @@ class ExtensionHost {
     this.sendMessage({ type: 'ready' })
   }
 
+  private async runLifecycleTask(id: string, run: () => Promise<void>): Promise<void> {
+    // A reactivation must wait until the outgoing extension disposes its commands.
+    const previous = this.lifecycleTasks.get(id)
+    const task = previous ? previous.then(run, run) : run()
+    this.lifecycleTasks.set(id, task)
+    try {
+      await task
+    } finally {
+      if (this.lifecycleTasks.get(id) === task) this.lifecycleTasks.delete(id)
+    }
+  }
+
+  private createExtensionContext(extensionPath: string, manifest: Record<string, unknown>): ExtensionContext {
+    const storagePath = path.join(extensionPath, '.kalynt', 'workspace-storage')
+    const globalStoragePath = path.join(extensionPath, '.kalynt', 'global-storage')
+    const logPath = path.join(extensionPath, '.kalynt', 'logs')
+
+    return {
+      subscriptions: [],
+      extensionPath,
+      extensionUri: Uri.file(extensionPath),
+      asAbsolutePath: (relativePath: string) => path.join(extensionPath, relativePath),
+      storagePath,
+      globalStoragePath,
+      storageUri: Uri.file(storagePath),
+      globalStorageUri: Uri.file(globalStoragePath),
+      logPath,
+      logUri: Uri.file(logPath),
+      globalState: createMemento(path.join(globalStoragePath, 'state.json')),
+      workspaceState: createMemento(path.join(storagePath, 'state.json')),
+      secrets: createSecretStorage(),
+      extensionMode: ExtensionMode.Production,
+      packageJSON: manifest
+    }
+  }
+
   private async handleLoadExtension(payload: { id: string; path: string }): Promise<void> {
     const { id, path: extensionPath } = payload
 
     try {
-      // Validate extension path
       if (!fs.existsSync(extensionPath)) {
         throw new Error(`Extension path does not exist: ${extensionPath}`)
       }
 
-      // Read package.json
       const packageJsonPath = path.join(extensionPath, 'package.json')
       if (!fs.existsSync(packageJsonPath)) {
         throw new Error(`Extension missing package.json: ${extensionPath}`)
@@ -157,20 +247,24 @@ class ExtensionHost {
 
       const manifest = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'))
 
-      // Validate it's a VS Code compatible extension
       if (!manifest.engines?.vscode) {
         throw new Error(`Extension ${id} is not VS Code compatible (missing engines.vscode)`)
       }
 
-      // Store extension path
-      this.extensionPaths.set(id, extensionPath)
+      // Node resolves CommonJS module filenames through filesystem aliases.
+      this.extensionPaths.set(id, fs.realpathSync(extensionPath))
 
       this.sendMessage({
         type: 'extension-loaded',
         payload: { id, manifest }
       })
     } catch (error) {
-      this.sendError('load-extension-failed', `Failed to load extension ${id}: ${error instanceof Error ? error.message : String(error)}`)
+      const errorMsg = `Failed to load extension ${id}: ${error instanceof Error ? error.message : String(error)}`
+      this.sendMessage({
+        type: 'load-extension-failed',
+        payload: { id, error: errorMsg }
+      })
+      this.sendError('load-extension-failed', errorMsg)
     }
   }
 
@@ -179,12 +273,13 @@ class ExtensionHost {
     const extensionPath = this.extensionPaths.get(id)
 
     if (!extensionPath) {
-      this.sendError('activate-failed', `Extension ${id} not loaded`)
+      const errorMsg = `Extension ${id} not loaded`
+      this.sendMessage({ type: 'activate-failed', payload: { id, error: errorMsg } })
+      this.sendError('activate-failed', errorMsg)
       return
     }
 
     try {
-      // Check if already activated
       if (this.extensions.has(id)) {
         this.sendMessage({
           type: 'extension-activated',
@@ -193,23 +288,16 @@ class ExtensionHost {
         return
       }
 
-      // Read manifest to find main entry point
       const packageJsonPath = path.join(extensionPath, 'package.json')
-      const manifest = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'))
-      
-      // Handle extensions without a main file (e.g. themes, snippets)
-      if (!manifest.main) {
-        // Store extension with dummy module
+      const manifest = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8')) as Record<string, unknown>
+
+      const context = this.createExtensionContext(extensionPath, manifest)
+
+      // Handle declarative extensions without a JS entrypoint (e.g., themes, grammars, snippets)
+      if (!manifest.main || typeof manifest.main !== 'string') {
         this.extensions.set(id, {
           module: {},
-          context: {
-            subscriptions: [],
-            extensionPath,
-            asAbsolutePath: (relativePath: string) => path.join(extensionPath, relativePath),
-            storagePath: path.join(extensionPath, '.kalynt', 'workspace-storage'),
-            globalStoragePath: path.join(extensionPath, '.kalynt', 'global-storage'),
-            logPath: path.join(extensionPath, '.kalynt', 'logs')
-          },
+          context,
           manifest,
           exports: undefined
         })
@@ -232,36 +320,20 @@ class ExtensionHost {
         }
       }
 
-      // Create extension context
-      const context: ExtensionContext = {
-        subscriptions: [],
-        extensionPath,
-        asAbsolutePath: (relativePath: string) => path.join(extensionPath, relativePath),
-        storagePath: path.join(extensionPath, '.kalynt', 'workspace-storage'),
-        globalStoragePath: path.join(extensionPath, '.kalynt', 'global-storage'),
-        logPath: path.join(extensionPath, '.kalynt', 'logs')
-      }
-
-      // Create a minimal vscode API
       const vscode = this.createVSCodeAPI(id, context)
-      
-      // Register API for loader
       this.apiFactory.set(id, vscode)
 
       // Clear require cache to allow reload
       delete require.cache[require.resolve(mainPath)]
 
-      // Load the extension module
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const extensionModule: ExtensionModule = require(mainPath)
 
-      // Call activate if it exists
       let exports: unknown
       if (typeof extensionModule.activate === 'function') {
         exports = await Promise.resolve(extensionModule.activate(context))
       }
 
-      // Store extension
       this.extensions.set(id, {
         module: extensionModule,
         context,
@@ -271,11 +343,17 @@ class ExtensionHost {
 
       this.sendMessage({
         type: 'extension-activated',
-        payload: { id, exports }
+        payload: { id, exports: this.serializeSafe(exports) }
       })
     } catch (error) {
-      this.apiFactory.delete(id) // Cleanup on error
-      this.sendError('activate-failed', `Failed to activate extension ${id}: ${error instanceof Error ? error.message : String(error)}`)
+      this.apiFactory.delete(id)
+      this.cleanupCommandsForExtension(id)
+      const errorMsg = `Failed to activate extension ${id}: ${error instanceof Error ? error.message : String(error)}`
+      this.sendMessage({
+        type: 'activate-failed',
+        payload: { id, error: errorMsg }
+      })
+      this.sendError('activate-failed', errorMsg)
     }
   }
 
@@ -289,54 +367,150 @@ class ExtensionHost {
     }
 
     try {
-      // Call deactivate if it exists
       if (typeof extension.module.deactivate === 'function') {
         await Promise.resolve(extension.module.deactivate())
       }
 
-      // Dispose all subscriptions
-      for (const subscription of extension.context.subscriptions) {
-        try {
-          subscription.dispose()
-        } catch (error) {
-          console.error(`Error disposing subscription for ${id}:`, error)
-        }
-      }
-
-      // Remove extension
-      this.extensions.delete(id)
-      this.apiFactory.delete(id) // Cleanup API
-
-      this.sendMessage({
-        type: 'extension-deactivated',
-        payload: { id }
-      })
     } catch (error) {
       this.sendError('deactivate-failed', `Failed to deactivate extension ${id}: ${error instanceof Error ? error.message : String(error)}`)
     }
+    for (const subscription of extension.context.subscriptions) {
+      try {
+        subscription.dispose()
+      } catch (error) {
+        console.error(`Error disposing subscription for ${id}:`, error)
+      }
+    }
+    this.cleanupCommandsForExtension(id)
+    this.extensions.delete(id)
+    this.apiFactory.delete(id)
+    this.sendMessage({ type: 'extension-deactivated', payload: { id } })
   }
 
-  private async handleInvokeAPI(payload: { extensionId: string; api: string; args: unknown[] }): Promise<void> {
-    const { extensionId, api, args } = payload
-    const extension = this.extensions.get(extensionId)
+  private cleanupCommandsForExtension(extensionId: string): void {
+    for (const [cmd, entry] of Array.from(this.commandHandlers.entries())) {
+      if (entry.extensionId === extensionId) {
+        this.commandHandlers.delete(cmd)
+      }
+    }
+  }
 
-    if (!extension) {
-      this.sendError('invoke-failed', `Extension ${extensionId} not activated`)
+  private async handleInvokeCommand(payload: {
+    extensionId: string
+    command: string
+    args?: unknown[]
+    invocationId?: number
+  }): Promise<void> {
+    const { command, args = [], invocationId } = payload
+    const handler = this.commandHandlers.get(command)
+
+    if (!handler) {
+      const errorMsg = `Command handler not found in extension host: ${command}`
+      if (invocationId !== undefined) {
+        this.sendMessage({
+          type: 'invoke-command-result',
+          payload: { invocationId, error: errorMsg }
+        })
+      } else {
+        this.sendError('invoke-command-failed', errorMsg)
+      }
       return
     }
 
-    // API invocation would go here for specific extension APIs
-    this.sendMessage({
-      type: 'api-result',
-      payload: { extensionId, api, result: null }
-    })
+    try {
+      const result = await Promise.resolve(handler.callback(...args))
+      if (invocationId !== undefined) {
+        this.sendMessage({
+          type: 'invoke-command-result',
+          payload: { invocationId, result: this.serializeSafe(result) }
+        })
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error)
+      if (invocationId !== undefined) {
+        this.sendMessage({
+          type: 'invoke-command-result',
+          payload: { invocationId, error: errorMsg }
+        })
+      } else {
+        this.sendError('invoke-command-failed', errorMsg)
+      }
+    }
   }
 
-  private handleCommandResult(payload: { messageId: number; result: unknown }): void {
+  private async handleInvokeAPI(payload: {
+    extensionId: string
+    api: string
+    args?: unknown[]
+    messageId?: number
+  }): Promise<void> {
+    const { extensionId, api, args = [], messageId } = payload
+    const extension = this.extensions.get(extensionId)
+
+    if (!extension) {
+      const errorMsg = `Extension ${extensionId} not activated`
+      this.sendMessage({
+        type: 'api-result',
+        payload: { extensionId, api, messageId, error: errorMsg }
+      })
+      this.sendError('invoke-failed', errorMsg)
+      return
+    }
+
+    try {
+      const segments = String(api || '').split('.').filter(Boolean)
+      let target: any = extension.exports
+      let owner: any = extension.exports
+
+      for (const segment of segments) {
+        if (target == null || (typeof target !== 'object' && typeof target !== 'function')) {
+          throw new Error(`API path "${api}" not found on extension ${extensionId} exports`)
+        }
+        if (segment === '__proto__' || segment === 'constructor' || segment === 'prototype') {
+          throw new Error(`Disallowed API segment: ${segment}`)
+        }
+        owner = target
+        target = target[segment]
+      }
+
+      if (typeof target !== 'function') {
+        throw new Error(`API "${api}" on extension ${extensionId} is not callable`)
+      }
+
+      const result = await Promise.resolve(target.apply(owner, args))
+      this.sendMessage({
+        type: 'api-result',
+        payload: { extensionId, api, messageId, result: this.serializeSafe(result) }
+      })
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error)
+      this.sendMessage({
+        type: 'api-result',
+        payload: { extensionId, api, messageId, error: errorMsg }
+      })
+      this.sendError('invoke-failed', errorMsg)
+    }
+  }
+
+  private handleCommandResult(payload: { messageId: number; result?: unknown; error?: string }): void {
     const pending = this.pendingResponses.get(payload.messageId)
     if (pending) {
       this.pendingResponses.delete(payload.messageId)
-      pending.resolve(payload.result)
+      if (payload.error) {
+        pending.reject(new Error(payload.error))
+      } else {
+        pending.resolve(payload.result)
+      }
+    }
+  }
+
+  private serializeSafe(value: unknown): unknown {
+    if (value === undefined || value === null) return value
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value
+    try {
+      return JSON.parse(JSON.stringify(value))
+    } catch {
+      return undefined
     }
   }
 
@@ -348,16 +522,37 @@ class ExtensionHost {
     return returnVsCodeAPI(extensionId, context, {
       sendMessage: (message) => this.sendMessage(message as HostMessage),
       nextMessageId: () => this.nextRequestId++,
-      pendingResponses: this.pendingResponses
+      pendingResponses: this.pendingResponses,
+      registerCommandHandler: (extId, command, callback) => {
+        this.commandHandlers.set(command, { extensionId: extId, callback })
+      },
+      unregisterCommandHandler: (extId, command) => {
+        const existing = this.commandHandlers.get(command)
+        if (existing && existing.extensionId === extId) {
+          this.commandHandlers.delete(command)
+        }
+      },
+      getRegisteredCommands: (filterInternal = false) => {
+        const all = Array.from(this.commandHandlers.keys())
+        return filterInternal ? all.filter(c => !c.startsWith('_')) : all
+      },
+      getWorkspaceFolders: () => this.workspaceFolders,
+      configurationStore: this.configurationStore
     })
   }
 
   private async dispose(): Promise<void> {
+    await Promise.allSettled(this.lifecycleTasks.values())
     const extensionIds = Array.from(this.extensions.keys())
     for (const id of extensionIds) {
       await this.handleDeactivateExtension({ id })
     }
 
+    for (const pending of this.pendingResponses.values()) {
+      pending.reject(new Error('Extension host disposed'))
+    }
+    this.pendingResponses.clear()
+    this.commandHandlers.clear()
     this.extensions.clear()
     this.extensionPaths.clear()
 
@@ -379,5 +574,7 @@ class ExtensionHost {
   }
 }
 
-// Start the extension host
-new ExtensionHost()
+// Start the extension host unless explicitly disabled for unit tests
+if (process.env.KALYNT_EXTENSION_HOST_NO_AUTOSTART !== '1') {
+  new ExtensionHost()
+}

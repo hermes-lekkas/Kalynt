@@ -1,8 +1,8 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
  *
- * Monochrome file glyphs. Distinct shapes carry the file type; colour is
- * reserved for state, so icons stay neutral.
+ * Syntax-keyed file glyphs with subtle, restrained hues calibrated for both
+ * dark and light Kalynt surfaces.
  */
 import {
     Braces, Database, File, FileCode2, FileImage, FileJson, FileLock2, FileText,
@@ -23,10 +23,34 @@ const BY_EXTENSION: Record<string, LucideIcon> = {
 }
 
 const CODE = new Set([
-    'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'py', 'rs', 'go', 'java', 'kt', 'c', 'h', 'cpp', 'hpp', 'cc',
+    'ts', 'tsx', 'mts', 'cts', 'js', 'jsx', 'mjs', 'cjs', 'py', 'rs', 'go', 'java', 'kt', 'c', 'h', 'cpp', 'hpp', 'cc',
     'cs', 'fs', 'rb', 'php', 'swift', 'dart', 'lua', 'r', 'pl', 'html', 'vue', 'svelte', 'xml', 'scala',
     'ex', 'exs', 'clj', 'jl', 'zig', 'nim', 'hs', 'ml', 'erl', 'groovy', 'graphql', 'gql'
 ])
+
+const TONE_BY_EXTENSION: Record<string, string> = {
+    ts: 'ts', mts: 'ts', cts: 'ts',
+    tsx: 'tsx', jsx: 'tsx',
+    js: 'js', mjs: 'js', cjs: 'js',
+    css: 'css', scss: 'css', less: 'css',
+    html: 'html', htm: 'html', vue: 'html', svelte: 'html', xml: 'html', svg: 'html',
+    json: 'json', jsonc: 'json', yaml: 'json', yml: 'json', toml: 'json',
+    md: 'md', mdx: 'md',
+    py: 'py',
+    rs: 'rust',
+    go: 'go',
+    sh: 'shell', bash: 'shell', zsh: 'shell', ps1: 'shell',
+    png: 'image', jpg: 'image', jpeg: 'image', gif: 'image', webp: 'image', ico: 'image', bmp: 'image',
+    sql: 'data', db: 'data', sqlite: 'data', graphql: 'data', gql: 'data'
+}
+
+export function fileIconTone(name: string): string | null {
+    const lower = name.toLowerCase()
+    if (lower === 'package.json' || lower === 'cargo.toml' || lower === 'go.mod') return 'json'
+    if (lower.startsWith('.env') || lower === 'dockerfile' || lower === 'makefile') return 'config'
+    const ext = lower.includes('.') ? lower.split('.').pop()! : ''
+    return TONE_BY_EXTENSION[ext] ?? null
+}
 
 export function fileIcon(name: string): LucideIcon {
     const lower = name.toLowerCase()
@@ -41,10 +65,13 @@ export function fileIcon(name: string): LucideIcon {
 
 export function FileGlyph({ name, size = 15, className }: { name: string; size?: number; className?: string }) {
     const Icon = fileIcon(name)
-    return <Icon size={size} className={className} strokeWidth={1.6} aria-hidden />
+    const tone = fileIconTone(name)
+    const classes = [className, tone && `file-icon--${tone}`].filter(Boolean).join(' ')
+    return <Icon size={size} className={classes} strokeWidth={1.6} aria-hidden />
 }
 
 export function FolderGlyph({ open, size = 15, className }: { open?: boolean; size?: number; className?: string }) {
     const Icon = open ? FolderOpen : Folder
-    return <Icon size={size} className={className} strokeWidth={1.6} aria-hidden />
+    const classes = [className, 'file-icon--folder'].filter(Boolean).join(' ')
+    return <Icon size={size} className={classes} strokeWidth={1.6} aria-hidden />
 }

@@ -102,7 +102,7 @@ export function useExtensions() {
 
     const installVsix = useCallback(async () => {
         try {
-            const result = await window.electronAPI?.ipcRenderer?.invoke('dialog:showOpenDialog', {
+            const result = await window.electronAPI?.dialog?.showOpenDialog({
                 properties: ['openFile'],
                 filters: [{ name: 'VS Code extensions', extensions: ['vsix'] }]
             })

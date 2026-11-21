@@ -70,11 +70,13 @@ export interface TerminalAPI {
 // Language runtime interface
 export interface RuntimeAPI {
     // Language servers
-    startLSP: (sessionId: string, languageId: string, workspacePath: string, options?: any) => Promise<{ success: boolean; error?: string }>
+    startLSP: (sessionId: string, languageId: string, workspacePath: string, options?: any) => Promise<{ success: boolean; sessionId?: string; error?: string; actionableHint?: string }>
 
     stopLSP: (sessionId: string) => Promise<{ success: boolean; error?: string }>
 
     sendLSPRequest: (sessionId: string, method: string, params: any) => Promise<{ success: boolean; result?: any; error?: string }>
+
+    sendLSPNotification: (sessionId: string, method: string, params?: any) => Promise<{ success: boolean; error?: string }>
 
     getLanguageServers: () => Promise<{ success: boolean; servers?: any[]; error?: string }>
 
@@ -91,6 +93,10 @@ export interface RuntimeAPI {
     onLanguageServerStarted: (callback: (data: { sessionId: string; languageId: string; capabilities: any }) => void) => () => void
 
     onLanguageServerStopped: (callback: (data: { sessionId: string; exitCode: number }) => void) => () => void
+
+    onLanguageServerError?: (callback: (data: { sessionId: string; languageId?: string; error: string; actionableHint?: string }) => void) => () => void
+
+    onLSPNotification: (callback: (data: { sessionId: string; languageId?: string; method: string; params: any }) => void) => () => void
 
     onDebugSessionStarted: (callback: (data: { sessionId: string; languageId: string; port: number; configuration: any }) => void) => () => void
 
@@ -161,4 +167,47 @@ export interface SessionsAPI {
     removeListeners: () => void
 }
 
-// Enhanced Electron API with all terminal capabilities
+// Enhanced Electron API types for performance, window controls and secure storage
+export type PerformanceModeValue = 'balanced' | 'high_performance' | 'power_saver'
+
+export interface PerformanceStatus {
+    memory: {
+        mode: PerformanceModeValue
+        rss: number
+        totalPrivateBytes: number
+    }
+    platform: string
+    arch: string
+}
+
+export interface PerformanceAPI {
+    setMode: (mode: PerformanceModeValue) => Promise<{ success: boolean; mode?: PerformanceModeValue; error?: string }>
+    getStatus: () => Promise<PerformanceStatus>
+    requestGc: () => Promise<{ success: boolean }>
+    scanWorkspace: (dirPath?: string) => Promise<string[]>
+    prewarmCache: (dirPath?: string) => Promise<{ success: boolean; error?: string }>
+    testDiskSpeed: () => Promise<{ read: number; write: number }>
+    getBootTime: () => Promise<number>
+    getInferenceConfig: () => Promise<{ flashAttention: boolean; batchSize: number; threads: number; useSpeculativeDecoding: boolean }>
+    onRequestGc: (callback: () => void) => () => void
+    onSuspendBackgroundTasks: (callback: () => void) => () => void
+    onOptimizeMonaco: (callback: (options: Record<string, unknown>) => void) => () => void
+    onDisposeWorkers: (callback: () => void) => () => void
+}
+
+export interface WindowControlsAPI {
+    minimize: () => Promise<void>
+    maximize: () => Promise<void>
+    close: () => Promise<void>
+    isMaximized: () => Promise<boolean>
+    onMaximizedChange: (callback: (maximized: boolean) => void) => () => void
+}
+
+export interface SafeStorageAPI {
+    isAvailable: () => Promise<boolean>
+    set: (options: { key: string; value: string }) => Promise<{ success: boolean; encrypted?: boolean; error?: string }>
+    get: (key: string) => Promise<{ success: boolean; value?: string | null; encrypted?: boolean; hasKey?: boolean; error?: string }>
+    hasKey: (key: string) => Promise<{ success: boolean; hasKey: boolean; error?: string }>
+    delete: (key: string) => Promise<{ success: boolean; error?: string }>
+    listKeys: () => Promise<{ success: boolean; keys?: string[]; error?: string }>
+}

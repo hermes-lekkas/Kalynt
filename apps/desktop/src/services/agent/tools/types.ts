@@ -53,6 +53,8 @@ export interface ToolContext {
     checkpoint: (absolutePath: string) => Promise<void>
     /** Files read or written in this conversation, so edits act on known content. */
     knownFiles: Set<string>
+    /** Background command process IDs started by this conversation. */
+    backgroundIds: Set<string>
     /** Live command output for the chat card. */
     onOutput: (chunk: string) => void
     plan: { get(): PlanItem[]; set(items: PlanItem[]): void }

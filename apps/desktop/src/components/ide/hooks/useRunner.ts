@@ -1,23 +1,68 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
  *
- * Running the current file, building the project and debugging, with their
- * output streams and breakpoints.
+ * Running the current file, building the project (with task picker support)
+ * and full DAP debugging (call stack, scopes/variables, watch expressions,
+ * breakpoints, console REPL, and editor active-line highlighting).
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { create } from 'zustand'
 import type { OpenFile } from '../../../types/ide'
+import type { Scope, StackFrame, Variable } from '../../../types/debug'
+import type { Task } from '../../../types/tasks'
 import { useNotificationStore } from '../../../stores/notificationStore'
 import { useLayoutStore } from '../../../stores/layoutStore'
+import { useDiagnosticsStore, type RawBuildProblem } from '../../../stores/diagnosticsStore'
 import { RUNNABLE_LANGUAGES, languageLabel } from '../languages'
-import { autoDebugConfig, debugFamily } from './debugConfig'
+import { autoDebugConfig, debugFamily, type DebugConfig } from './debugConfig'
 
 const api = () => window.electronAPI
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
+export interface DebugScopeView {
+    name: string
+    variablesReference: number
+    expensive?: boolean
+    variables: Variable[]
+}
+
+export interface WatchEntry {
+    id: string
+    expression: string
+    value?: string
+    type?: string
+    error?: string
+    variablesReference?: number
+}
+
+export interface DebugConsoleEntry {
+    id: string
+    kind: 'input' | 'result' | 'error' | 'output'
+    text: string
+    type?: string
+}
 
 interface Options {
     folder: string | null
     activeFile: OpenFile | null
     saveFile: (path?: string | null) => Promise<boolean>
+}
+
+const bpKey = (file: string, line: number) => `${file.replace(/\\/g, '/')}:${line}`
+
+function dispatchDebugLocation(detail: { path: string; line: number; column?: number } | null) {
+    if (typeof window === 'undefined') return
+    window.dispatchEvent(new CustomEvent('kalynt-debug-location', { detail }))
+}
+
+function dispatchOpenFile(path: string, line: number, column?: number) {
+    if (typeof window === 'undefined') return
+    window.dispatchEvent(new CustomEvent('kalynt-open-file', { detail: { path, line, column } }))
+}
+
+function dispatchBottomTabSwitch(tab: 'output' | 'build' | 'debug') {
+    if (typeof window === 'undefined') return
+    window.dispatchEvent(new CustomEvent('kalynt-bottom-tab', { detail: tab }))
 }
 
 export function useRunner({ folder, activeFile, saveFile }: Options) {
@@ -30,18 +75,284 @@ export function useRunner({ folder, activeFile, saveFile }: Options) {
     const [isRunning, setIsRunning] = useState(false)
     const [isBuilding, setIsBuilding] = useState(false)
     const [isDebugging, setIsDebugging] = useState(false)
+    const [isPaused, setIsPaused] = useState(false)
+    const [pausedReason, setPausedReason] = useState<string | null>(null)
+
     const [breakpoints, setBreakpoints] = useState<Map<string, number[]>>(new Map())
+    const [disabledBreakpoints, setDisabledBreakpoints] = useState<Set<string>>(new Set())
+
+    const [callStack, setCallStack] = useState<StackFrame[]>([])
+    const [selectedFrameId, setSelectedFrameId] = useState<number | null>(null)
+    const [scopes, setScopes] = useState<DebugScopeView[]>([])
+    const [variableChildren, setVariableChildren] = useState<Record<number, Variable[]>>({})
+    const [watches, setWatches] = useState<WatchEntry[]>([])
+    const [debugConsole, setDebugConsole] = useState<DebugConsoleEntry[]>([])
+
+    const [debugConfigurations, setDebugConfigurations] = useState<DebugConfig[]>([])
+    const [selectedDebugConfig, setSelectedDebugConfig] = useState<string | null>(null)
+    const [buildTasks, setBuildTasks] = useState<Task[]>([])
+    const [activeBuildTaskLabel, setActiveBuildTaskLabel] = useState<string | null>(null)
 
     const executionId = useRef<string | null>(null)
     const buildTaskId = useRef<string | null>(null)
     const debugSessionId = useRef<string | null>(null)
+    const debugStarting = useRef(false)
+    const activeThreadId = useRef<number | undefined>(undefined)
+    const lastDebugConfig = useRef<DebugConfig | null>(null)
     const adapterMissing = useRef(false)
     const runListeners = useRef<Array<() => void>>([])
+    const folderRef = useRef(folder)
+    folderRef.current = folder
+    const watchesRef = useRef(watches)
+    watchesRef.current = watches
+    const selectedFrameIdRef = useRef(selectedFrameId)
+    selectedFrameIdRef.current = selectedFrameId
+    const prevFolderRef = useRef<string | null>(folder)
+    const loadGenRef = useRef(0)
+    const frameInspectGenRef = useRef(0)
 
-    const clearRunListeners = () => {
+    const clearRunListeners = useCallback(() => {
         runListeners.current.forEach(off => off())
         runListeners.current = []
-    }
+    }, [])
+
+    const focusBottom = useCallback((tab: 'output' | 'build' | 'debug') => {
+        showBottomTab(tab)
+        dispatchBottomTabSwitch(tab)
+    }, [showBottomTab])
+
+    const clearPausedState = useCallback(() => {
+        frameInspectGenRef.current += 1
+        setIsPaused(false)
+        setPausedReason(null)
+        setCallStack([])
+        setSelectedFrameId(null)
+        setScopes([])
+        setVariableChildren({})
+        dispatchDebugLocation(null)
+    }, [])
+
+    const refreshTasks = useCallback(async (targetFolder?: string | null) => {
+        const dir = targetFolder ?? folderRef.current
+        if (!dir) {
+            setBuildTasks([])
+            return [] as Task[]
+        }
+        try {
+            const res = await api()?.build.getTasks(dir)
+            const list: Task[] = res?.success && Array.isArray(res.tasks) ? res.tasks : []
+            if (dir === folderRef.current) setBuildTasks(list)
+            return list
+        } catch {
+            if (dir === folderRef.current) setBuildTasks([])
+            return [] as Task[]
+        }
+    }, [])
+
+    const refreshDebugConfigs = useCallback(async (targetFolder?: string | null) => {
+        const dir = targetFolder ?? folderRef.current
+        if (!dir) {
+            setDebugConfigurations([])
+            return [] as DebugConfig[]
+        }
+        try {
+            const res = await api()?.debug.getConfigurations(dir)
+            const list: DebugConfig[] = res?.success && Array.isArray(res.configurations) ? res.configurations : []
+            if (dir === folderRef.current) setDebugConfigurations(list)
+            return list
+        } catch {
+            if (dir === folderRef.current) setDebugConfigurations([])
+            return [] as DebugConfig[]
+        }
+    }, [])
+
+    const evaluateWatchList = useCallback(async (session: string, frameId?: number) => {
+        const current = watchesRef.current
+        if (current.length === 0) return
+        const d = api()?.debug
+        if (!d?.evaluate) return
+        const updated = await Promise.all(
+            current.map(async entry => {
+                try {
+                    const res = await d.evaluate(session, entry.expression, frameId)
+                    if (res?.success && res.result) {
+                        return {
+                            ...entry,
+                            value: String(res.result.result ?? ''),
+                            type: res.result.type ? String(res.result.type) : undefined,
+                            variablesReference: Number(res.result.variablesReference) || 0,
+                            error: undefined
+                        }
+                    }
+                    return { ...entry, value: undefined, error: res?.error || 'Unavailable' }
+                } catch (e) {
+                    return { ...entry, value: undefined, error: errorText(e) }
+                }
+            })
+        )
+        if (debugSessionId.current === session) {
+            setWatches(updated)
+        }
+    }, [])
+
+    const loadFrameInspection = useCallback(async (session: string, frame: StackFrame) => {
+        const d = api()?.debug
+        if (!d) return
+        const inspectGen = ++frameInspectGenRef.current
+        setSelectedFrameId(frame.id)
+        // Clear previous frame's scopes and expanded variable trees immediately to avoid stale roots.
+        setScopes([])
+        setVariableChildren({})
+
+        if (frame.source?.path) {
+            dispatchOpenFile(frame.source.path, frame.line, frame.column || 1)
+            dispatchDebugLocation({ path: frame.source.path, line: frame.line, column: frame.column || 1 })
+        }
+
+        const nextScopes: DebugScopeView[] = []
+        try {
+            if (typeof d.getScopes === 'function') {
+                const scopesRes = await d.getScopes(session, frame.id)
+                if (debugSessionId.current !== session || frameInspectGenRef.current !== inspectGen) return
+                const rawScopes: Scope[] = scopesRes?.success && Array.isArray(scopesRes.scopes) ? scopesRes.scopes : []
+                for (const sc of rawScopes) {
+                    if (debugSessionId.current !== session || frameInspectGenRef.current !== inspectGen) return
+                    const ref = Number(sc.variablesReference) || 0
+                    const varsRes = ref > 0
+                        ? await d.getVariables(session, ref).catch(() => null)
+                        : null
+                    if (debugSessionId.current !== session || frameInspectGenRef.current !== inspectGen) return
+                    nextScopes.push({
+                        name: sc.name,
+                        variablesReference: ref,
+                        expensive: sc.expensive,
+                        variables: varsRes?.success && Array.isArray(varsRes.variables) ? varsRes.variables : []
+                    })
+                }
+            }
+        } catch {
+            // Adapter may not expose scopes/variables for this frame
+        }
+
+        if (debugSessionId.current === session && frameInspectGenRef.current === inspectGen) {
+            setScopes(nextScopes)
+            void evaluateWatchList(session, frame.id)
+        }
+    }, [evaluateWatchList])
+
+    const selectFrame = useCallback(async (frameId: number) => {
+        const session = debugSessionId.current
+        if (!session) return
+        const frame = callStack.find(f => f.id === frameId)
+        if (!frame) return
+        await loadFrameInspection(session, frame)
+    }, [callStack, loadFrameInspection])
+
+    const expandVariable = useCallback(async (variablesReference: number) => {
+        const session = debugSessionId.current
+        if (!session || variablesReference <= 0) return [] as Variable[]
+        const inspectGen = frameInspectGenRef.current
+        try {
+            const res = await api()?.debug.getVariables(session, variablesReference)
+            const children: Variable[] = res?.success && Array.isArray(res.variables) ? res.variables : []
+            if (debugSessionId.current === session && frameInspectGenRef.current === inspectGen) {
+                setVariableChildren(prev => ({ ...prev, [variablesReference]: children }))
+            }
+            return children
+        } catch {
+            return [] as Variable[]
+        }
+    }, [])
+
+    const addWatch = useCallback((expression: string) => {
+        const trimmed = expression.trim()
+        if (!trimmed) return
+        const entry: WatchEntry = {
+            id: `w-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            expression: trimmed
+        }
+        setWatches(prev => [...prev, entry])
+        const session = debugSessionId.current
+        if (session) {
+            const frameId = selectedFrameIdRef.current ?? undefined
+            void api()?.debug.evaluate(session, trimmed, frameId).then((res: { success?: boolean; result?: { result?: string; type?: string; variablesReference?: number }; error?: string }) => {
+                setWatches(prev => prev.map(w => {
+                    if (w.id !== entry.id) return w
+                    if (res?.success && res.result) {
+                        return {
+                            ...w,
+                            value: String(res.result.result ?? ''),
+                            type: res.result.type ? String(res.result.type) : undefined,
+                            variablesReference: Number(res.result.variablesReference) || 0,
+                            error: undefined
+                        }
+                    }
+                    return { ...w, value: undefined, error: res?.error || 'Unavailable' }
+                }))
+            }).catch((e: unknown) => {
+                setWatches(prev => prev.map(w => (w.id === entry.id ? { ...w, error: errorText(e) } : w)))
+            })
+        }
+    }, [])
+
+    const removeWatch = useCallback((id: string) => {
+        setWatches(prev => prev.filter(w => w.id !== id))
+    }, [])
+
+    const refreshWatches = useCallback(() => {
+        const session = debugSessionId.current
+        if (session) void evaluateWatchList(session, selectedFrameIdRef.current ?? undefined)
+    }, [evaluateWatchList])
+
+    const evaluateExpression = useCallback(async (expression: string) => {
+        const trimmed = expression.trim()
+        if (!trimmed) return
+        const inputEntry: DebugConsoleEntry = {
+            id: `c-in-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            kind: 'input',
+            text: trimmed
+        }
+        setDebugConsole(prev => [...prev.slice(-198), inputEntry])
+        setDebugOutput(prev => `${prev}> ${trimmed}\n`)
+
+        const session = debugSessionId.current
+        if (!session) {
+            const errEntry: DebugConsoleEntry = {
+                id: `c-err-${Date.now()}`,
+                kind: 'error',
+                text: 'No active debug session.'
+            }
+            setDebugConsole(prev => [...prev.slice(-198), errEntry])
+            return
+        }
+
+        try {
+            const res = await api()?.debug.evaluate(session, trimmed, selectedFrameIdRef.current ?? undefined)
+            if (res?.success && res.result) {
+                const value = String(res.result.result ?? '')
+                const outEntry: DebugConsoleEntry = {
+                    id: `c-res-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                    kind: 'result',
+                    text: value,
+                    type: res.result.type ? String(res.result.type) : undefined
+                }
+                setDebugConsole(prev => [...prev.slice(-198), outEntry])
+                setDebugOutput(prev => `${prev}${value}\n`)
+            } else {
+                const msg = res?.error || 'Evaluation failed'
+                setDebugConsole(prev => [...prev.slice(-198), { id: `c-err-${Date.now()}`, kind: 'error', text: msg }])
+                setDebugOutput(prev => `${prev}✗ ${msg}\n`)
+            }
+        } catch (e) {
+            const msg = errorText(e)
+            setDebugConsole(prev => [...prev.slice(-198), { id: `c-err-${Date.now()}`, kind: 'error', text: msg }])
+            setDebugOutput(prev => `${prev}✗ ${msg}\n`)
+        }
+    }, [])
+
+    const clearDebugConsole = useCallback(() => {
+        setDebugConsole([])
+    }, [])
 
     const canRun = !!activeFile && RUNNABLE_LANGUAGES.has(activeFile.language)
 
@@ -51,12 +362,20 @@ export function useRunner({ folder, activeFile, saveFile }: Options) {
             addNotification(`Kalynt can't run ${languageLabel(activeFile.language)} files yet.`, 'warning')
             return
         }
-        await saveFile(activeFile.path)
+        const saved = await saveFile(activeFile.path)
+        if (!saved) return
+
+        // Kill any previous execution cleanly before starting a new one.
+        if (executionId.current) {
+            api()?.code.kill(executionId.current)
+            clearRunListeners()
+        }
+
         const id = `exec-${Date.now()}`
         executionId.current = id
         setIsRunning(true)
         setRunOutput(`▶ Running ${activeFile.name}\n`)
-        showBottomTab('output')
+        focusBottom('output')
 
         clearRunListeners()
         const offOutput = api()?.code.onOutput((data: { id: string; data: string }) => {
@@ -88,78 +407,140 @@ export function useRunner({ folder, activeFile, saveFile }: Options) {
             executionId.current = null
             clearRunListeners()
         }
-    }, [activeFile, folder, saveFile, addNotification, showBottomTab])
+    }, [activeFile, folder, saveFile, addNotification, focusBottom, clearRunListeners])
 
     const stopRun = useCallback(() => {
         if (!executionId.current) return
-        api()?.code.kill(executionId.current)
+        const id = executionId.current
+        executionId.current = null
+        clearRunListeners()
+        api()?.code.kill(id)
         setRunOutput(prev => `${prev}\n■ Stopped\n`)
         setIsRunning(false)
-        executionId.current = null
-    }, [])
+    }, [clearRunListeners])
 
     const sendInput = useCallback((data: string) => {
-        if (executionId.current) api()?.ipcRenderer.invoke('code:write-input', executionId.current, data)
+        if (executionId.current) api()?.code?.writeInput?.(executionId.current, data)
     }, [])
 
-    const build = useCallback(async () => {
+    const runTask = useCallback(async (task: Task) => {
         if (!folder) return
-        setBuildOutput('')
-        showBottomTab('build')
+        if (buildTaskId.current) {
+            await api()?.build.killTask(buildTaskId.current).catch(() => undefined)
+            buildTaskId.current = null
+        }
+        useDiagnosticsStore.getState().clearOrigin('build')
+        const label = task.label || task.command || 'Build'
+        setBuildOutput(`▶ ${label}\n`)
+        setActiveBuildTaskLabel(label)
+        focusBottom('build')
         try {
-            const tasks = await api()?.build.getTasks(folder)
-            // The default build task, else any build task. Never an arbitrary script such as a dev server.
+            const result = await api()?.build.executeTask(task, folder)
+            if (result?.success && result.taskId) {
+                buildTaskId.current = result.taskId
+                setIsBuilding(true)
+            } else {
+                setActiveBuildTaskLabel(null)
+                addNotification(result?.error || "The task didn't start.", 'error')
+            }
+        } catch (e) {
+            setActiveBuildTaskLabel(null)
+            addNotification(`Build error: ${errorText(e)}`, 'error')
+        }
+    }, [folder, addNotification, focusBottom])
+
+    const build = useCallback(async (explicitTask?: Task) => {
+        if (!folder) return
+        if (explicitTask) {
+            await runTask(explicitTask)
+            return
+        }
+        setBuildOutput('')
+        focusBottom('build')
+        try {
+            const list = await refreshTasks(folder)
             const kindOf = (t: { group?: unknown }) => {
                 const group = t.group as { kind?: string; isDefault?: boolean } | string | undefined
                 return typeof group === 'object' ? { kind: group?.kind, isDefault: !!group?.isDefault } : { kind: group, isDefault: false }
             }
-            const list: { group?: unknown; label?: string; name?: string }[] = tasks?.success ? tasks.tasks ?? [] : []
             const task = list.find(t => kindOf(t).kind === 'build' && kindOf(t).isDefault) ?? list.find(t => kindOf(t).kind === 'build')
             if (!task) {
                 setBuildOutput('No build task found. Add a "build" script to package.json or a build task to .vscode/tasks.json.\n')
                 addNotification('No build task found in this folder.', 'warning')
                 return
             }
-            setBuildOutput(`▶ ${task.label ?? task.name ?? 'Build'}\n`)
-            const result = await api()?.build.executeTask(task, folder)
-            if (result?.success && result.taskId) {
-                buildTaskId.current = result.taskId
-                setIsBuilding(true)
-            } else {
-                addNotification(result?.error || "The build didn't start.", 'error')
-            }
+            await runTask(task)
         } catch (e) {
             addNotification(`Build error: ${errorText(e)}`, 'error')
         }
-    }, [folder, addNotification, showBottomTab])
+    }, [folder, refreshTasks, runTask, addNotification, focusBottom])
 
     const stopBuild = useCallback(async () => {
         if (!buildTaskId.current) return
+        const id = buildTaskId.current
+        buildTaskId.current = null
         try {
-            await api()?.build.killTask(buildTaskId.current)
+            await api()?.build.killTask(id)
             setBuildOutput(prev => `${prev}\n■ Build stopped\n`)
         } catch (e) {
             addNotification(`Couldn't stop the build: ${errorText(e)}`, 'error')
         }
         setIsBuilding(false)
-        buildTaskId.current = null
+        setActiveBuildTaskLabel(null)
     }, [addNotification])
 
-    const startDebug = useCallback(async () => {
-        if (!activeFile || !folder) return
-        await saveFile(activeFile.path)
+    const enabledBreakpointsPayload = useCallback(() => {
+        const result: Array<{ file: string; lines: number[] }> = []
+        breakpoints.forEach((lines, file) => {
+            const activeLines = lines.filter(line => !disabledBreakpoints.has(bpKey(file, line)))
+            if (activeLines.length > 0) result.push({ file, lines: activeLines })
+        })
+        return result
+    }, [breakpoints, disabledBreakpoints])
+
+    const startDebug = useCallback(async (overrideConfig?: DebugConfig) => {
+        if (!folder) return
+        if (!activeFile && !overrideConfig) return
+        if (activeFile) {
+            const saved = await saveFile(activeFile.path)
+            if (!saved) return
+        }
+
+        if (debugSessionId.current) {
+            await api()?.debug.stop(debugSessionId.current).catch(() => undefined)
+            debugSessionId.current = null
+        }
+
+        clearPausedState()
         setDebugOutput('')
-        showBottomTab('debug')
+        setDebugConsole([])
+        focusBottom('debug')
+
         try {
-            // A configuration for this file's language, else one inferred from the file.
-            const fallback = autoDebugConfig(activeFile.path)
-            const configs = await api()?.debug.getConfigurations(folder)
-            const config = (configs?.success ? configs.configurations ?? [] : [])
-                .find((c: { type: string }) => debugFamily(c.type) === debugFamily(fallback.type)) ?? fallback
-            const initial = Array.from(breakpoints, ([file, lines]) => ({ file, lines })).filter(b => b.lines.length > 0)
+            const fallback = activeFile ? autoDebugConfig(activeFile.path) : null
+            const configs = await refreshDebugConfigs(folder)
+            let config: DebugConfig | null = overrideConfig ?? null
+            if (!config && selectedDebugConfig) {
+                config = configs.find(c => c.name === selectedDebugConfig) ?? null
+            }
+            if (!config && fallback) {
+                config = configs.find(c => debugFamily(c.type) === debugFamily(fallback.type)) ?? fallback
+            }
+            if (!config) {
+                config = configs[0] ?? null
+            }
+            if (!config) {
+                addNotification('No debug configuration available. Open a file or add .vscode/launch.json.', 'warning')
+                return
+            }
+
+            lastDebugConfig.current = config
+            const initial = enabledBreakpointsPayload()
             setDebugOutput(`▶ Starting ${config.name}\n`)
             adapterMissing.current = false
-            const result = await api()?.debug.start(config, folder, activeFile.path, initial)
+            debugStarting.current = true
+            const result = await api()?.debug.start(config, folder, activeFile?.path, initial)
+            debugStarting.current = false
             if (result?.success && result.sessionId) {
                 debugSessionId.current = result.sessionId
                 setIsDebugging(true)
@@ -169,14 +550,17 @@ export function useRunner({ folder, activeFile, saveFile }: Options) {
                 if (!adapterMissing.current) addNotification(message, 'error')
             }
         } catch (e) {
+            debugStarting.current = false
             addNotification(`Debug error: ${errorText(e)}`, 'error')
         }
-    }, [activeFile, folder, saveFile, addNotification, showBottomTab, breakpoints])
+    }, [activeFile, folder, saveFile, clearPausedState, focusBottom, refreshDebugConfigs, selectedDebugConfig, enabledBreakpointsPayload, addNotification])
 
     const stopDebug = useCallback(async () => {
         const session = debugSessionId.current
         if (!session) return
         debugSessionId.current = null
+        activeThreadId.current = undefined
+        clearPausedState()
         try {
             await api()?.debug.stop(session)
             setDebugOutput(prev => `${prev}\n■ Debug session stopped\n`)
@@ -184,103 +568,333 @@ export function useRunner({ folder, activeFile, saveFile }: Options) {
             addNotification(`Couldn't stop debugging: ${errorText(e)}`, 'error')
         }
         setIsDebugging(false)
-        debugSessionId.current = null
-    }, [addNotification])
+    }, [addNotification, clearPausedState])
+
+    const restartDebug = useCallback(async () => {
+        const config = lastDebugConfig.current ?? undefined
+        if (debugSessionId.current) {
+            await stopDebug()
+        }
+        await startDebug(config)
+    }, [stopDebug, startDebug])
 
     const debugStep = useCallback(async (action: 'continue' | 'stepOver' | 'stepInto' | 'stepOut' | 'pause') => {
-        if (!debugSessionId.current) return
+        const session = debugSessionId.current
+        if (!session) return
+        if (action !== 'pause') {
+            clearPausedState()
+        }
         try {
-            await api()?.debug[action](debugSessionId.current)
+            await api()?.debug[action](session, activeThreadId.current)
         } catch (e) {
             addNotification(`Debugger ${action} failed: ${errorText(e)}`, 'error')
         }
-    }, [addNotification])
+    }, [addNotification, clearPausedState])
 
     const toggleBreakpoint = useCallback((path: string, line: number) => {
         setBreakpoints(prev => {
             const next = new Map(prev)
             const lines = next.get(path) ?? []
-            next.set(path, lines.includes(line) ? lines.filter(l => l !== line) : [...lines, line].sort((a, b) => a - b))
+            if (lines.includes(line)) {
+                const remaining = lines.filter(l => l !== line)
+                if (remaining.length > 0) next.set(path, remaining)
+                else next.delete(path)
+                setDisabledBreakpoints(d => {
+                    const key = bpKey(path, line)
+                    if (!d.has(key)) return d
+                    const copy = new Set(d)
+                    copy.delete(key)
+                    return copy
+                })
+            } else {
+                next.set(path, [...lines, line].sort((a, b) => a - b))
+            }
             return next
         })
     }, [])
 
-    // Keep the debug adapter's breakpoints in step with the gutter.
+    const toggleBreakpointEnabled = useCallback((path: string, line: number) => {
+        const key = bpKey(path, line)
+        setDisabledBreakpoints(prev => {
+            const next = new Set(prev)
+            if (next.has(key)) next.delete(key)
+            else next.add(key)
+            return next
+        })
+    }, [])
+
+    const removeBreakpoint = useCallback((path: string, line: number) => {
+        setBreakpoints(prev => {
+            const lines = prev.get(path)
+            if (!lines || !lines.includes(line)) return prev
+            const next = new Map(prev)
+            const remaining = lines.filter(l => l !== line)
+            if (remaining.length > 0) next.set(path, remaining)
+            else next.delete(path)
+            return next
+        })
+        setDisabledBreakpoints(prev => {
+            const key = bpKey(path, line)
+            if (!prev.has(key)) return prev
+            const next = new Set(prev)
+            next.delete(key)
+            return next
+        })
+    }, [])
+
+    const clearBreakpoints = useCallback(() => {
+        const prevFiles = Array.from(breakpoints.keys())
+        setBreakpoints(new Map())
+        setDisabledBreakpoints(new Set())
+        const session = debugSessionId.current
+        if (session) {
+            prevFiles.forEach(file => {
+                api()?.debug.setBreakpoints(session, file, [])?.catch?.(() => undefined)
+            })
+        }
+    }, [breakpoints])
+
+    // Keep the debug adapter's breakpoints in step with the gutter & DebugPanel toggles.
     useEffect(() => {
         if (!isDebugging || !debugSessionId.current) return
         const session = debugSessionId.current
         breakpoints.forEach((lines, file) => {
-            api()?.debug.setBreakpoints(session, file, lines.map((line, i) => ({
-                id: `bp-${file}-${line}-${i}`, file, line, enabled: true, verified: false
-            })))?.catch?.((e: unknown) => console.error('Failed to sync breakpoints', file, e))
+            const activeLines = lines.filter(line => !disabledBreakpoints.has(bpKey(file, line)))
+            api()?.debug.setBreakpoints(
+                session,
+                file,
+                activeLines.map((line, i) => ({
+                    id: `bp-${file}-${line}-${i}`, file, line, enabled: true, verified: false
+                }))
+            )?.catch?.((e: unknown) => console.error('Failed to sync breakpoints', file, e))
         })
-    }, [isDebugging, breakpoints])
+    }, [isDebugging, breakpoints, disabledBreakpoints])
 
-    // Build and debug events from the main process.
+    // Reset runner/debug state & breakpoints on folder change, and load tasks/configs for the new folder.
+    useEffect(() => {
+        const gen = ++loadGenRef.current
+        if (prevFolderRef.current !== folder) {
+            prevFolderRef.current = folder
+
+            if (executionId.current) {
+                api()?.code.kill(executionId.current)
+                executionId.current = null
+            }
+            clearRunListeners()
+            if (buildTaskId.current) {
+                api()?.build.killTask(buildTaskId.current)?.catch?.(() => undefined)
+                buildTaskId.current = null
+            }
+            if (debugSessionId.current) {
+                api()?.debug.stop(debugSessionId.current)?.catch?.(() => undefined)
+                debugSessionId.current = null
+            }
+            activeThreadId.current = undefined
+            lastDebugConfig.current = null
+
+            setRunOutput('')
+            setBuildOutput('')
+            setDebugOutput('')
+            setIsRunning(false)
+            setIsBuilding(false)
+            setActiveBuildTaskLabel(null)
+            setIsDebugging(false)
+            clearPausedState()
+            setBreakpoints(new Map())
+            setDisabledBreakpoints(new Set())
+            setDebugConsole([])
+            setSelectedDebugConfig(null)
+            useDiagnosticsStore.getState().clearOrigin('build')
+        }
+
+        if (folder) {
+            void refreshTasks(folder).then(() => {
+                if (gen !== loadGenRef.current) return
+            })
+            void refreshDebugConfigs(folder).then(() => {
+                if (gen !== loadGenRef.current) return
+            })
+        } else {
+            setBuildTasks([])
+            setDebugConfigurations([])
+        }
+    }, [folder, clearRunListeners, clearPausedState, refreshTasks, refreshDebugConfigs])
+
+    // Build and debug events from the main process (strictly filtered by active ID).
     useEffect(() => {
         const offs: Array<(() => void) | undefined> = []
         const b = api()?.build
         const d = api()?.debug
-        offs.push(b?.onOutput((data: { data?: string; output?: string; type?: string } | string) => {
+
+        offs.push(b?.onOutput((data: { taskId?: string; data?: string; output?: string; type?: string } | string) => {
+            if (typeof data !== 'string' && data?.taskId) {
+                if (!buildTaskId.current || data.taskId !== buildTaskId.current) return
+            }
             const text = typeof data === 'string' ? data : data?.data ?? data?.output ?? ''
             if (text) setBuildOutput(prev => prev + text)
         }))
-        offs.push(b?.onEnd((data: { problems?: unknown[]; exitCode: number }) => {
-            setIsBuilding(false)
-            buildTaskId.current = null
-            if (data.problems?.length) addNotification(`Build finished with ${data.problems.length} problem${data.problems.length === 1 ? '' : 's'}.`, 'warning')
-            else if (data.exitCode === 0) addNotification('Build succeeded.', 'success')
-            else addNotification(`Build failed with exit code ${data.exitCode}.`, 'error')
+
+        offs.push(b?.onProblems?.((data: { taskId?: string; problems?: RawBuildProblem[] }) => {
+            if (data?.taskId && buildTaskId.current && data.taskId !== buildTaskId.current) return
+            if (Array.isArray(data?.problems)) {
+                useDiagnosticsStore.getState().setBuildProblems(data.problems, folderRef.current)
+            }
         }))
+
+        offs.push(b?.onEnd((data: { taskId?: string; problems?: RawBuildProblem[]; exitCode: number }) => {
+            if (data?.taskId && buildTaskId.current && data.taskId !== buildTaskId.current) return
+            setIsBuilding(false)
+            setActiveBuildTaskLabel(null)
+            buildTaskId.current = null
+            const problems = Array.isArray(data.problems) ? data.problems : []
+            useDiagnosticsStore.getState().setBuildProblems(problems, folderRef.current)
+            if (problems.length) {
+                addNotification(`Build finished with ${problems.length} problem${problems.length === 1 ? '' : 's'}.`, 'warning')
+            } else if (data.exitCode === 0) {
+                addNotification('Build succeeded.', 'success')
+            } else {
+                addNotification(`Build failed with exit code ${data.exitCode}.`, 'error')
+            }
+        }))
+
         offs.push(d?.onStopped(async (data: { sessionId?: string; reason?: string; threadId?: number }) => {
+            if (data?.sessionId && debugSessionId.current && data.sessionId !== debugSessionId.current) return
             const session = data?.sessionId ?? debugSessionId.current
+            if (!session) return
+            activeThreadId.current = data?.threadId
+            setIsPaused(true)
+            setPausedReason(data?.reason ?? 'paused')
+
             let where = ''
-            if (session) {
-                const stack = await d?.getCallStack(session, data?.threadId).catch(() => null)
-                const top = stack?.success ? stack.callStack?.[0] : null
-                if (top?.source?.path) where = ` at ${top.source.path.split(/[\\/]/).pop()}:${top.line}`
+            const stack = await d?.getCallStack(session, data?.threadId).catch(() => null)
+            if (debugSessionId.current && debugSessionId.current !== session) return
+            const frames: StackFrame[] = stack?.success && Array.isArray(stack.callStack) ? stack.callStack : []
+            setCallStack(frames)
+            const top = frames[0] ?? null
+            if (top?.source?.path) {
+                where = ` at ${top.source.path.split(/[\\/]/).pop()}:${top.line}`
             }
             setDebugOutput(prev => `${prev}\n⏸ Paused${where}${data?.reason ? ` (${data.reason})` : ''}\n`)
+            if (top) {
+                await loadFrameInspection(session, top)
+            } else {
+                void evaluateWatchList(session)
+            }
         }))
+
+        offs.push(d?.onContinued?.((data: { sessionId?: string }) => {
+            if (data?.sessionId && debugSessionId.current && data.sessionId !== debugSessionId.current) return
+            clearPausedState()
+        }))
+
         offs.push(d?.onTerminated((data: { sessionId?: string }) => {
             // stopDebug clears the id first and writes its own line.
             if (!debugSessionId.current || (data?.sessionId && data.sessionId !== debugSessionId.current)) return
             setIsDebugging(false)
             debugSessionId.current = null
+            activeThreadId.current = undefined
+            clearPausedState()
             setDebugOutput(prev => `${prev}\n✓ Debug session ended\n`)
         }))
-        offs.push(d?.onOutput((data: { output?: string; data?: string } | string) => {
+
+        offs.push(d?.onOutput((data: { sessionId?: string; output?: string; data?: string; category?: string } | string) => {
+            if (typeof data !== 'string' && data?.sessionId) {
+                if (debugSessionId.current && data.sessionId !== debugSessionId.current) return
+                if (!debugSessionId.current && !debugStarting.current) return
+            }
             const text = typeof data === 'string' ? data : data?.output ?? data?.data ?? ''
-            if (text) setDebugOutput(prev => prev + text)
+            if (text) {
+                setDebugOutput(prev => prev + text)
+                const trimmed = text.replace(/\r?\n$/, '')
+                if (trimmed) {
+                    setDebugConsole(prev => [
+                        ...prev.slice(-198),
+                        {
+                            id: `c-out-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                            kind: typeof data !== 'string' && data?.category === 'stderr' ? 'error' : 'output',
+                            text: trimmed
+                        }
+                    ])
+                }
+            }
         }))
-        offs.push(d?.onError((data: { error: unknown }) => {
+
+        offs.push(d?.onError((data: { sessionId?: string; error: unknown }) => {
+            if (data?.sessionId && debugSessionId.current && data.sessionId !== debugSessionId.current) return
             const text = typeof data.error === 'string' ? data.error : JSON.stringify(data.error)
             addNotification(`Debugger error: ${text}`, 'error')
             setDebugOutput(prev => `${prev}\nError: ${text}\n`)
             setIsDebugging(false)
             debugSessionId.current = null
+            activeThreadId.current = undefined
+            clearPausedState()
         }))
+
         offs.push(d?.onAdapterMissing((data: { requiredBinary: string; installInstructions: string }) => {
             adapterMissing.current = true
             addNotification(`Install ${data.requiredBinary} to debug this file. See the Debug panel for steps.`, 'warning')
             setDebugOutput(prev => `${prev}\n${data.requiredBinary} is not installed.\n${data.installInstructions}\n`)
         }))
+
         return () => offs.forEach(off => typeof off === 'function' && off())
-    }, [addNotification])
+    }, [addNotification, clearPausedState, loadFrameInspection, evaluateWatchList])
 
-    useEffect(() => () => clearRunListeners(), [])
+    useEffect(() => () => {
+        clearRunListeners()
+        dispatchDebugLocation(null)
+    }, [clearRunListeners])
 
-    return {
-        canRun, run, stopRun, sendInput, runOutput, isRunning,
-        build, stopBuild, buildOutput, isBuilding,
-        startDebug, stopDebug, debugStep, debugOutput, isDebugging,
-        breakpoints, toggleBreakpoint,
-        clearOutput: (which: 'output' | 'build' | 'debug') => {
-            if (which === 'output') setRunOutput('')
-            else if (which === 'build') setBuildOutput('')
-            else setDebugOutput('')
+    const clearOutput = useCallback((which: 'output' | 'build' | 'debug') => {
+        if (which === 'output') setRunOutput('')
+        else if (which === 'build') setBuildOutput('')
+        else {
+            setDebugOutput('')
+            setDebugConsole([])
         }
-    }
+    }, [])
+
+    const runnerApi = useMemo(() => ({
+        canRun, run, stopRun, sendInput, runOutput, isRunning,
+        build, stopBuild, buildOutput, isBuilding, buildTasks, activeBuildTaskLabel, runTask, refreshTasks,
+        startDebug, stopDebug, restartDebug, debugStep, debugOutput, isDebugging, isPaused, pausedReason,
+        breakpoints, disabledBreakpoints, toggleBreakpoint, toggleBreakpointEnabled, removeBreakpoint, clearBreakpoints,
+        callStack, selectedFrameId, selectFrame, scopes, variableChildren, expandVariable,
+        watches, addWatch, removeWatch, refreshWatches,
+        debugConsole, evaluateExpression, clearDebugConsole,
+        debugConfigurations, selectedDebugConfig, setSelectedDebugConfig, refreshDebugConfigs,
+        clearOutput
+    }), [
+        canRun, run, stopRun, sendInput, runOutput, isRunning,
+        build, stopBuild, buildOutput, isBuilding, buildTasks, activeBuildTaskLabel, runTask, refreshTasks,
+        startDebug, stopDebug, restartDebug, debugStep, debugOutput, isDebugging, isPaused, pausedReason,
+        breakpoints, disabledBreakpoints, toggleBreakpoint, toggleBreakpointEnabled, removeBreakpoint, clearBreakpoints,
+        callStack, selectedFrameId, selectFrame, scopes, variableChildren, expandVariable,
+        watches, addWatch, removeWatch, refreshWatches,
+        debugConsole, evaluateExpression, clearDebugConsole,
+        debugConfigurations, selectedDebugConfig, refreshDebugConfigs,
+        clearOutput
+    ])
+
+    // Publish live runner handle for sidebar DebugPanel & ActivityBar without requiring prop drilling through IDEWorkspace.
+    useEffect(() => {
+        useActiveRunnerStore.getState().setRunner(runnerApi)
+    }, [runnerApi])
+
+    useEffect(() => () => {
+        useActiveRunnerStore.getState().setRunner(null)
+    }, [])
+
+    return runnerApi
 }
 
 export type RunnerApi = ReturnType<typeof useRunner>
+
+interface ActiveRunnerStoreState {
+    runner: RunnerApi | null
+    setRunner: (runner: RunnerApi | null) => void
+}
+
+export const useActiveRunnerStore = create<ActiveRunnerStoreState>(set => ({
+    runner: null,
+    setRunner: runner => set({ runner })
+}))

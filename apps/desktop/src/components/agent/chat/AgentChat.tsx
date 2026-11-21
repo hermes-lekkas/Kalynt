@@ -2,16 +2,17 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Cpu, KeyRound, Lock, Plug } from 'lucide-react'
+import { ArrowDown, Cpu, FileCode2, KeyRound, Lock, Plug } from 'lucide-react'
 import { useUiStore } from '../../../stores/uiStore'
 import type { FileItem } from '../../../types/ide'
 import { useAppStore } from '../../../stores/appStore'
+import { useWorkspaceFolderStore } from '../../../stores/workspaceFolderStore'
 import { fileTransferService } from '../../../services/fileTransferService'
 import { Button, EmptyState } from '../../ui'
 import { Composer, type ComposerHandle, type MentionOption } from '../Composer'
 import { AGENT_EVENTS } from '../../ide/hooks/useIdeCommands'
 import { AGENT_MENTION_EVENT } from '../../ide/explorer/FileExplorer'
-import { relativePath } from '../../ide/languages'
+import { baseName, relativePath } from '../../ide/languages'
 import { Transcript } from './Transcript'
 import { LiveTurnView } from './LiveTurnView'
 import { PlanPanel, RunFooter } from './RunExtras'
@@ -26,6 +27,7 @@ const EXAMPLES = [
 ]
 
 interface AgentChatProps {
+    spaceId: string
     chat: AgentChatApi
     model: ModelChoiceApi
     files: FileItem[]
@@ -33,11 +35,13 @@ interface AgentChatProps {
     canUseAgent: boolean
 }
 
-export function AgentChat({ chat, model, files, folder, canUseAgent }: AgentChatProps) {
+export function AgentChat({ spaceId, chat, model, files, folder, canUseAgent }: AgentChatProps) {
     const [draft, setDraft] = useState('')
+    const [scrolledUp, setScrolledUp] = useState(false)
     const composerRef = useRef<ComposerHandle>(null)
     const threadRef = useRef<HTMLDivElement>(null)
     const stickToBottom = useRef(true)
+    const activeEditorPath = useWorkspaceFolderStore(s => s.records[spaceId]?.activeFile ?? null)
     const setShowSettings = useAppStore(s => s.setShowSettings)
     const setSettingsTab = useAppStore(s => s.setSettingsTab)
     const chatRef = useRef(chat)
@@ -70,11 +74,24 @@ export function AgentChat({ chat, model, files, folder, canUseAgent }: AgentChat
         }
     }, [])
 
+    // Reset scroll lock when switching sessions.
+    useEffect(() => {
+        stickToBottom.current = true
+        setScrolledUp(false)
+    }, [chat.session?.id])
+
     // Follow new output unless the reader scrolled up.
     useLayoutEffect(() => {
         const el = threadRef.current
         if (el && stickToBottom.current) el.scrollTop = el.scrollHeight
     }, [chat.revision, chat.live, chat.outputs, chat.approval])
+
+    const jumpToLatest = () => {
+        stickToBottom.current = true
+        setScrolledUp(false)
+        const el = threadRef.current
+        if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    }
 
     const mentionOptions = useCallback((query: string): MentionOption[] => {
         const q = query.toLowerCase()
@@ -100,54 +117,87 @@ export function AgentChat({ chat, model, files, folder, canUseAgent }: AgentChat
         void chat.send(text)
         setDraft('')
         stickToBottom.current = true
+        setScrolledUp(false)
     }
 
     const session = chat.session
     const empty = !session || (session.items.length === 0 && !(session.archive?.length) && !chat.running)
+    const activeFileName = activeEditorPath ? baseName(activeEditorPath) : null
+    const activeFileRel = activeEditorPath ? relativePath(activeEditorPath, folder) : ''
+    const activeFilePill = activeEditorPath && activeFileName ? (
+        <button
+            type="button"
+            className="composer__file-pill"
+            title={`Active file: ${activeFileRel} — click to mention`}
+            onClick={() => composerRef.current?.mention({
+                kind: 'file',
+                label: activeFileName,
+                detail: activeFileRel,
+                insert: `@[${activeFileName}](local://${activeEditorPath})`
+            })}
+        >
+            <FileCode2 size={11} aria-hidden />
+            <span className="truncate">{activeFileName}</span>
+        </button>
+    ) : undefined
 
     return (
         <div className="agent-chat">
-            <div
-                ref={threadRef}
-                className="agent-chat__thread"
-                onScroll={e => {
-                    const el = e.currentTarget
-                    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
-                }}
-            >
-                {empty ? (
-                    model.ready ? (
-                        <div className="agent-chat__intro">
-                            <p className="agent-chat__intro-title">What should we work on?</p>
-                            <p className="agent-chat__intro-text">
-                                The agent can read and search {folder ? 'this project' : 'your files'}, edit code, run commands and tests, and look things up on the web.
-                                {chat.mode === 'full-auto' ? ' It works without asking, except for risky commands.' : ' It asks before changing files or running commands.'} Type @ to point it at a file.
-                            </p>
-                            <div className="agent-chat__examples">
-                                {EXAMPLES.map(example => (
-                                    <button key={example} type="button" className="agent-chat__example" onClick={() => { setDraft(example); composerRef.current?.focus() }}>
-                                        {example}
-                                    </button>
-                                ))}
+            <div className="agent-chat__stage">
+                <div
+                    ref={threadRef}
+                    className="agent-chat__thread"
+                    onScroll={e => {
+                        const el = e.currentTarget
+                        const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+                        stickToBottom.current = atBottom
+                        setScrolledUp(prev => (prev === !atBottom ? prev : !atBottom))
+                    }}
+                >
+                    {empty ? (
+                        model.ready ? (
+                            <div className="agent-chat__intro">
+                                <p className="agent-chat__intro-title">What should we work on?</p>
+                                <p className="agent-chat__intro-text">
+                                    The agent can read and search {folder ? 'this project' : 'your files'}, edit code, run commands and tests, and look things up on the web.
+                                    {chat.mode === 'full-auto' ? ' It works without asking, except for risky commands.' : ' It asks before changing files or running commands.'} Type @ to point it at a file.
+                                </p>
+                                <div className="agent-chat__examples">
+                                    {EXAMPLES.map(example => (
+                                        <button key={example} type="button" className="agent-chat__example" onClick={() => { setDraft(example); composerRef.current?.focus() }}>
+                                            {example}
+                                        </button>
+                                    ))}
+                                </div>
                             </div>
+                        ) : (
+                            <EmptyState
+                                title="Connect a model to start"
+                                description={model.blockedReason || 'Download a local model, connect Ollama / LM Studio, or use a cloud API key.'}
+                                actions={<>
+                                    <Button size="sm" icon={<Cpu size={14} />} onClick={() => openModels('models-local')}>Download a model</Button>
+                                    <Button size="sm" icon={<Plug size={14} />} onClick={() => openModels('models-server')}>Connect local server</Button>
+                                    <Button size="sm" icon={<KeyRound size={14} />} onClick={() => openModels('models-cloud')}>Add a cloud key</Button>
+                                </>}
+                            />
+                        )
+                    ) : session && (
+                        <div className="agent-chat__messages">
+                            <Transcript session={session} workspace={folder} revision={chat.revision} outputs={chat.outputs} approval={chat.approval} />
+                            {chat.running && <LiveTurnView turn={chat.live} working={!chat.approval} />}
+                            <RunFooter session={session} folder={folder} running={chat.running} onUndo={chat.undoRun} onContinue={chat.continueRun} />
                         </div>
-                    ) : (
-                        <EmptyState
-                            title="Connect a model to start"
-                            description={model.blockedReason || 'Download a local model, connect Ollama / LM Studio, or use a cloud API key.'}
-                            actions={<>
-                                <Button size="sm" icon={<Cpu size={14} />} onClick={() => openModels('models-local')}>Download a model</Button>
-                                <Button size="sm" icon={<Plug size={14} />} onClick={() => openModels('models-server')}>Connect local server</Button>
-                                <Button size="sm" icon={<KeyRound size={14} />} onClick={() => openModels('models-cloud')}>Add a cloud key</Button>
-                            </>}
-                        />
-                    )
-                ) : session && (
-                    <div className="agent-chat__messages">
-                        <Transcript session={session} workspace={folder} revision={chat.revision} outputs={chat.outputs} approval={chat.approval} />
-                        {chat.running && <LiveTurnView turn={chat.live} working={!chat.approval} />}
-                        <RunFooter session={session} folder={folder} running={chat.running} onUndo={chat.undoRun} onContinue={chat.continueRun} />
-                    </div>
+                    )}
+                </div>
+                {scrolledUp && !empty && (
+                    <button
+                        type="button"
+                        className={`agent-chat__jump ${chat.running ? 'is-live' : ''}`}
+                        onClick={jumpToLatest}
+                    >
+                        <ArrowDown size={12} aria-hidden />
+                        <span>Jump to latest</span>
+                    </button>
                 )}
             </div>
 
@@ -164,6 +214,7 @@ export function AgentChat({ chat, model, files, folder, canUseAgent }: AgentChat
                 disabled={!model.ready && !chat.running}
                 placeholder={model.ready ? 'Ask the agent to build, fix, explain or run something' : 'Connect a model to ask the agent'}
                 mentionOptions={mentionOptions}
+                contextPill={activeFilePill}
                 footer={<div className="agent-chat__controls"><ModelPicker model={model} /><ModeMenu mode={chat.mode} onChange={chat.setMode} /></div>}
                 sendLabel="Send to agent"
             />

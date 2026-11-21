@@ -12,7 +12,18 @@ interface BreadcrumbsProps {
     onRevealDirectory: (path: string) => void
 }
 
+function joinSegmentPath(root: string, isPosixAbsolute: boolean, segments: string[]): string {
+    const joined = segments.join('/')
+    if (root) return `${root}/${joined}`
+    if (isPosixAbsolute) return `/${joined}`
+    // Windows drive root (e.g. ['C:']) needs a trailing slash to stay valid.
+    if (segments.length === 1 && /^[A-Za-z]:$/.test(segments[0])) return `${segments[0]}/`
+    return joined
+}
+
 export function Breadcrumbs({ path, folder, onRevealDirectory }: BreadcrumbsProps) {
+    const normalizedPath = path.replace(/\\/g, '/')
+    const isPosixAbsolute = normalizedPath.startsWith('/')
     const parts = relativePath(path, folder).split('/').filter(Boolean)
     const root = folder?.replace(/\\/g, '/').replace(/\/+$/, '') ?? ''
 
@@ -20,15 +31,15 @@ export function Breadcrumbs({ path, folder, onRevealDirectory }: BreadcrumbsProp
         <nav className="breadcrumbs" aria-label="File location">
             {folder && (
                 <>
-                    <button type="button" className="breadcrumbs__item" onClick={() => onRevealDirectory(root)}>
+                    <button type="button" className="breadcrumbs__item" onClick={() => onRevealDirectory(root || '/')}>
                         {folderName(folder)}
                     </button>
-                    <ChevronRight size={12} className="breadcrumbs__sep" aria-hidden />
+                    {parts.length > 0 && <ChevronRight size={12} className="breadcrumbs__sep" aria-hidden />}
                 </>
             )}
             {parts.map((part, i) => {
                 const last = i === parts.length - 1
-                const target = `${root}/${parts.slice(0, i + 1).join('/')}`
+                const target = joinSegmentPath(root, !folder && isPosixAbsolute, parts.slice(0, i + 1))
                 return (
                     <span key={target} className="breadcrumbs__segment">
                         {last ? (

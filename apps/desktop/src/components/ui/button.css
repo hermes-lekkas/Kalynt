@@ -15,7 +15,11 @@
     font-weight: var(--fw-medium);
     line-height: 1;
     white-space: nowrap;
-    transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+    transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease), transform var(--dur-1) var(--ease);
+}
+
+.k-btn:active:not(:disabled) {
+    transform: scale(0.98);
 }
 
 .k-btn--sm {
@@ -51,6 +55,7 @@
 .k-btn--secondary {
     background: var(--raised);
     border-color: var(--line-strong);
+    box-shadow: var(--rim-subtle);
     color: var(--text);
 }
 
@@ -98,7 +103,11 @@
     height: 28px;
     border-radius: var(--r-2);
     color: var(--text-2);
-    transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+    transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease), transform var(--dur-1) var(--ease);
+}
+
+.k-icon-btn:active:not(:disabled) {
+    transform: scale(0.96);
 }
 
 .k-icon-btn--sm {
@@ -147,6 +156,7 @@
     color: var(--bg);
     font-size: 9px;
     font-weight: var(--fw-semibold);
+    font-variant-numeric: tabular-nums;
     line-height: 14px;
     text-align: center;
 }

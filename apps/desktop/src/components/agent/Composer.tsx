@@ -6,8 +6,8 @@
  * File mentions read as "@name" while typing and expand to their full link
  * when the message is sent.
  */
-import { forwardRef, useImperativeHandle, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import { ArrowUp, FileText, Square, User, X } from 'lucide-react'
+import { forwardRef, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { ArrowUp, AtSign, FileText, Square, User, X } from 'lucide-react'
 
 export interface MentionOption {
     kind: 'file' | 'person'
@@ -33,6 +33,7 @@ interface ComposerProps {
     placeholder: string
     mentionOptions: (query: string) => MentionOption[]
     footer?: ReactNode
+    contextPill?: ReactNode
     banner?: ReactNode
     onDismissBanner?: () => void
     sendLabel?: string
@@ -44,7 +45,7 @@ const MAX_MENTIONS = 8
 const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
-    { value, onChange, onSubmit, onStop, busy, disabled, placeholder, mentionOptions, footer, banner, onDismissBanner, sendLabel = 'Send', onTyping },
+    { value, onChange, onSubmit, onStop, busy, disabled, placeholder, mentionOptions, footer, contextPill, banner, onDismissBanner, sendLabel = 'Send', onTyping },
     ref
 ) {
     const areaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -133,11 +134,29 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         }
     }
 
-    // Grow with the content up to a limit, then scroll.
-    const autosize = (el: HTMLTextAreaElement | null) => {
+    // Grow with the content up to a limit, then scroll — only when `value` changes,
+    // never on parent re-renders during streaming.
+    useLayoutEffect(() => {
+        const el = areaRef.current
         if (!el) return
         el.style.height = 'auto'
         el.style.height = `${Math.min(el.scrollHeight, 220)}px`
+    }, [value])
+
+    const triggerMention = () => {
+        if (disabled) return
+        const el = areaRef.current
+        const pos = el?.selectionStart ?? value.length
+        const needsSpace = pos > 0 && !/\s$/.test(value.slice(0, pos))
+        const inserted = `${needsSpace ? ' ' : ''}@`
+        const next = `${value.slice(0, pos)}${inserted}${value.slice(pos)}`
+        const caret = pos + inserted.length
+        onChange(next)
+        detectMention(next, caret)
+        requestAnimationFrame(() => {
+            el?.focus()
+            el?.setSelectionRange(caret, caret)
+        })
     }
 
     return (
@@ -170,7 +189,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                 </div>
             )}
             <textarea
-                ref={el => { areaRef.current = el; autosize(el) }}
+                ref={areaRef}
                 className="composer__input"
                 rows={1}
                 value={value}
@@ -180,14 +199,27 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                 onChange={e => {
                     onChange(e.target.value)
                     detectMention(e.target.value, e.target.selectionStart)
-                    autosize(e.target)
                     onTyping?.()
                 }}
                 onKeyDown={onKeyDown}
                 onBlur={() => setTimeout(() => setMention(null), 120)}
             />
             <div className="composer__footer">
-                <div className="composer__footer-start">{footer}</div>
+                <div className="composer__footer-start">
+                    <button
+                        type="button"
+                        className="composer__at-btn"
+                        disabled={disabled}
+                        onMouseDown={e => e.preventDefault()}
+                        onClick={triggerMention}
+                        aria-label="Mention file or context"
+                        title="Mention file or context (@)"
+                    >
+                        <AtSign size={13} aria-hidden />
+                    </button>
+                    {contextPill}
+                    {footer}
+                </div>
                 {busy && onStop ? (
                     <button type="button" className="composer__send is-stop" onClick={onStop} aria-label="Stop the agent" title="Stop">
                         <Square size={12} fill="currentColor" aria-hidden />

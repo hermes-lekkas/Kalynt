@@ -65,20 +65,65 @@ export function makeExecutable(file: string): void {
     }
 }
 
+/** Expected executable basename for the rustup installer on a given platform. */
+export function rustupInstallerFilename(platform: NodeJS.Platform = process.platform): string {
+    return platform === 'win32' ? 'rustup-init.exe' : 'rustup-init'
+}
+
+/**
+ * Ensures the downloaded rustup installer has the required `rustup-init`
+ * (or `rustup-init.exe` on Windows) basename before execution, because rustup
+ * inspects argv[0] and fails with `unknown proxy name` if renamed.
+ */
+export function prepareRustupExecutablePath(
+    installerPath: string,
+    platform: NodeJS.Platform = process.platform
+): { executablePath: string; createdCopy: boolean } {
+    const expectedName = rustupInstallerFilename(platform)
+    const currentName = path.basename(installerPath)
+    const matches = platform === 'win32'
+        ? currentName.toLowerCase() === expectedName.toLowerCase()
+        : currentName === expectedName
+    if (matches) {
+        return { executablePath: installerPath, createdCopy: false }
+    }
+    const targetPath = path.join(path.dirname(installerPath), expectedName)
+    fs.copyFileSync(installerPath, targetPath)
+    return { executablePath: targetPath, createdCopy: true }
+}
+
 /** Runs rustup-init so Rust lands inside `installPath` and nothing outside it changes. */
-export async function runRustup(installer: string, installPath: string, onLog?: (line: string) => void): Promise<Record<string, string>> {
+export async function runRustup(
+    installer: string,
+    installPath: string,
+    onLog?: (line: string) => void,
+    platform: NodeJS.Platform = process.platform
+): Promise<Record<string, string>> {
     const env = { CARGO_HOME: path.join(installPath, 'cargo'), RUSTUP_HOME: path.join(installPath, 'rustup') }
-    makeExecutable(installer)
-    await run(installer, ['-y', '--no-modify-path', '--profile', 'minimal', '--default-toolchain', 'stable'],
-        { env: { ...process.env, ...env }, timeout: 20 * 60_000 }, onLog)
-    return env
+    const { executablePath, createdCopy } = prepareRustupExecutablePath(installer, platform)
+    try {
+        makeExecutable(executablePath)
+        await run(executablePath, ['-y', '--no-modify-path', '--profile', 'minimal', '--default-toolchain', 'stable'],
+            { env: { ...process.env, ...env }, timeout: 20 * 60_000 }, onLog)
+        return env
+    } finally {
+        if (createdCopy) {
+            fs.rmSync(executablePath, { force: true })
+        }
+    }
 }
 
 /** Asks a freshly installed runtime for its version. */
-export function versionOf(exePath: string, runtimeId: string): Promise<string | null> {
+export function versionOf(exePath: string, runtimeId: string, extraEnv?: Record<string, string>): Promise<string | null> {
     const args = runtimeId === 'go' || runtimeId === 'zig' ? ['version'] : runtimeId === 'java' ? ['-version'] : ['--version']
+    const binDir = path.dirname(exePath)
+    const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        ...extraEnv,
+        PATH: [binDir, process.env.PATH || ''].filter(Boolean).join(path.delimiter)
+    }
     return new Promise(resolve => {
-        execFile(exePath, args, { timeout: 15_000, windowsHide: true }, (err, stdout, stderr) => {
+        execFile(exePath, args, { timeout: 15_000, windowsHide: true, env }, (err, stdout, stderr) => {
             resolve(err ? null : /(\d+\.\d+(?:\.\d+)?)/.exec(`${stdout}${stderr}`)?.[1] ?? null)
         })
     })

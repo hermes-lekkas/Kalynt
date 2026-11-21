@@ -1,10 +1,10 @@
 # Publication drafts
 
-These drafts describe the published 2.0 release. Add a measured demo only after recording one; do not imply that source-only improvements are in the downloadable installers.
+These drafts target the upcoming **2.1.0** stable release (update links/dates once the final 2.1.0 installers are published). Add a measured demo only after recording one; do not imply that unreleased branch changes are already in older downloadable installers.
 
 ## DEV article replacement
 
-Title: Kalynt 2.0: an open-source AI IDE with local models and peer-to-peer collaboration
+Title: Kalynt 2.1: an open-source AI IDE with local models and peer-to-peer collaboration
 
 Kalynt is a desktop code editor for developers who want control over their AI workflow. It is open source under AGPL-3.0. There is no Kalynt subscription or account requirement.
 

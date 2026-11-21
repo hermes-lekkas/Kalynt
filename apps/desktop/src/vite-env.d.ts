@@ -75,9 +75,10 @@ export interface TerminalAPI {
 }
 
 export interface RuntimeAPI {
-  startLSP: (sessionId: string, languageId: string, workspacePath: string, options?: any) => Promise<{ success: boolean; error?: string }>
+  startLSP: (sessionId: string, languageId: string, workspacePath: string, options?: any) => Promise<{ success: boolean; sessionId?: string; error?: string; actionableHint?: string }>
   stopLSP: (sessionId: string) => Promise<{ success: boolean; error?: string }>
   sendLSPRequest: (sessionId: string, method: string, params: any) => Promise<{ success: boolean; result?: any; error?: string }>
+  sendLSPNotification: (sessionId: string, method: string, params?: any) => Promise<{ success: boolean; error?: string }>
   getLanguageServers: () => Promise<{ success: boolean; servers?: any[]; error?: string }>
   startDebug: (sessionId: string, languageId: string, program: string, options?: any) => Promise<{ success: boolean; port?: number; error?: string }>
   stopDebug: (sessionId: string) => Promise<{ success: boolean; error?: string }>
@@ -91,6 +92,8 @@ export interface RuntimeAPI {
   onLog: (callback: (data: { runtimeId: string; version?: string; level: string; message: string }) => void) => () => void
   onLanguageServerStarted: (callback: (data: { sessionId: string; languageId: string; capabilities: any }) => void) => void
   onLanguageServerStopped: (callback: (data: { sessionId: string; exitCode: number }) => void) => void
+  onLanguageServerError?: (callback: (data: { sessionId: string; languageId?: string; error: string; actionableHint?: string }) => void) => () => void
+  onLSPNotification: (callback: (data: { sessionId: string; languageId?: string; method: string; params: any }) => void) => () => void
   onDebugSessionStarted: (callback: (data: { sessionId: string; languageId: string; port: number; configuration: any }) => void) => void
   onDebugSessionStopped: (callback: (data: { sessionId: string; exitCode: number }) => void) => void
   onDebugSessionError: (callback: (data: { sessionId: string; error: string }) => void) => void
@@ -172,29 +175,40 @@ export interface UpdateAPI {
 }
 
 export interface ElectronAPI {
+  editorState: {
+    load: (spaceId: string, folder: string) => Promise<import('./services/editorRecovery').EditorRecoveryState | null>
+    save: (state: import('./services/editorRecovery').EditorRecoveryState) => Promise<{ success: boolean; error?: string }>
+    flush: (state: import('./services/editorRecovery').EditorRecoveryState) => { success: boolean; error?: string }
+  }
   platform: string
   getAppPath: () => Promise<string>
   getVersion: () => Promise<string>
   getModelsDirectory: () => Promise<string>
   getHardwareInfo: () => Promise<any>
+  getPerformanceInferenceConfig: () => Promise<{ flashAttention: boolean; batchSize: number; threads: number; useSpeculativeDecoding: boolean }>
   getRealTimeStats: () => Promise<any>
   fileExists: (path: string) => Promise<boolean>
   deleteModel: (path: string) => Promise<{ success: boolean; error?: string }>
   downloadModel: (options: any) => Promise<any>
   cancelDownload: (modelId: string) => Promise<{ success: boolean; error?: string }>
-  pauseDownload: (modelId: string) => Promise<boolean>
-  resumeDownload: (modelId: string) => Promise<boolean>
+  pauseDownload: (modelId: string) => Promise<any>
+  resumeDownload: (modelId: string) => Promise<any>
   onDownloadProgress: (callback: (progress: {
     modelId: string
     bytesDownloaded: number
     totalBytes: number
     speed: number
-  }) => void) => void
-  loadModel: (options: any) => Promise<boolean>
-  unloadModel: () => Promise<boolean>
+  }) => void) => () => void
+  loadModel: (options: any) => Promise<any>
+  unloadModel: () => Promise<any>
   generateCompletion: (options: any) => Promise<any>
   generateCompletionStream: (options: any, onToken: (token: string) => void, onComplete: (error?: string) => void) => string
-  cancelGeneration: (requestId: string) => Promise<boolean>
+  cancelGeneration: (requestId: string) => Promise<any>
+  loadDraftModel: (options: { modelId: string; path: string }) => Promise<{ success: boolean; error?: string }>
+  unloadDraftModel: () => Promise<{ success: boolean; error?: string }>
+  getDraftModelStatus: () => Promise<{ success: boolean; loaded: boolean; modelId: string | null }>
+  getModelStatus: () => Promise<{ success: boolean; loaded: boolean; modelId: string | null; generating?: boolean }>
+  onLLMEvent: (callback: (event: { type: 'llm:loaded' | 'llm:unloaded'; modelId?: string; reason?: 'low-memory' | 'idle'; contextSize?: number; estimatedRamMB?: number; contextCapped?: boolean }) => void) => () => void
 
   terminal: TerminalAPI
   runtime: RuntimeAPI
@@ -203,17 +217,60 @@ export interface ElectronAPI {
   update: UpdateAPI
 
   fs: any
-  code: any
+  code: {
+    execute: (options: any) => Promise<any>
+    kill: (id: string) => Promise<{ success: boolean; error?: string }>
+    writeInput: (id: string, data: string) => Promise<{ success: boolean; error?: string }>
+    runCommand: (cwd: string, command: string, id?: string) => Promise<any>
+    onOutput: (callback: (data: any) => void) => () => void
+    onExit: (callback: (data: any) => void) => () => void
+    removeListeners: () => void
+    clearBinaryCache: () => Promise<{ success: boolean; error?: string }>
+    clearCache: () => Promise<{ success: boolean; error?: string }>
+  }
   git: any
-  shell: any
+  shell: {
+    openExternal: (url: string) => Promise<{ success: boolean; error?: string } | void>
+    showItemInFolder: (path: string) => Promise<{ success: boolean; error?: string } | void>
+  }
   minimizeWindow: () => Promise<void>
   maximizeWindow: () => Promise<void>
   closeWindow: () => Promise<void>
+  isMaximized: () => Promise<boolean>
+  onMaximizedChange: (callback: (maximized: boolean) => void) => () => void
+  window: {
+    minimize: () => Promise<void>
+    maximize: () => Promise<void>
+    close: () => Promise<void>
+    isMaximized: () => Promise<boolean>
+    onMaximizedChange: (callback: (maximized: boolean) => void) => () => void
+  }
   nukeProcesses: (level: any) => Promise<{ success: boolean; message?: string }>
   build: any
   debug: any
-  safeStorage: any
+  safeStorage: {
+    isAvailable: () => Promise<boolean>
+    set: (options: { key: string; value: string }) => Promise<{ success: boolean; encrypted?: boolean; error?: string }>
+    get: (key: string) => Promise<{ success: boolean; value?: any; encrypted?: boolean; hasKey?: boolean; error?: string }>
+    hasKey: (key: string) => Promise<{ success: boolean; hasKey: boolean; error?: string }>
+    delete: (key: string) => Promise<{ success: boolean; error?: string }>
+    listKeys: () => Promise<{ success: boolean; keys?: string[]; error?: string }>
+  }
   runtimeMgmt: any
+  performance: {
+    setMode: (mode: 'balanced' | 'high_performance' | 'power_saver') => Promise<{ success: boolean; mode?: 'balanced' | 'high_performance' | 'power_saver'; error?: string }>
+    getStatus: () => Promise<{ memory: { mode: 'balanced' | 'high_performance' | 'power_saver'; rss: number; totalPrivateBytes: number }; platform: string; arch: string }>
+    requestGc: () => Promise<{ success: boolean }>
+    scanWorkspace: (dirPath?: string) => Promise<string[]>
+    prewarmCache: (dirPath?: string) => Promise<{ success: boolean; error?: string }>
+    testDiskSpeed: () => Promise<{ read: number; write: number }>
+    getBootTime: () => Promise<number>
+    getInferenceConfig: () => Promise<{ flashAttention: boolean; batchSize: number; threads: number; useSpeculativeDecoding: boolean }>
+    onRequestGc: (callback: () => void) => () => void
+    onSuspendBackgroundTasks: (callback: () => void) => () => void
+    onOptimizeMonaco: (callback: (options: Record<string, unknown>) => void) => () => void
+    onDisposeWorkers: (callback: () => void) => () => void
+  }
   deps: {
     detect: (workspacePath: string) => Promise<{ success: boolean; manager?: any; error?: string }>
     getForLanguage: (languageId: string) => Promise<{ success: boolean; manager?: any; error?: string }>
@@ -232,6 +289,7 @@ export interface ElectronAPI {
   initDB?: (dbPath: string) => Promise<void>
   dbQuery?: (sql: string, params: unknown[]) => Promise<unknown[]>
   dbRun?: (sql: string, params: unknown[]) => Promise<void>
+  consumePendingDeepLinks?: () => Promise<string[]>
   on: (channel: string, callback: (...args: any[]) => void) => (() => void)
 
   // Extension System APIs
@@ -244,12 +302,17 @@ export interface ElectronAPI {
     list: () => Promise<any[]>
     active: () => Promise<any[]>
     contributions: () => Promise<any>
+    executeCommand: (command: string, ...args: unknown[]) => Promise<unknown>
+    loadTheme: (extensionId: string, themeId: string) => Promise<any>
     startHost: () => Promise<void>
     stopHost: () => Promise<void>
     download: (url: string, targetPath: string) => Promise<void>
-    onExtensionActivated: (callback: (data: { id: string }) => void) => void
-    onExtensionDeactivated: (callback: (data: { id: string }) => void) => void
-    onShowMessage: (callback: (data: { type: string; message: string }) => void) => void
+    onActivated: (callback: (data: { id: string }) => void) => () => void
+    onDeactivated: (callback: (data: { id: string }) => void) => () => void
+    onExtensionActivated: (callback: (data: { id: string }) => void) => () => void
+    onExtensionDeactivated: (callback: (data: { id: string }) => void) => () => void
+    onContributionsChanged: (callback: () => void) => () => void
+    onShowMessage: (callback: (data: { type: string; message: string }) => void) => () => void
     removeListeners: () => void
   }
 
@@ -267,9 +330,17 @@ export interface ElectronAPI {
   ai: {
     chat: (requestId: string, request: import('./types/aiProtocol').ChatRequest) => Promise<
       | { ok: true; result: import('./types/aiProtocol').ChatResult }
-      | { ok: false; error: string; status?: number; aborted?: boolean }>
+      | { ok: false; error: string; status?: number; aborted?: boolean; incomplete?: boolean; stopReason?: 'truncated'; partial?: import('./types/aiProtocol').ChatResult }>
     cancel: (requestId: string) => Promise<{ ok: boolean }>
-    models: (provider: string, refresh?: boolean) => Promise<{ models: import('./types/aiProtocol').ModelInfo[]; live: boolean; error?: string }>
+    models: (provider: string, refresh?: boolean) => Promise<{
+      models: import('./types/aiProtocol').ModelInfo[]
+      live: boolean
+      source?: 'live' | 'fallback' | 'error'
+      fallback?: boolean
+      status?: number
+      rawCount?: number
+      error?: string
+    }>
     verify: (provider: string, key: string) => Promise<{ ok: boolean; error?: string; status?: number }>
     keyStatus: () => Promise<Partial<Record<import('./types/aiProtocol').ProviderId, boolean>>>
     localServerStatus: () => Promise<import('./types/aiProtocol').LocalServerStatus>
@@ -278,6 +349,7 @@ export interface ElectronAPI {
     onEvent: (callback: (data: import('./types/aiProtocol').AiEventEnvelope) => void) => () => void
   }
   agent: {
+    flushSession: (session: unknown) => { ok: boolean; error?: string }
     exec: (options: { id: string; command: string; cwd?: string; timeoutMs?: number; background?: boolean }) => Promise<{ ok: boolean; output: string; exitCode: number | null; running: boolean; timedOut?: boolean; durationMs: number; error?: string }>
     execRead: (id: string) => Promise<{ ok: boolean; output: string; running: boolean; exitCode: number | null; error?: string }>
     execKill: (id: string) => Promise<{ ok: boolean }>
@@ -289,14 +361,7 @@ export interface ElectronAPI {
     listSessions: (spaceId?: string) => Promise<Array<{ id: string; title: string; spaceId?: string; provider?: string; model?: string; updatedAt: number; createdAt: number }>>
     loadSession: (id: string) => Promise<unknown>
     saveSession: (session: unknown) => Promise<{ ok: boolean; error?: string }>
-    deleteSession: (id: string) => Promise<{ ok: boolean }>
-  }
-
-  // IPC Renderer
-  ipcRenderer: {
-    invoke: (channel: string, ...args: any[]) => Promise<any>
-    on: (channel: string, callback: (event: any, ...args: any[]) => void) => () => void
-    removeAllListeners: (channel: string) => void
+    deleteSession: (id: string) => Promise<{ ok: boolean; error?: string }>
   }
 }
 

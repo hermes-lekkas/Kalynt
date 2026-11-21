@@ -1,114 +1,101 @@
 # Security Policy
 
-##  Security Philosophy
+## Security Philosophy
 
-Kalynt is built on a "Trust No One" (Zero Trust) architecture. We assume that networks are compromised and that privacy is a fundamental right.
+Kalynt is built around a local-first, least-privilege security model. We assume networks are untrusted, isolate the UI renderer from Node.js, and keep credentials inside the operating system's keychain.
 
 ### Core Principles
 
-1.  **Local-First:** Data should never leave the user's machine unless explicitly authorized.
-2.  **End-to-End Encryption:** Peer-to-peer workspace data is encrypted with AES-256-GCM when the workspace has a room password.
-3.  **Least Privilege:** The renderer has no Node.js access, extensions run in a separate process, and agent changes need approval unless you choose otherwise.
-4.  **Transparency:** The core codebase is open-source (AGPL-3.0) for public audit.
+1. **Local-First:** Code, conversations, recovery drafts, and search indexes stay on your machine unless you explicitly choose cloud AI or P2P collaboration.
+2. **End-to-End Encryption:** Password-protected workspaces encrypt P2P updates, chat messages, moderation actions, and shared files with AES-256-GCM and HMAC-SHA256 integrity verification (protocol v2).
+3. **Least Privilege:** The renderer runs sandboxed without Node.js access, extensions execute in a separate process with a restricted environment, and agent modifications require approval unless you explicitly opt into *Auto-edit* or *Full auto*.
+4. **Transparency:** Kalynt is free and open-source under AGPL-3.0-only for public inspection and audit.
 
 ---
 
-##  Supported Versions
+## Supported Versions
 
-| Version | Supported |
-|---|---|
-| 2.0.x | Yes |
-| 1.0.x (beta) | No. Please update to 2.0. |
+| Version | Supported | Notes |
+| --- | --- | --- |
+| **2.1.x** | Yes | Current stable release (collaboration protocol v2) |
+| **2.0.x** | No | Please upgrade to 2.1.x (save open files before updating) |
+| **1.0.x (beta)** | No | Discontinued; please upgrade to 2.1.x |
 
 ---
 
-##  Security Features
+## Security Architecture
 
-### 1. P2P Collaboration Encryption
-*   **Protocol:** Yjs CRDT updates over WebRTC data channels.
-*   **With a room password:** a key is derived from the password with PBKDF2, and every update is encrypted with AES-256-GCM before it leaves the machine. The password itself is never sent.
-*   **Without a room password:** anyone with the invite link or room code can join and read the workspace. Kalynt shows this in the invite dialog; set a password for anything sensitive.
-*   **Signaling:** the built-in signaling server listens only on `127.0.0.1`. Peers on other machines meet through the public y-webrtc signaling server, which relays connection offers but never document data.
+### 1. Peer-to-Peer Collaboration Encryption (Protocol v2)
+
+- **Transport:** Yjs CRDT updates over WebRTC data channels.
+- **With a room password (protocol v2):** Kalynt derives a deterministic room-scoped salt (`SHA-256`), runs PBKDF2-SHA256 (100,000 iterations), and expands domain-separated HKDF-SHA256 subkeys for AES-256-GCM encryption, HMAC-SHA256 update integrity, and a non-secret 16-byte key-confirmation commitment (`keyCheck`). Passwords are never transmitted or embedded in generated invite links (`#lock=1` signals password protection without revealing the secret).
+- **Fail-closed authentication:** Encrypted rooms reject plaintext downgrades, truncated packets, unready keys, and modified ciphertext. Wrong passwords and incompatible pre-2.1 protocol peers are explicitly detected and surfaced without delivering protected workspace content to unauthenticated clients.
+- **Cryptographic identity & moderation:** Peers announce ECDSA P-256 identities; ownership claims, moderation actions, and durable `bannedRecords` entries are cryptographically signed and role-checked so unprivileged or impersonating peers cannot escalate privileges or forge bans.
+- **Without a room password:** Anyone with the invite link or room code can join and read the workspace. Kalynt highlights this in the Invite dialog; set a password for sensitive projects.
+- **Signaling:** The built-in signaling server binds strictly to `127.0.0.1:4444`. Remote peers discover offers through the public `y-webrtc` signaling fallback, which relays WebRTC signaling only and never sees decrypted workspace data.
 
 ### 2. AI Agent Safeguards
-*   **Approval modes:** *Ask before changes* (the default) asks before every edit, deletion and command; *Auto-edit* applies file edits directly but still asks for deletions and commands; *Full auto* runs everything without asking. Reading, searching and web search never ask.
-*   **Risky commands always ask,** in every mode: `sudo`, recursive force deletes, `mkfs`/`dd`, force pushes, `git reset --hard`, `git clean -f`, piping a download into a shell, `npm publish` and similar. "Always allow" remembers a command prefix (such as `npm run test`) for that conversation only, and never for inline code (`python -c`, `node -e`) or commands with shell operators.
-*   **Commands run in your shell with your permissions.** The agent's `run_command` uses a real shell so it can run scripts and pipelines, with a non-interactive environment (no prompts, no pager). Its file tools are limited to the workspace by the same path validation as everything else, but a command you approve can reach anything your user account can. Stop ends the command's whole process tree.
-*   **Web access:** pages are fetched from the main process with a size and time limit. Only public addresses are allowed: the host is resolved and every redirect is checked, and a URL on your machine or local network (`localhost`, `192.168.x.x`, `*.local`, …) is fetched only after you approve it.
-*   **Undo:** files are snapshotted before the agent's first change in a run, and *Undo* restores them. Snapshots are saved with the conversation in your profile folder (`agent-sessions/`, owner-only), so deleting a conversation deletes them too.
-*   **Untrusted content:** files and web pages the agent reads can contain instructions aimed at it (prompt injection). Keep *Ask before changes* when working with repositories or sites you don't trust.
-*   **Self-checking edits** are a quality check, not a sandbox: approved edits apply to your real files.
 
-### 3. Path Traversal Protection
-*   **Validation:** every file system operation passes through one `validatePath` function (`electron/utils/pathValidator.ts`).
-*   **Symlinks:** paths are resolved with `fs.realpath`, so a symbolic link can't point outside the workspace root.
+- **Approval modes:** *Ask before changes* (default) prompts before every edit, deletion, and command; *Auto-edit* applies file edits directly while prompting for deletions and commands; *Full auto* executes without prompting except for high-risk commands. Read-only file inspection and search never prompt.
+- **Risky commands always prompt:** Regardless of mode, Kalynt requires explicit approval for `sudo`, recursive force deletes (`rm -rf`), `mkfs`/`dd`, force pushes, `git reset --hard`, `git clean -f`, pipe-to-shell downloads, `npm publish`, and similar operations. "Always allow" scopes only to safe command prefixes for the current chat — never inline execution flags (`node -e`, `python -c`) or shell operators.
+- **Shell scope:** Approved agent `run_command` executions run in your shell with your OS user permissions (non-interactive environment). File tools remain confined to the workspace root via `validatePath`. Stopping a run terminates the full child process tree.
+- **SSRF-guarded web access:** Agent web fetches execute in the main process with size and timeout limits. DNS resolution and every redirect hop are checked; private, link-local, and loopback hosts (`localhost`, `127.0.0.0/8`, `192.168.x.x`, `*.local`, etc.) are blocked unless explicitly approved.
+- **Checkpoints & Undo:** Files are snapshotted before the agent's first write in a run and stored owner-only alongside the conversation (`agent-sessions/`). Deleting a conversation deletes its snapshots.
+- **Prompt injection caution:** Untrusted repositories and web pages can contain adversarial instructions. Keep *Ask before changes* active on untrusted codebases.
 
-### 4. Secrets
-*   **API keys** (Anthropic, OpenAI, Google, DeepSeek, Moonshot, Z.ai) and the GitHub token are **never** stored in plain text. Electron's `safeStorage` encrypts them with the OS keychain (Windows DPAPI, macOS Keychain, Linux Secret Service), and the file is written atomically with owner-only permissions.
-*   **Git** credentials are passed per command and never written to `.git/config`. Tokens that earlier versions stored there are removed.
-*   **Cloud requests** go directly from your machine to the provider; Kalynt has no server in between. They are made by the main process, which is the only part of the app that reads provider keys; the interface keeps no copy once a key is saved.
+### 3. Path Traversal & Filesystem Protection
 
-### 5. Process Isolation and Command Execution
-*   **Renderer sandbox:** `sandbox: true`, `contextIsolation: true`, `nodeIntegration: false`. The renderer reaches the system only through the preload API.
-*   **Content Security Policy:** applied to every response. Scripts, styles and fonts load only from the app itself (`default-src 'self'`, `object-src 'none'`, `base-uri 'self'`); fonts are bundled, so no third-party style or font origins are allowed. `script-src` still permits `unsafe-eval` and `unsafe-inline` because the Monaco editor needs them.
-*   **No shell:** Run and package-manager commands, and Build tasks of type `process`, are spawned with argument lists, so file names and arguments can't inject shell syntax. Build tasks of type `shell` in `tasks.json` run in a shell as written, like VS Code, and the agent's commands use your shell (see above).
-*   **"Stop all processes"** stops only processes Kalynt started.
-*   **Extensions** run in a separate process with a restricted environment, are downloaded only from Open VSX, and their archives can't write outside their folder.
-*   **Native helper (macOS)** runs as a child process and communicates only through JSON-RPC over stdin/stdout.
-*   **Mobile bridge** listens on the network only after you start pairing a phone, and each pairing must be approved on the desktop.
+- **Single path validator:** Every filesystem IPC handler validates paths through `electron/utils/pathValidator.ts`.
+- **Symlink & boundary resolution:** Existing paths and new-file parent directories are resolved with `fs.realpath`, preventing `..` escapes, sibling-prefix collisions, and symlink traversal on POSIX and Windows (including drive/UNC normalization).
+- **Atomic writes & permissions:** Editor recovery drafts, agent sessions, and secret stores are written atomically with owner-only permissions.
 
-### 6. Updates
-*   Updates come from this repository's GitHub releases and download only after you agree. The updater never offers an older version.
+### 4. Secrets & Credentials
+
+- **Keychain storage:** Provider API keys (Anthropic, OpenAI, Google, DeepSeek, Moonshot, Z.ai), GitHub tokens, TURN credentials, and saved room passwords are encrypted through Electron `safeStorage` (Windows DPAPI, macOS Keychain, Linux Secret Service) and never written in plaintext to disk.
+- **Main-process isolation:** Cloud requests originate exclusively in the main-process AI gateway (`electron/ai/`); the renderer only learns whether a provider has a saved key.
+- **Local inference servers:** Ollama and LM Studio connections are restricted to loopback addresses on this machine; optional server tokens are stored via `safeStorage`.
+- **Git tokens:** Passed per command and never written into `.git/config`; legacy tokens found in `.git/config` are scrubbed, and `git clone` rejects option-like and `file://` URLs.
+
+### 5. Process Isolation, Extensions & Updates
+
+- **Renderer sandbox:** `sandbox: true`, `contextIsolation: true`, `nodeIntegration: false`.
+- **Content Security Policy:** Applied to every response (`default-src 'self'`, `object-src 'none'`, `base-uri 'self'`, `form-action 'self'`, `frame-ancestors 'none'`). Fonts are bundled locally with no third-party style/font origins (`script-src` retains `unsafe-eval`/`unsafe-inline` solely for Monaco Editor).
+- **No shell for Run/package managers:** Single-file Run, package manager operations, and `process` build tasks spawn with argument arrays (`shell: false`). Only `tasks.json` tasks explicitly typed as `shell` and approved agent commands invoke a shell.
+- **Scoped process cleanup:** "Stop all processes" (`shutdown.ts`) terminates only Kalynt-spawned PTYs, `TaskRunnerService` executions, direct runs, builds, debuggers, package installs, agent commands, and AI requests — never unrelated OS processes.
+- **Extensions & themes:** Downloaded only from Open VSX; VSIX archive extraction and JSONC color-theme `include` resolution reject path traversal; the extension host runs in a separate process with a filtered environment.
+- **Deep links:** `kalynt://join/<roomId>` URLs are strictly validated (scheme, host, segment syntax, raw `..` check, query/hash sanitization) in the main process before reaching the renderer.
+- **Updates:** Sourced from GitHub Releases, require explicit user approval before downloading, and disallow version downgrades.
 
 ---
 
-##  Reporting Vulnerabilities
+## Reporting a Vulnerability
 
-We take security vulnerabilities seriously. If you discover a security issue, please **DO NOT** open a public issue.
+Please **do not** open a public GitHub issue for security vulnerabilities.
 
 **Contact:** [hermeslekkasdev@gmail.com](mailto:hermeslekkasdev@gmail.com)
 
 Please include:
-*   Description of the vulnerability.
-*   Steps to reproduce.
-*   Potential impact.
+- A clear description of the vulnerability and affected Kalynt version
+- Minimal reproduction steps or proof of concept
+- Assessed impact and any suggested remediation
 
-We will acknowledge receipt within 48 hours and strive to provide a patch within 14 days.
+We aim to acknowledge reports within **48 hours** and provide a fix or mitigation plan within **14 days**.
 
 ---
 
-##  Security Updates (v2.0.0)
+## Security Changelog
 
-*   **Shell execution removed** from Run and package managers. Build uses a shell only for tasks declared as `shell` tasks, and the new agent runs commands through your shell by design, behind the approval rules above.
-*   **Provider keys moved out of the interface:** a main-process AI gateway makes every cloud request, and the renderer only learns which providers have a key.
-*   **Agent network guard:** web fetches resolve hosts and check every redirect, so a public link can't bounce the agent to a local or private address without approval.
-*   **Process cleanup scoped:** "Stop all processes" previously killed processes by port, which could hit unrelated programs. It now stops only processes Kalynt started.
-*   **Git token handling:** tokens are no longer stored in `.git/config`, and existing ones are removed; clone rejects option-like and `file://` URLs.
-*   **Single path validator:** four diverging copies of `validatePath` were merged into one with symlink resolution.
-*   **Extension hardening:** Open VSX-only downloads, VSIX path-traversal guard, restricted extension-host environment.
-*   **Network exposure reduced:** the mobile bridge starts only when pairing; the signaling server binds to `127.0.0.1`.
-*   **Secure storage:** atomic, owner-only writes with real error reporting.
-*   **No downgrade updates:** the updater could offer an older release as an update; downgrades are now disallowed.
+### v2.1.0 (2026-11-21)
+- **Collaboration protocol v2:** Deterministic room salt + PBKDF2→HKDF key separation (`AES-256-GCM` + `HMAC-SHA256` + non-secret `keyCheck`), explicit mixed-version vs. wrong-password detection, and fail-closed rejection of plaintext/truncated packets (including zero-prefixed AES-GCM IVs).
+- **Cryptographic ban enforcement:** Durable ECDSA-signed `bannedRecords` enforced both live and on rejoin, preventing unauthorized or spoofed bans.
+- **Deep-link hardening:** Cold-start `argv` and macOS `open-url` links undergo strict host/segment/traversal validation before queuing for single-delivery consumption (`deep-link:consume`); password-protected invites pass `#lock=1` instead of embedding passwords.
+- **Theme loader hardening:** Contributed VS Code JSONC themes enforce path-traversal validation on theme files and `include` chains.
+- **Complete process shutdown:** `TaskRunnerService` process trees are now included in `stopEverythingWithDetails()` and `shutdownApp()`.
+- **Model download validation:** Resumed HTTP 206/416 downloads verify byte ranges and total length and reject unsupported redirect schemes.
+- **Loopback local servers:** Ollama/LM Studio integrations restrict endpoints to loopback hosts and store optional bearer tokens in `safeStorage`.
 
-##  Security Updates (v1.0.5-beta)
+### v2.0.0 (2026-10-19)
+- Removed shell execution from Run and package managers; moved all cloud provider keys into the main-process AI gateway; added SSRF-checked agent web guard; scoped "Stop all processes" strictly to Kalynt-started processes; removed Git tokens from `.git/config`; consolidated path validation with `fs.realpath`; hardened Open VSX/VSIX extension isolation; bound signaling server to `127.0.0.1`; made `safeStorage` writes atomic and owner-only; disabled updater downgrades.
 
-### Critical Security Fixes
-*   **Dynamic Code Execution Eliminated (CRITICAL-001):** Removed unsafe `new Function()` usage for dynamic imports in `llm-inference.ts`. Replaced with direct ESM `import()` to eliminate arbitrary code execution attack vectors.
-*   **Shell Command Injection Prevention (CRITICAL-003):** Added PID validation (numeric format, range checks 1-4194304) and port validation (1-65535) to `nuke-handler.ts`. Replaced `exec()` string interpolation with validated parameters to prevent command injection attacks.
-*   **Safe JSON Parsing Infrastructure (CRITICAL-002):** Created `safeJson.ts` utility with `safeJsonParse`, `safeJsonStringify`, and localStorage wrappers providing type-safe JSON handling with validation and prototype pollution prevention.
-
-### High Severity Fixes
-*   **Extension Host Promise Timeout (HIGH-001):** Fixed promise in `extensionHostProcess.ts` that never rejected on timeout. Now properly rejects with timeout error, preventing hung operations.
-*   **Terminal Race Condition (HIGH-002):** Added `cleanupTimers` Map to track and clear existing timers before creating new ones in `terminalService.ts`. Prevents duplicate cleanup attempts and race conditions during terminal destruction.
-*   **Content Security Policy Strengthened (HIGH-003):** Added `object-src 'none'`, `base-uri 'self'`, `form-action 'self'`, and `frame-ancestors 'none'` directives to prevent XSS, clickjacking, and form injection attacks.
-
-### Additional Security Improvements
-*   **Electron Sandboxing (SEC-001):** Enabled the `sandbox: true` flag for Electron renderers to enforce strict process isolation.
-*   **Dynamic Import Validation (SEC-002):** Implemented strict path validation for local LLM modules before dynamic `import()` to prevent unauthorized code execution.
-*   **Deep Link Hardening (SEC-003):** Added rigorous validation for custom protocol deep links to prevent URL-based injection attacks.
-*   **Environment Filtering (SEC-004):** Whitelisted safe environment variables for child processes to prevent credential leakage.
-*   **Sanitized Debugging (SEC-006):** Hardened the debug handler to sanitize input from `package.json` fields, preventing path traversal during debugger initialization.
-*   **Update Integrity (SEC-008):** Added GitHub token validation and checksum verification to the update handler.
-*   **Enhanced Path Sanitization:** Hardened `file-system.ts` against advanced path traversal techniques involving complex symlink chains.
-*   **XSS Mitigation:** Replaced `dangerouslySetInnerHTML` with `react-syntax-highlighter` in `CodeBlockRenderer.tsx` and enhanced AI response sanitization in `UnifiedAgentPanel.tsx`.
-*   **Dependency Audits:** Updated `node-llama-cpp` and `electron` to patched versions.
+### v1.0.5-beta (2026-02-27)
+- Eliminated dynamic `new Function()` imports (CRITICAL-001), prevented shell injection in process cleanup (CRITICAL-003), added safe JSON helpers (CRITICAL-002), hardened CSP directives (HIGH-003), enabled Electron renderer sandboxing (SEC-001), filtered child-process environment variables (SEC-004), and strengthened path sanitization and XSS defenses.

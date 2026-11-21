@@ -1,38 +1,38 @@
 ---
 name: Bug report
-about: Create a report to help us improve Kalynt
+about: Report a reproducible bug to help improve Kalynt
 title: '[BUG] '
 labels: bug
 assignees: ''
-
 ---
 
 **Describe the bug**
-A clear and concise description of what the bug is.
+A clear and concise description of what happened.
 
 **To Reproduce**
 Steps to reproduce the behavior:
-1. Go to '...'
-2. Click on '....'
-3. Scroll down to '....'
-4. See error
+1. Open '...'
+2. Perform '...'
+3. Observe '...'
 
 **Expected behavior**
-A clear and concise description of what you expected to happen.
+What you expected to happen instead.
 
-**Screenshots**
-If applicable, add screenshots to help explain your problem.
+**Environment**
+- OS: [e.g., Ubuntu 24.04 x86-64, Windows 11, macOS 15]
+- Kalynt Version (Settings → About): [e.g., 2.1.0]
+- Installation Method: [e.g., .AppImage, .deb, .exe, .dmg, source build]
+- Node Version (if building from source): [e.g., 22.12.0+]
+- Model / Provider (if AI-related): [e.g., local GGUF, Ollama, Anthropic, OpenAI]
 
-**Environment (please complete the following information):**
- - OS: [e.g. Windows 11, macOS 14, Ubuntu 22.04]
- - Kalynt Version (Settings → About): [e.g. 2.0.0]
- - Installation Method: [e.g. .exe, .dmg, AppImage, .deb]
- - Node Version (if building from source): [e.g. 22.0.0]
-
-**Additional context**
-Add any other context about the problem here.
+**Screenshots or recordings**
+If applicable, attach screenshots (redact any API keys, tokens, or private code).
 
 **Logs**
-If applicable, paste relevant log output here:
-```
+Paste relevant redacted log output here:
+```text
 Paste logs here
+```
+
+**Additional context**
+Any other details that help narrow down the issue.

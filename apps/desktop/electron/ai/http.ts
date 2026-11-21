@@ -6,10 +6,26 @@
  * network chunks.
  */
 
+import type { ChatResult } from '../../src/types/aiProtocol'
+
 export class ProviderError extends Error {
     constructor(message: string, readonly status?: number, readonly retryable = false) {
         super(message)
         this.name = 'ProviderError'
+    }
+}
+
+/** Raised when a streaming response closes before a real terminal finish signal. */
+export class TruncatedStreamError extends ProviderError {
+    readonly incomplete = true as const
+    readonly stopReason = 'truncated' as const
+    constructor(
+        message: string,
+        readonly partial: ChatResult,
+        retryable = false
+    ) {
+        super(message, undefined, retryable)
+        this.name = 'TruncatedStreamError'
     }
 }
 

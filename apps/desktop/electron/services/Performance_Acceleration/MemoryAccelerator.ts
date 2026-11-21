@@ -2,8 +2,9 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 import { app, BrowserWindow } from 'electron'
-import * as os from 'node:os'
 import { nativeHelperService } from '../native-helper-service'
+import { readMemorySnapshot } from '../memoryGuard'
+import { sendToWindow } from '../../utils/window'
 
 export enum PerformanceMode {
     BALANCED = 'balanced',
@@ -13,9 +14,10 @@ export enum PerformanceMode {
 
 /**
  * MemoryAccelerator
- * 
+ *
  * Optimizes RAM usage across the main and renderer processes.
- * Implements aggressive garbage collection hints and memory pressure handling.
+ * Implements garbage collection hints and memory pressure handling using
+ * MemAvailable on Linux so reclaimable page cache never false-triggers GC.
  */
 export class MemoryAccelerator {
     private mode: PerformanceMode = PerformanceMode.BALANCED
@@ -29,7 +31,7 @@ export class MemoryAccelerator {
 
     private init() {
         // Listen to OS memory pressure warnings
-        app.on('child-process-gone', (event, details) => {
+        app.on('child-process-gone', (_event, details) => {
             if (details.reason === 'oom') {
                 console.warn('[MemoryAccelerator] A child process went out of memory!')
                 this.requestGarbageCollection()
@@ -46,22 +48,22 @@ export class MemoryAccelerator {
         this.gcTimer = setInterval(() => {
             this.checkMemoryUsage()
         }, this.checkInterval)
+        this.gcTimer.unref?.()
     }
 
     /**
-     * Checks current memory usage and triggers GC if necessary.
+     * Checks current memory usage using Linux MemAvailable (falling back to
+     * os.freemem on other platforms) and triggers GC if necessary.
      */
     private checkMemoryUsage() {
-        const totalMem = os.totalmem()
-        const freeMem = os.freemem()
-        const usedPercent = (totalMem - freeMem) / totalMem
+        const { available, total } = readMemorySnapshot()
+        if (total <= 0) return
+        const usedPercent = (total - available) / total
+        const threshold = this.mode === PerformanceMode.POWER_SAVER
+            ? Math.min(this.memoryThreshold, 0.6)
+            : this.memoryThreshold
 
-        if (usedPercent > this.memoryThreshold) {
-            this.requestGarbageCollection()
-        }
-
-        // If in Power Saver mode, be more aggressive
-        if (this.mode === PerformanceMode.POWER_SAVER && usedPercent > 0.6) {
+        if (usedPercent > threshold) {
             this.requestGarbageCollection()
         }
     }
@@ -83,10 +85,8 @@ export class MemoryAccelerator {
         // Trigger GC and worker disposal in all renderer processes via IPC
         const windows = BrowserWindow.getAllWindows()
         for (const win of windows) {
-            if (!win.isDestroyed()) {
-                win.webContents.send('performance:request-gc')
-                win.webContents.send('performance:dispose-workers')
-            }
+            sendToWindow(win, 'performance:request-gc', undefined)
+            sendToWindow(win, 'performance:dispose-workers', undefined)
         }
 
         // RAM: Also trim the Swift native helper process (macOS)
@@ -102,9 +102,7 @@ export class MemoryAccelerator {
     public suspendBackgroundTasks() {
         const windows = BrowserWindow.getAllWindows()
         for (const win of windows) {
-            if (!win.isDestroyed()) {
-                win.webContents.send('performance:suspend-background-tasks')
-            }
+            sendToWindow(win, 'performance:suspend-background-tasks', undefined)
         }
     }
 
@@ -132,17 +130,23 @@ export class MemoryAccelerator {
         }
 
         this.startMonitoring()
+
+        for (const win of BrowserWindow.getAllWindows()) {
+            this.optimizeMonaco(win)
+        }
     }
 
     /**
-     * Optimizes Monaco Editor settings by sending a configuration update to renderers.
+     * Optimizes Monaco Editor settings by sending a configuration update to a
+     * loaded renderer window. Never forces minimap on over user preferences;
+     * only disables heavy extras in Power Saver mode.
      */
     public optimizeMonaco(win: BrowserWindow) {
-        win.webContents.send('performance:optimize-monaco', {
+        if (win.isDestroyed() || win.webContents.isDestroyed()) return
+        const payload: Record<string, unknown> = {
             maxTokenizationLineLength: 10000,
             stopRenderingLineAfter: 5000,
             folding: this.mode !== PerformanceMode.POWER_SAVER,
-            minimap: { enabled: this.mode !== PerformanceMode.POWER_SAVER },
             scrollbar: {
                 useShadows: false,
                 verticalHasArrows: false,
@@ -152,7 +156,11 @@ export class MemoryAccelerator {
                 verticalScrollbarSize: 10,
                 horizontalScrollbarSize: 10
             }
-        })
+        }
+        if (this.mode === PerformanceMode.POWER_SAVER) {
+            payload.minimap = { enabled: false }
+        }
+        sendToWindow(win, 'performance:optimize-monaco', payload)
     }
 
     public getStatus() {
@@ -175,6 +183,9 @@ export class MemoryAccelerator {
     }
 
     public dispose() {
-        if (this.gcTimer) clearInterval(this.gcTimer)
+        if (this.gcTimer) {
+            clearInterval(this.gcTimer)
+            this.gcTimer = null
+        }
     }
 }

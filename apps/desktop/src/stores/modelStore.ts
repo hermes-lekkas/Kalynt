@@ -48,9 +48,12 @@ interface ModelState {
     // Utilities
     getDownloadProgress: (modelId: string) => DownloadProgress | undefined
     getTotalDownloadedSize: () => number
-    setupListeners: () => void
+    setupListeners: () => () => void
     verifyDownloadedModels: () => Promise<void>
 }
+
+let listenerRefCount = 0
+let listenerCleanup: (() => void) | null = null
 
 export const useModelStore = create<ModelState>()(
     persist(
@@ -63,14 +66,59 @@ export const useModelStore = create<ModelState>()(
             loadError: null,
 
             setupListeners: () => {
-                if (window.electronAPI?.onDownloadProgress) {
-                    window.electronAPI.onDownloadProgress((progress) => {
-                        get().updateDownloadProgress(progress.modelId, {
-                            bytesDownloaded: progress.bytesDownloaded,
-                            totalBytes: progress.totalBytes,
-                            speed: progress.speed
+                const api = window.electronAPI as any
+                if (!api) return () => { /* Electron API unavailable */ }
+
+                listenerRefCount++
+                if (listenerRefCount === 1) {
+                    const unsubs: Array<() => void> = []
+                    if (api.onDownloadProgress) {
+                        const unsub = api.onDownloadProgress((progress: { modelId: string; bytesDownloaded: number; totalBytes: number; speed: number }) => {
+                            get().updateDownloadProgress(progress.modelId, {
+                                bytesDownloaded: progress.bytesDownloaded,
+                                totalBytes: progress.totalBytes,
+                                speed: progress.speed
+                            })
                         })
-                    })
+                        if (typeof unsub === 'function') unsubs.push(unsub)
+                    }
+
+                    if (api.onLLMEvent) {
+                        const unsub = api.onLLMEvent((event: { type: string; modelId?: string }) => {
+                            if (event.type === 'llm:loaded' && event.modelId) {
+                                set({ loadedModelId: event.modelId, isLoading: false, loadError: null })
+                            } else if (event.type === 'llm:unloaded') {
+                                set({ loadedModelId: null, draftModelId: null, isLoading: false })
+                            }
+                        })
+                        if (typeof unsub === 'function') unsubs.push(unsub)
+                    }
+
+                    if (api.getModelStatus) {
+                        Promise.resolve(api.getModelStatus()).then((status: { success?: boolean; loaded?: boolean; modelId?: string | null; nativeModelId?: string | null } | undefined) => {
+                            if (status?.success) {
+                                const activeId = status.modelId ?? status.nativeModelId ?? null
+                                set({ loadedModelId: status.loaded ? activeId : null })
+                            }
+                        }).catch(() => undefined)
+                    }
+
+                    listenerCleanup = () => {
+                        for (const unsub of unsubs) {
+                            try { unsub() } catch { /* ignore listener cleanup errors */ }
+                        }
+                    }
+                }
+
+                let released = false
+                return () => {
+                    if (released) return
+                    released = true
+                    listenerRefCount = Math.max(0, listenerRefCount - 1)
+                    if (listenerRefCount === 0) {
+                        listenerCleanup?.()
+                        listenerCleanup = null
+                    }
                 }
             },
 
@@ -101,20 +149,24 @@ export const useModelStore = create<ModelState>()(
             },
 
             startDownload: (modelId, totalBytes) => {
-                const progress: DownloadProgress = {
-                    modelId,
-                    status: 'downloading',
-                    bytesDownloaded: 0,
-                    totalBytes,
-                    speed: 0,
-                    eta: 0
-                }
-                set((state) => ({
-                    activeDownloads: {
-                        ...state.activeDownloads,
-                        [modelId]: progress
+                set((state) => {
+                    const existing = state.activeDownloads[modelId]
+                    const resuming = existing?.status === 'paused'
+                    const progress: DownloadProgress = {
+                        modelId,
+                        status: 'downloading',
+                        bytesDownloaded: resuming ? existing.bytesDownloaded : 0,
+                        totalBytes: resuming && existing.totalBytes > 0 ? existing.totalBytes : totalBytes,
+                        speed: 0,
+                        eta: 0
                     }
-                }))
+                    return {
+                        activeDownloads: {
+                            ...state.activeDownloads,
+                            [modelId]: progress
+                        }
+                    }
+                })
                 console.log('[ModelStore] Started download:', modelId)
             },
 
@@ -311,13 +363,9 @@ export const useModelStore = create<ModelState>()(
     )
 )
 
-// Initialize listeners when the module loads (browser only)
+// Verify downloaded models on startup (browser only; IPC listeners are
+// lifecycle-managed via ref-counted setupListeners() in useAppBootstrap).
 if (typeof window !== 'undefined') {
-    useModelStore.getState().setupListeners()
-    console.log('[ModelStore] Listeners initialized')
-
-    // Verify downloaded models on startup (async, runs in background)
-    // This removes stale entries for models whose files no longer exist
     setTimeout(() => {
         useModelStore.getState().verifyDownloadedModels()
     }, 1000) // Delay to allow electronAPI to be ready

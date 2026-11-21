@@ -14,7 +14,7 @@
  *   ai:verify    { provider, key } -> { ok, error? }
  */
 import { app, type IpcMain } from 'electron'
-import type { ChatRequest, ChatResult, LocalServerInput, ModelInfo, ProviderId, StreamEvent } from '../../src/types/aiProtocol'
+import type { ChatRequest, ChatResult, LocalServerInput, ProviderId, StreamEvent } from '../../src/types/aiProtocol'
 import { PROVIDER_IDS, isProviderId, providerInfo } from '../../src/types/aiProviders'
 import { deleteSecret, readSecret, writeSecret } from '../handlers/safeStorage'
 import { discoverLocalModels, localServerInput } from './localServer'
@@ -22,11 +22,11 @@ import { streamAnthropic } from './anthropic'
 import { streamOpenAIResponses } from './openaiResponses'
 import { streamChatCompletions } from './openaiChat'
 import { streamGemini } from './gemini'
-import { fetchModelIds, mergeModels } from './models'
-import { ProviderError } from './http'
+import { describeProviderError, fetchModelCatalog, fetchModelIds, mergeModels, type ModelCatalogResult } from './models'
+import { ProviderError, TruncatedStreamError } from './http'
 
 const active = new Map<string, AbortController>()
-const modelCache = new Map<string, { at: number; models: ModelInfo[]; live: boolean }>()
+const modelCache = new Map<string, { at: number; result: ModelCatalogResult }>()
 const MODEL_CACHE_MS = 10 * 60 * 1000
 const SERVER_SECRET = 'localServer_connection'
 
@@ -101,38 +101,34 @@ async function chatWithRetry(request: ChatRequest, signal: AbortSignal, emit: (e
 }
 
 function describeError(error: unknown): { error: string; status?: number } {
-    if (error instanceof ProviderError) {
-        const hint = error.status === 401 || error.status === 403 ? ' Check the API key in Settings → Models and keys.'
-            : error.status === 404 ? ' The model may have been retired; pick another one.'
-                : error.status === 429 ? ' You have hit the provider\'s rate limit; wait a moment.' : ''
-        return { error: error.message + (hint && !error.message.includes('Settings') ? hint : ''), status: error.status }
-    }
-    return { error: error instanceof Error ? error.message : String(error) }
+    return describeProviderError(error)
 }
 
-export async function listModels(provider: ProviderId, refresh = false): Promise<{ models: ModelInfo[]; live: boolean; error?: string }> {
+export async function listModels(provider: ProviderId, refresh = false): Promise<ModelCatalogResult> {
     const cached = modelCache.get(provider)
-    if (!refresh && cached && Date.now() - cached.at < MODEL_CACHE_MS) return { models: cached.models, live: cached.live }
+    if (!refresh && cached && Date.now() - cached.at < MODEL_CACHE_MS) return cached.result
     if (provider === 'local-server') {
         const config = serverConfig()
-        if (!config) return { models: [], live: false, error: 'Connect your local server in Settings → Models and keys.' }
+        if (!config) return { models: [], live: false, source: 'error', fallback: false, error: 'Connect your local server in Settings → Models and keys.' }
         try {
             const models = await discoverLocalModels(config)
-            modelCache.set(provider, { at: Date.now(), models, live: true })
-            return { models, live: true }
-        } catch (error) { return { models: [], live: false, error: describeError(error).error } }
+            const result: ModelCatalogResult = { models, live: true, source: 'live', fallback: false, rawCount: models.length }
+            modelCache.set(provider, { at: Date.now(), result })
+            return result
+        } catch (error) {
+            const described = describeError(error)
+            return { models: [], live: false, source: 'error', fallback: false, ...described }
+        }
     }
     const key = readSecret(app.getPath('userData'), `apiKey_${provider}`)
-    if (!key) return { models: mergeModels(provider, null), live: false }
-    try {
-        const ids = await fetchModelIds(provider, key, baseUrl(provider))
-        const models = mergeModels(provider, ids)
-        modelCache.set(provider, { at: Date.now(), models, live: true })
-        return { models, live: true }
-    } catch (error) {
-        // Not every provider lists models; fall back to the curated list.
-        return { models: mergeModels(provider, null), live: false, error: describeError(error).error }
+    if (!key) return { models: mergeModels(provider, null), live: false, source: 'fallback', fallback: true }
+    const result = await fetchModelCatalog(provider, key, baseUrl(provider))
+    if (result.live && result.models.length > 0) {
+        modelCache.set(provider, { at: Date.now(), result })
+    } else {
+        modelCache.delete(provider)
     }
+    return result
 }
 
 export function registerAiHandlers(ipcMain: IpcMain): void {
@@ -151,6 +147,16 @@ export function registerAiHandlers(ipcMain: IpcMain): void {
             return { ok: true, result }
         } catch (error) {
             if (controller.signal.aborted) return { ok: false, aborted: true, error: 'Stopped.' }
+            if (error instanceof TruncatedStreamError) {
+                console.warn(`[AI] ${request.provider}/${request.model} stream truncated before finish`)
+                return {
+                    ok: false,
+                    incomplete: true,
+                    stopReason: 'truncated' as const,
+                    partial: error.partial,
+                    ...describeError(error)
+                }
+            }
             console.error(`[AI] ${request.provider}/${request.model} failed:`, error instanceof Error ? error.message : error)
             return { ok: false, ...describeError(error) }
         } finally {
@@ -172,7 +178,10 @@ export function registerAiHandlers(ipcMain: IpcMain): void {
             const config = localServerInput(input, serverConfig() ?? undefined)
             const models = await discoverLocalModels(config)
             writeSecret(app.getPath('userData'), SERVER_SECRET, JSON.stringify(config))
-            modelCache.set('local-server', { at: Date.now(), models, live: true })
+            modelCache.set('local-server', {
+                at: Date.now(),
+                result: { models, live: true, source: 'live', fallback: false, rawCount: models.length }
+            })
             return { ok: true, models, ...serverStatus() }
         } catch (error) { return { ok: false, ...describeError(error) } }
     })
@@ -185,7 +194,7 @@ export function registerAiHandlers(ipcMain: IpcMain): void {
     })
 
     ipcMain.handle('ai:models', async (_event, provider: string, refresh?: boolean) => {
-        if (!isProviderId(provider)) return { models: [], live: false, error: 'Unknown provider.' }
+        if (!isProviderId(provider)) return { models: [], live: false, source: 'error', fallback: false, error: 'Unknown provider.' }
         return listModels(provider, !!refresh)
     })
 

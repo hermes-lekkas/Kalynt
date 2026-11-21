@@ -13,7 +13,6 @@
     flex-direction: column;
     min-height: 0;
     background: var(--surface);
-    border-left: 1px solid var(--line);
 }
 
 .agent-panel__head {
@@ -21,8 +20,9 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: var(--sp-4);
-    padding: 0 var(--sp-3) 0 var(--sp-5);
+    gap: var(--sp-3);
+    height: 36px;
+    padding: 0 var(--sp-3) 0 var(--sp-4);
     border-bottom: 1px solid var(--line);
     flex-shrink: 0;
 }
@@ -141,14 +141,64 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: var(--sp-4);
+    gap: var(--sp-3);
     padding: var(--sp-2) var(--sp-3) var(--sp-3);
 }
 
 .composer__footer-start {
+    flex: 1;
     min-width: 0;
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
+    gap: var(--sp-1);
+}
+
+.composer__at-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: var(--r-1);
+    color: var(--text-3);
+    flex-shrink: 0;
+}
+
+.composer__at-btn:hover:not(:disabled) {
+    background: var(--hover);
+    color: var(--text);
+}
+
+.composer__at-btn:disabled {
+    opacity: 0.45;
+}
+
+.composer__file-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    max-width: 150px;
+    height: 22px;
+    padding: 0 var(--sp-3);
+    border: 1px solid var(--line);
+    border-radius: var(--r-pill);
+    background: var(--surface);
+    color: var(--text-2);
+    font-size: var(--fs-xs);
+    flex-shrink: 1;
+    min-width: 0;
+}
+
+.composer__file-pill svg {
+    flex: none;
+    color: var(--agent);
+}
+
+.composer__file-pill:hover {
+    border-color: var(--agent-line);
+    background: var(--agent-soft);
+    color: var(--text);
 }
 
 .composer__send {
@@ -395,14 +445,14 @@
 }
 
 .model-trigger__effort {
-    color: var(--text-4);
+    color: var(--text-3);
     font-size: var(--fs-xs);
 }
 
 .mode-trigger.is-full-auto { color: var(--warning); }
 
 .model-menu__vendor {
-    color: var(--text-4);
+    color: var(--text-3);
     font-weight: var(--fw-regular, 400);
 }
 

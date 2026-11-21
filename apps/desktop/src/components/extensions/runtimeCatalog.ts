@@ -22,7 +22,7 @@ export const RUNTIME_CATALOG: RuntimeEntry[] = [
     { id: 'rust', name: 'Rust', description: 'Systems programming language with cargo toolchain', downloadUrl: 'https://www.rust-lang.org/tools/install', runsCode: true },
     { id: 'go', name: 'Go', description: 'Fast, statically typed compiled language', downloadUrl: 'https://go.dev/dl/', runsCode: true },
     { id: 'java', name: 'Java (JDK)', description: 'Java Development Kit for Java applications', downloadUrl: 'https://www.oracle.com/java/technologies/downloads/', runsCode: true },
-    { id: 'dotnet', name: '.NET SDK', description: 'C# and F# development platform', downloadUrl: 'https://dotnet.microsoft.com/download', runsCode: true },
+    { id: 'dotnet', name: '.NET SDK', description: 'C# (.NET 10+ runs standalone .cs files; .NET <10 and .csx need dotnet-script) and F# platform', downloadUrl: 'https://dotnet.microsoft.com/download', runsCode: true },
     { id: 'ruby', name: 'Ruby', description: 'Dynamic, object-oriented scripting language', downloadUrl: 'https://www.ruby-lang.org/en/downloads/', runsCode: true },
     { id: 'php', name: 'PHP', description: 'Server-side scripting language', downloadUrl: 'https://www.php.net/downloads', runsCode: true },
     { id: 'gcc', name: 'C/C++ (GCC)', description: 'C and C++ compiler toolchain', downloadUrl: 'https://gcc.gnu.org/install/', runsCode: true },

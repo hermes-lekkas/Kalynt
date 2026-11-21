@@ -2,12 +2,24 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  *
  * Run from apps/desktop: node --test electron/handlers/code-exec/cmd-escape.test.mjs
- * (Node 22.18+ loads the .ts module directly.) cmd.exe and the program's
- * argument parser are simulated, so this runs on any OS.
+ * cmd.exe and the program's argument parser are simulated, so this runs on any OS
+ * and any Node >= 20 via esbuild bundling.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cmdCommandLine, escapeCmdArgument } from './cmd-escape.ts'
+import { fileURLToPath } from 'node:url'
+import { build } from 'esbuild'
+
+const { outputFiles } = await build({
+    entryPoints: [fileURLToPath(new URL('./cmd-escape.ts', import.meta.url))],
+    bundle: true,
+    write: false,
+    platform: 'node',
+    format: 'esm'
+})
+const { cmdCommandLine, escapeCmdArgument } = await import(
+    `data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString('base64')}`
+)
 
 const META = '()[]%!^"`<>&|;, *?'
 

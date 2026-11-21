@@ -2,14 +2,16 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  *
  * Debug-adapter runtime: spawns DAP adapters over stdio or socket, frames
- * the DAP message stream and routes requests/responses/events. Events are
- * emitted on the owning gateway's emitter.
+ * the DAP message stream with UTF-8 byte lengths, and routes requests/responses/events.
+ * Events are emitted on the owning gateway's emitter.
  */
-import { spawn, ChildProcess } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import net from 'node:net'
 import path from 'node:path'
 import type { DebugAdapterConfig } from './languageConfigs'
+
+const HEADER_DELIMITER = Buffer.from('\r\n\r\n', 'ascii')
 
 export interface DebugSession {
     id: string
@@ -22,7 +24,7 @@ export interface DebugSession {
     // DAP Protocol State
     seq: number
     pendingRequests: Map<number, { resolve: (res: any) => void; reject: (err: any) => void }>
-    buffer: string
+    buffer: Buffer
 }
 
 export interface DebugStartOptions {
@@ -43,47 +45,38 @@ export class DebugAdapterGateway {
         this.debugConfigs = new Map(Object.entries(configs))
     }
 
+    private rejectPendingRequests(session: DebugSession, reason: string): void {
+        if (session.pendingRequests.size === 0) return
+        const err = new Error(reason)
+        const pending = Array.from(session.pendingRequests.values())
+        session.pendingRequests.clear()
+        for (const req of pending) {
+            req.reject(err)
+        }
+    }
+
     /**
      * Start a debug session with proper retry logic for socket connections
      */
     async startDebugSession(options: DebugStartOptions): Promise<{ success: boolean; port?: number; error?: string }> {
+        const config = this.debugConfigs.get(options.languageId)
+        if (!config) {
+            return { success: false, error: `No debug adapter configuration found for ${options.languageId}` }
+        }
+
+        const sessionId = options.sessionId || `debug_${options.languageId}_${Date.now()}`
+
         try {
-            const config = this.debugConfigs.get(options.languageId)
-            if (!config) {
-                return { success: false, error: `No debug adapter configuration found for ${options.languageId}` }
-            }
-
-            // Warn about placeholder configurations
-            if (options.languageId === 'node' || options.languageId === 'java') {
-                console.warn(`[LanguageGateway] WARNING: ${options.languageId} debug adapter uses a placeholder configuration.`)
-                console.warn(`  The command '${config.command}' may not be installed.`)
-                if (options.languageId === 'node') {
-                    console.warn(`  Node.js debugging requires 'vscode-js-debug' or similar DAP adapter.`)
-                    console.warn(`  Configure via: gateway.configureDebugAdapter('node', { ... })`)
-                } else {
-                    console.warn(`  Java debugging requires 'com.microsoft.java.debug.plugin' or similar.`)
-                    console.warn(`  Configure via: gateway.configureDebugAdapter('java', { ... })`)
-                }
-                this.events.emit('debug_warning', {
-                    languageId: options.languageId,
-                    message: `${options.languageId} debugger requires additional configuration`
-                })
-            }
-
             const port = config.transport === 'socket'
                 ? (options.port || await this.findAvailablePort())
                 : undefined
-            const sessionId = options.sessionId || `debug_${options.languageId}_${Date.now()}`
 
-            // Replace variables in command arguments
-            // Handle ${args} specially to preserve array structure
+            // Replace variables in command arguments, preserving array structure for ${args}
             const processedArgs = (config.args || []).flatMap(arg => {
                 if (arg === '${args}') {
                     return options.args || []
                 }
                 if (arg.includes('${args}')) {
-                    // If ${args} is part of a larger string, join with spaces
-                    // This is risky with paths containing spaces but sometimes needed
                     return arg
                         .replace(/\$\{port\}/g, String(port || 0))
                         .replace(/\$\{program\}/g, options.program)
@@ -94,7 +87,6 @@ export class DebugAdapterGateway {
                     .replace(/\$\{program\}/g, options.program)
             })
 
-            // Spawn debug adapter process
             const debugProcess = spawn(config.command, processedArgs, {
                 cwd: options.cwd || process.cwd(),
                 env: { ...process.env, ...config.env },
@@ -119,17 +111,35 @@ export class DebugAdapterGateway {
                 status: 'starting',
                 seq: 0,
                 pendingRequests: new Map(),
-                buffer: ''
+                buffer: Buffer.alloc(0)
             }
 
             this.debugSessions.set(sessionId, session)
 
-            // Handle process exit
-            debugProcess.on('exit', (code: number | null) => {
-                session.status = 'stopped'
+            let spawnError: Error | null = null
+            // Attach error handler immediately so ENOENT never crashes Electron main process
+            debugProcess.on('error', (error: Error) => {
+                spawnError = error
+                session.status = 'error'
                 if (session.socket) {
                     session.socket.destroy()
                 }
+                this.rejectPendingRequests(session, `Debug adapter process error: ${error.message}`)
+                this.debugSessions.delete(sessionId)
+                this.events.emit('debug_session_error', {
+                    sessionId,
+                    error: error.message
+                })
+            })
+
+            debugProcess.on('exit', (code: number | null) => {
+                if (session.status !== 'error') {
+                    session.status = 'stopped'
+                }
+                if (session.socket) {
+                    session.socket.destroy()
+                }
+                this.rejectPendingRequests(session, `Debug session ${sessionId} exited with code ${code}`)
                 this.debugSessions.delete(sessionId)
                 this.events.emit('debug_session_stopped', { sessionId, exitCode: code })
             })
@@ -138,9 +148,23 @@ export class DebugAdapterGateway {
                 console.error(`[DebugAdapter ${options.languageId}]`, data.toString())
             })
 
-            // Handle based on transport type
             if (config.transport === 'stdio') {
-                // Stdio transport - ready immediately
+                // Wait for either 'spawn' or immediate 'error' so ENOENT surfaces cleanly
+                await new Promise<void>((resolve, reject) => {
+                    if (spawnError) { reject(spawnError); return }
+                    if (debugProcess.pid) { resolve(); return }
+                    const onSpawn = () => {
+                        debugProcess.off('error', onErr)
+                        resolve()
+                    }
+                    const onErr = (err: Error) => {
+                        debugProcess.off('spawn', onSpawn)
+                        reject(err)
+                    }
+                    debugProcess.once('spawn', onSpawn)
+                    debugProcess.once('error', onErr)
+                })
+
                 session.status = 'running'
                 this.setupDebugListeners(session)
                 this.events.emit('debug_session_started', {
@@ -150,20 +174,21 @@ export class DebugAdapterGateway {
                     transport: 'stdio'
                 })
             } else {
-                // Socket transport - need to connect with retry
                 await this.connectWithRetry(port!, session, sessionId, options, debugProcess)
             }
 
             return { success: true, port }
         } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
             console.error(`[LanguageGateway] Failed to start debug session for ${options.languageId}:`, error)
-            return { success: false, error: String(error) }
+            this.debugSessions.delete(sessionId)
+            return { success: false, error: message }
         }
     }
 
     /**
-     * Connect to debug adapter with retry logic
-     * Handles the race condition where adapter needs time to start
+     * Connect to debug adapter with retry logic.
+     * Aborts promptly if the adapter process errors or exits.
      */
     private connectWithRetry(
         port: number,
@@ -176,10 +201,55 @@ export class DebugAdapterGateway {
     ): Promise<void> {
         return new Promise((resolve, reject) => {
             let retries = 0
+            let settled = false
+            let retryTimer: ReturnType<typeof setTimeout> | undefined
+            let activeSocket: net.Socket | null = null
+
+            const cleanup = () => {
+                if (retryTimer) clearTimeout(retryTimer)
+                debugProcess.off('error', onProcessFail)
+                debugProcess.off('exit', onProcessExit)
+            }
+
+            const finish = (err?: Error) => {
+                if (settled) return
+                settled = true
+                cleanup()
+                if (err) {
+                    activeSocket?.destroy()
+                    reject(err)
+                } else {
+                    resolve()
+                }
+            }
+
+            const onProcessFail = (err: Error) => {
+                finish(new Error(`Debug adapter failed to spawn: ${err.message}`))
+            }
+
+            const onProcessExit = (code: number | null) => {
+                finish(new Error(`Debug adapter exited before listening on port ${port} (code ${code})`))
+            }
+
+            debugProcess.once('error', onProcessFail)
+            debugProcess.once('exit', onProcessExit)
+
+            if (session.status === 'error' || session.status === 'stopped' || debugProcess.exitCode !== null) {
+                finish(new Error(`Debug adapter process is not running`))
+                return
+            }
 
             const attemptConnect = (): void => {
-                const socket = net.createConnection({ port })
+                if (settled) return
+                const socket = net.createConnection({ host: '127.0.0.1', port })
+                activeSocket = socket
+
+                socket
                     .on('connect', () => {
+                        if (settled) {
+                            socket.destroy()
+                            return
+                        }
                         session.status = 'running'
                         session.socket = socket
                         this.setupDebugListeners(session)
@@ -190,62 +260,74 @@ export class DebugAdapterGateway {
                             configuration: session.configuration,
                             transport: 'socket'
                         })
-                        resolve()
+                        finish()
                     })
                     .on('error', (error) => {
                         socket.destroy()
+                        if (settled) return
 
-                        if (retries < maxRetries) {
+                        if (retries < maxRetries && debugProcess.exitCode === null) {
                             retries++
-                            console.log(`[Debug] Connection retry ${retries}/${maxRetries} for port ${port}`)
-                            setTimeout(attemptConnect, retryDelayMs)
+                            retryTimer = setTimeout(attemptConnect, retryDelayMs)
                         } else {
-                            console.error(`[DebugAdapter] Failed to connect after ${maxRetries} retries:`, error)
+                            console.error(`[DebugAdapter] Failed to connect after ${retries} retries:`, error)
                             session.status = 'error'
-                            debugProcess.kill()
+                            try { debugProcess.kill() } catch { /* ignore */ }
                             this.events.emit('debug_session_error', {
                                 sessionId,
                                 error: `Failed to connect to debug adapter: ${error.message}`
                             })
-                            reject(error)
+                            finish(error)
                         }
                     })
             }
 
-            // Start connection attempts
             attemptConnect()
         })
     }
 
     /**
-     * Setup listeners for DAP message stream
+     * Setup listeners for DAP message stream using strict UTF-8 byte-length framing.
      */
     private setupDebugListeners(session: DebugSession) {
         const onData = (data: Buffer) => {
-            session.buffer += data.toString('utf8')
+            session.buffer = session.buffer.length === 0 ? data : Buffer.concat([session.buffer, data])
 
-            // eslint-disable-next-line no-constant-condition
-            while (true) {
-                // Check for Content-Length header
-                const lengthMatch = session.buffer.match(/Content-Length: (\d+)\r\n\r\n/)
-                if (!lengthMatch) break
+            while (session.buffer.length > 0) {
+                const headerEnd = session.buffer.indexOf(HEADER_DELIMITER)
+                if (headerEnd === -1) break
 
-                const headerLength = lengthMatch[0].length
-                const contentLength = parseInt(lengthMatch[1], 10)
+                const headerText = session.buffer.subarray(0, headerEnd).toString('ascii')
+                const lengthMatch = headerText.match(/Content-Length:\s*(\d+)/i)
+                const bodyStart = headerEnd + HEADER_DELIMITER.length
 
-                // Check if we have the full message
-                if (session.buffer.length >= headerLength + contentLength) {
-                    const rawMessage = session.buffer.slice(headerLength, headerLength + contentLength)
-                    session.buffer = session.buffer.slice(headerLength + contentLength)
+                if (!lengthMatch) {
+                    // Skip malformed header block
+                    session.buffer = session.buffer.subarray(bodyStart)
+                    continue
+                }
 
-                    try {
-                        const message = JSON.parse(rawMessage)
-                        this.handleDebugMessage(session, message)
-                    } catch (e) {
-                        console.error('[LanguageGateway] Failed to parse DAP message', e)
-                    }
-                } else {
-                    break // Wait for more data
+                const contentLength = Number.parseInt(lengthMatch[1], 10)
+                if (Number.isNaN(contentLength) || contentLength < 0) {
+                    session.buffer = session.buffer.subarray(bodyStart)
+                    continue
+                }
+
+                // Wait until we have all `contentLength` UTF-8 bytes
+                if (session.buffer.length < bodyStart + contentLength) {
+                    break
+                }
+
+                const rawMessage = session.buffer
+                    .subarray(bodyStart, bodyStart + contentLength)
+                    .toString('utf8')
+                session.buffer = session.buffer.subarray(bodyStart + contentLength)
+
+                try {
+                    const message = JSON.parse(rawMessage)
+                    this.handleDebugMessage(session, message)
+                } catch (e) {
+                    console.error('[LanguageGateway] Failed to parse DAP message', e)
                 }
             }
         }
@@ -263,14 +345,14 @@ export class DebugAdapterGateway {
     private handleDebugMessage(session: DebugSession, message: any) {
         if (message.type === 'response') {
             const requestSeq = message.request_seq
-            if (session.pendingRequests.has(requestSeq)) {
-                const { resolve, reject } = session.pendingRequests.get(requestSeq)!
-                if (message.success) {
-                    resolve(message)
-                } else {
-                    reject(new Error(message.message || 'Debug request failed'))
-                }
+            const pending = session.pendingRequests.get(requestSeq)
+            if (pending) {
                 session.pendingRequests.delete(requestSeq)
+                if (message.success) {
+                    pending.resolve(message)
+                } else {
+                    pending.reject(new Error(message.message || 'Debug request failed'))
+                }
             }
         } else if (message.type === 'event') {
             this.events.emit('debug_event', {
@@ -299,10 +381,10 @@ export class DebugAdapterGateway {
         }
 
         const json = JSON.stringify(request)
-        const message = `Content-Length: ${Buffer.byteLength(json, 'utf8')}\r\n\r\n${json}`
+        const payloadBytes = Buffer.byteLength(json, 'utf8')
+        const message = `Content-Length: ${payloadBytes}\r\n\r\n${json}`
 
         return new Promise((resolve, reject) => {
-            // Set timeout for request
             const timeout = setTimeout(() => {
                 if (session.pendingRequests.has(seq)) {
                     session.pendingRequests.delete(seq)
@@ -323,9 +405,9 @@ export class DebugAdapterGateway {
 
             try {
                 if (session.socket) {
-                    session.socket.write(message)
+                    session.socket.write(message, 'utf8')
                 } else if (session.process.stdin) {
-                    session.process.stdin.write(message)
+                    session.process.stdin.write(message, 'utf8')
                 } else {
                     throw new Error('No transport available for debug session')
                 }
@@ -351,6 +433,7 @@ export class DebugAdapterGateway {
         if (!session) return false
 
         try {
+            this.rejectPendingRequests(session, `Debug session ${sessionId} stopped`)
             if (session.socket) {
                 session.socket.destroy()
             }
@@ -364,9 +447,10 @@ export class DebugAdapterGateway {
     }
 
     private async findAvailablePort(): Promise<number> {
-        return new Promise((resolve) => {
+        return new Promise((resolve, reject) => {
             const server = net.createServer()
-            server.listen(0, () => {
+            server.once('error', reject)
+            server.listen(0, '127.0.0.1', () => {
                 const port = (server.address() as net.AddressInfo).port
                 server.close(() => resolve(port))
             })
@@ -378,9 +462,9 @@ export class DebugAdapterGateway {
     }
 
     async dispose(): Promise<void> {
-        // Stop all debug sessions
         for (const [sessionId, session] of Array.from(this.debugSessions)) {
             try {
+                this.rejectPendingRequests(session, `Debug gateway disposed`)
                 if (session.socket) {
                     session.socket.destroy()
                 }

@@ -5,7 +5,7 @@
  * live model list), or a local model. Remembered between sessions and
  * corrected when a key disappears or a model is retired.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '../../../stores/appStore'
 import { useModelStore } from '../../../stores/modelStore'
 import { offlineLLMService } from '../../../services/offlineLLMService'
@@ -46,18 +46,23 @@ export function useModelChoice() {
     const [models, setModels] = useState<Partial<Record<ProviderId, ModelInfo[]>>>({})
     const [errors, setErrors] = useState<Partial<Record<ProviderId, string>>>({})
     const [reload, setReload] = useState(0)
+    const forceRefresh = useRef(false)
+    const prevConnectionRevision = useRef(connectionRevision)
 
     const providers = useMemo(() => PROVIDER_IDS.filter(p => !!apiKeys[p]), [apiKeys])
     const downloaded = useMemo(() => Object.keys(downloadedModels), [downloadedModels])
     const providerKey = providers.join(',')
 
-    // Ask each configured provider which models the key can use.
+    // Ask each configured provider which models the key can use (respecting the 10-min cache by default).
     useEffect(() => {
         let cancelled = false
+        const refresh = forceRefresh.current || prevConnectionRevision.current !== connectionRevision
+        forceRefresh.current = false
+        prevConnectionRevision.current = connectionRevision
         setModels({})
         setErrors({})
         for (const provider of providers) {
-            listModels(provider, true).then(result => {
+            listModels(provider, refresh).then(result => {
                 if (cancelled) return
                 setModels(m => ({ ...m, [provider]: result.models.filter(x => x.tools !== false) }))
                 if (result.error) setErrors(e => ({ ...e, [provider]: result.error }))
@@ -69,7 +74,10 @@ export function useModelChoice() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [providerKey, connectionRevision, reload])
 
-    const refreshModels = useCallback(() => setReload(n => n + 1), [])
+    const refreshModels = useCallback(() => {
+        forceRefresh.current = true
+        setReload(n => n + 1)
+    }, [])
 
     const modelsFor = useCallback((provider: ProviderId): ModelInfo[] => models[provider] ?? providerInfo(provider).models, [models])
 

@@ -49,6 +49,15 @@ export function ReviewIssue({ issue, folder, mode, provider, cloudModel }: Revie
                 <button type="button" className="review-issue__file mono truncate" onClick={openFile} title={issue.path}>
                     {relativePath(issue.path, folder)}{issue.line ? `:${issue.line}` : ''}
                 </button>
+                {issue.reviewedRange && (
+                    <span className="review-issue__range" title="Reviewed line range">
+                        {issue.reviewedRange.truncated
+                            ? `lines ${issue.reviewedRange.startLine}–${issue.reviewedRange.endLine} of ${issue.reviewedRange.totalLines} (clipped)`
+                            : issue.reviewedRange.startLine > 1 || issue.reviewedRange.endLine < issue.reviewedRange.totalLines
+                                ? `lines ${issue.reviewedRange.startLine}–${issue.reviewedRange.endLine} of ${issue.reviewedRange.totalLines}`
+                                : `${issue.reviewedRange.totalLines} lines`}
+                    </span>
+                )}
             </div>
             {open && (
                 <div className="review-issue__body">

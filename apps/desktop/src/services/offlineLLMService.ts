@@ -41,6 +41,11 @@ function getModelSizeCategory(modelId: string): 'small' | 'medium' | 'large' {
     return 'medium'
 }
 
+/** Tokenizer-compatible model family (distinguishes e.g. qwen2, qwen2.5, qwen3). */
+function draftFamily(modelId: string): string {
+    return /^([a-z]+(?:\d+(?:\.\d+)?)?)/.exec(modelId.toLowerCase())?.[1] ?? ''
+}
+
 export interface ChatMessage {
     role: 'system' | 'user' | 'assistant'
     content: string
@@ -338,13 +343,13 @@ class OfflineLLMService {
             // performance mode allows it and the machine clearly has room for both.
             const modelTier = getModelSizeCategory(modelId)
             if (this.speculativeAllowed && (modelTier === 'large' || modelTier === 'medium')) {
-                const family = /^[a-z]+/.exec(modelId.toLowerCase())?.[0] ?? ''
+                const family = draftFamily(modelId)
                 const downloadedModels = store.downloadedModels
-                const draftCandidate = Object.keys(downloadedModels).find(id =>
+                const draftCandidate = family ? Object.keys(downloadedModels).find(id =>
                     (id.includes('1.5b') || id.includes('1b') || id.includes('0.5b') || id.includes('tiny'))
                     && id !== modelId
-                    && (/^[a-z]+/.exec(id.toLowerCase())?.[0] ?? '') === family
-                )
+                    && draftFamily(id) === family
+                ) : undefined
 
                 if (draftCandidate) {
                     try {
@@ -439,8 +444,8 @@ class OfflineLLMService {
                     ? setTimeout(() => {
                         if (!completed) {
                             completed = true
-                            this.currentRequestId = null
-                            console.warn('[OfflineLLM] Generation timeout, returning partial result')
+                            console.warn('[OfflineLLM] Generation timeout, cancelling engine generation and returning partial result')
+                            void this.cancelGeneration()
                             resolve(cleanResponse(fullText))
                         }
                     }, timeoutMs)
@@ -456,6 +461,7 @@ class OfflineLLMService {
                         jsonSchema: opts.jsonSchema
                     },
                     (token) => {
+                        if (completed) return
                         fullText += token
                         onToken(token)
                     },
@@ -495,9 +501,11 @@ class OfflineLLMService {
     }
 
     async cancelGeneration(): Promise<boolean> {
-        if (!this.currentRequestId) {
+        const requestId = this.currentRequestId
+        if (!requestId) {
             return false
         }
+        this.currentRequestId = null
 
         try {
             const cancelFn = globalThis.window.electronAPI?.cancelGeneration
@@ -506,10 +514,10 @@ class OfflineLLMService {
                 return false
             }
 
-            const success = await cancelFn(this.currentRequestId)
-            if (success) {
-                console.log('[OfflineLLM] Generation cancelled:', this.currentRequestId)
-                this.currentRequestId = null
+            const result = await cancelFn(requestId) as boolean | { success?: boolean }
+            const cancelled = typeof result === 'boolean' ? result : Boolean(result?.success)
+            if (cancelled) {
+                console.log('[OfflineLLM] Generation cancelled:', requestId)
                 return true
             }
             return false

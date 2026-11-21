@@ -46,11 +46,17 @@ const INLINE_CODE = /^(python3?|node|deno|bun|ruby|perl|php|bash|sh|zsh|pwsh|pow
 
 /**
  * "npm run test -- --watch" -> "npm run test": what "allow similar" remembers.
- * Empty when the command shouldn't be remembered at all.
+ * Empty when the command shouldn't be remembered at all (multiline, shell
+ * operators, env-var prefixes, or inline code execution).
  */
 export function commandPrefix(command: string): string {
-    if (INLINE_CODE.test(command.trim()) || /[;&|`$<>]/.test(command)) return ''
-    const words = command.trim().split(/\s+/).filter(w => !/^[A-Z_]+=/.test(w))
+    if (/[\r\n\0]/.test(command)) return ''
+    const trimmed = command.trim()
+    if (!trimmed || INLINE_CODE.test(trimmed) || /[;&|`$<>]/.test(trimmed)) return ''
+    const words = trimmed.split(/\s+/)
+    // Never strip or auto-allow leading ENV=val assignments or `env` wrappers
+    // (e.g. `LD_PRELOAD=/tmp/x.so npm test` must not match a remembered `npm test`).
+    if (!words.length || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]) || words[0] === 'env') return ''
     const take = ['npm', 'pnpm', 'yarn', 'bun', 'npx', 'git', 'cargo', 'go', 'python', 'python3', 'pip', 'uv', 'dotnet', 'make', 'mvn', 'gradle', './gradlew'].includes(words[0]) ? 3 : 2
     return words.slice(0, take).filter(w => !w.startsWith('-')).join(' ')
 }
@@ -104,6 +110,7 @@ export function needsApproval(tool: AgentTool, args: Record<string, unknown>, mo
         case 'delete':
             return mode !== 'full-auto' && !memory.allows(tool, args)
         case 'execute': {
+            if (tool.name === 'stop_command') return false
             const command = String(args.command ?? '')
             if (isDangerousCommand(command)) return true
             return mode !== 'full-auto' && !memory.allows(tool, args)

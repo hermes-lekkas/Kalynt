@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
  */
-import { lazy, Suspense, useState } from 'react'
+import { lazy, Suspense, useCallback, useState } from 'react'
 import { useAppStore } from './stores/appStore'
 import { useUiStore } from './stores/uiStore'
 import { EncryptionProvider } from './hooks/useEncryption'
@@ -29,40 +29,42 @@ export default function App() {
     const showSettings = useAppStore(s => s.showSettings)
     const setShowSettings = useAppStore(s => s.setShowSettings)
     const { collaborationOpen, extensionsOpen, paletteOpen } = useUiStore()
+    const handleSplashDone = useCallback(() => setSplashDone(true), [])
     useGlobalShortcuts()
 
-    if (!splashDone) {
-        return <SplashScreen ready={ready} onDone={() => setSplashDone(true)} />
-    }
-
     return (
-        <EncryptionProvider spaceId={currentSpace?.id ?? null}>
-            <div className="app">
-                <RegionBoundary name="Title bar" compact>
-                    <Titlebar />
-                </RegionBoundary>
-                <main className="app__body">
-                    {currentSpace ? (
-                        <Suspense fallback={<div className="app__loading"><Spinner label="Opening workspace" /></div>}>
-                            <WorkspaceView key={currentSpace.id} space={currentSpace} />
-                        </Suspense>
-                    ) : (
-                        <RegionBoundary name="Home">
-                            <HomeScreen />
+        <>
+            {ready && (
+                <EncryptionProvider spaceId={currentSpace?.id ?? null}>
+                    <div className="app">
+                        <RegionBoundary name="Title bar" compact>
+                            <Titlebar />
                         </RegionBoundary>
-                    )}
-                </main>
-            </div>
+                        <main className="app__body">
+                            {currentSpace ? (
+                                <Suspense fallback={<div className="app__loading"><Spinner label="Opening workspace" /></div>}>
+                                    <WorkspaceView key={currentSpace.id} space={currentSpace} />
+                                </Suspense>
+                            ) : (
+                                <RegionBoundary name="Home">
+                                    <HomeScreen />
+                                </RegionBoundary>
+                            )}
+                        </main>
+                    </div>
 
-            <Toasts />
-            <UpdateDialog />
-            <DialogHost />
-            <Suspense fallback={null}>
-                {showSettings && <SettingsDialog onClose={() => setShowSettings(false)} />}
-                {collaborationOpen && <CollaborationDialog />}
-                {extensionsOpen && <ExtensionsDialog />}
-                {paletteOpen && <CommandPalette />}
-            </Suspense>
-        </EncryptionProvider>
+                    <Toasts />
+                    <UpdateDialog />
+                    <DialogHost />
+                    <Suspense fallback={null}>
+                        {showSettings && <SettingsDialog onClose={() => setShowSettings(false)} />}
+                        {collaborationOpen && <CollaborationDialog />}
+                        {extensionsOpen && <ExtensionsDialog />}
+                        {paletteOpen && <CommandPalette />}
+                    </Suspense>
+                </EncryptionProvider>
+            )}
+            {!splashDone && <SplashScreen ready={ready} onDone={handleSplashDone} />}
+        </>
     )
 }

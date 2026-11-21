@@ -11,9 +11,12 @@ const ICONS: Record<NotificationType, typeof Info> = {
     error: AlertCircle
 }
 
-/** Transient messages. Errors are announced assertively, the rest politely. */
+/** Transient messages with pause-on-hover and smooth exit transitions. */
 export function Toasts() {
-    const { notifications, removeNotification } = useNotificationStore()
+    const notifications = useNotificationStore(s => s.notifications)
+    const dismissNotification = useNotificationStore(s => s.dismissNotification)
+    const pauseNotification = useNotificationStore(s => s.pauseNotification)
+    const resumeNotification = useNotificationStore(s => s.resumeNotification)
     const visible = notifications.slice(-4)
 
     return (
@@ -21,10 +24,23 @@ export function Toasts() {
             {visible.map(n => {
                 const Icon = ICONS[n.type]
                 return (
-                    <div key={n.id} className={`toast toast--${n.type}`} role={n.type === 'error' ? 'alert' : 'status'}>
+                    <div
+                        key={n.id}
+                        className={`toast toast--${n.type} ${n.closing ? 'is-leaving' : ''}`}
+                        role={n.type === 'error' ? 'alert' : 'status'}
+                        onMouseEnter={() => pauseNotification(n.id)}
+                        onMouseLeave={() => resumeNotification(n.id)}
+                        onFocus={() => pauseNotification(n.id)}
+                        onBlur={() => resumeNotification(n.id)}
+                    >
                         <Icon size={16} className="toast__icon" aria-hidden />
                         <p className="toast__message selectable">{n.message}</p>
-                        <button type="button" className="toast__close" aria-label="Dismiss" onClick={() => removeNotification(n.id)}>
+                        <button
+                            type="button"
+                            className="toast__close"
+                            aria-label="Dismiss"
+                            onClick={() => dismissNotification(n.id)}
+                        >
                             <X size={14} />
                         </button>
                     </div>

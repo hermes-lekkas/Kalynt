@@ -16,17 +16,19 @@
  */
 import { spawn, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import type { IpcMain, WebContents } from 'electron'
 import treeKill from 'tree-kill'
 import { buildEnhancedPath, getDefaultShell } from '../terminal/terminalEnv'
+import { validatePath } from '../utils/pathValidator'
 
 const MAX_BUFFER = 2_000_000
 const DEFAULT_TIMEOUT = 120_000
 const MAX_TIMEOUT = 30 * 60_000
 /** How long a background command runs before the agent gets its first output. */
 const BACKGROUND_SETTLE_MS = 4000
+/** Completed background jobs are evicted if never read again so output buffers don't leak. */
+const FINISHED_JOB_TTL_MS = 5 * 60_000
 
 interface Job {
     proc: ChildProcess
@@ -35,10 +37,27 @@ interface Job {
     exitCode: number | null
     running: boolean
     startedAt: number
+    finishedAt?: number
+    evictTimer?: ReturnType<typeof setTimeout>
     done: Promise<void>
 }
 
 const jobs = new Map<string, Job>()
+
+function deleteJob(id: string): void {
+    const job = jobs.get(id)
+    if (job?.evictTimer) clearTimeout(job.evictTimer)
+    jobs.delete(id)
+}
+
+function scheduleEviction(id: string, job: Job): void {
+    job.finishedAt = Date.now()
+    if (job.evictTimer) clearTimeout(job.evictTimer)
+    job.evictTimer = setTimeout(() => {
+        if (jobs.get(id) === job && !job.running) jobs.delete(id)
+    }, FINISHED_JOB_TTL_MS)
+    job.evictTimer.unref?.()
+}
 
 export interface ExecResult {
     ok: boolean
@@ -110,14 +129,17 @@ function start(id: string, command: string, cwd: string, sender: WebContents): J
             job.output += `\n${error.message}\n`
             job.running = false
             job.exitCode = job.exitCode ?? 127
+            scheduleEviction(id, job)
             resolve()
         })
         proc.on('close', code => {
             job.running = false
             job.exitCode = code ?? job.exitCode ?? 1
+            scheduleEviction(id, job)
             resolve()
         })
     })
+    deleteJob(id)
     jobs.set(id, job)
     return job
 }
@@ -129,8 +151,22 @@ export function registerAgentExecHandlers(ipcMain: IpcMain, getWorkspace: () => 
         if (!options?.id || !command) return { ok: false, output: '', exitCode: null, running: false, durationMs: 0, error: 'No command given.' } satisfies ExecResult
         if (jobs.get(options.id)?.running) return { ok: false, output: '', exitCode: null, running: true, durationMs: 0, error: 'A command with this id is already running.' } satisfies ExecResult
 
-        const cwd = path.resolve(options.cwd || getWorkspace() || os.homedir())
-        if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
+        const workspace = getWorkspace()
+        if (!workspace) {
+            return { ok: false, output: '', exitCode: null, running: false, durationMs: 0, error: 'Open a folder first.' } satisfies ExecResult
+        }
+        let cwd: string
+        try {
+            cwd = validatePath(workspace, options.cwd || '.')
+        } catch (error) {
+            return { ok: false, output: '', exitCode: null, running: false, durationMs: 0, error: error instanceof Error ? error.message : 'Working directory must stay inside the workspace.' } satisfies ExecResult
+        }
+        try {
+            const stat = await fs.promises.stat(cwd)
+            if (!stat.isDirectory()) {
+                return { ok: false, output: '', exitCode: null, running: false, durationMs: 0, error: `Folder not found: ${cwd}` } satisfies ExecResult
+            }
+        } catch {
             return { ok: false, output: '', exitCode: null, running: false, durationMs: 0, error: `Folder not found: ${cwd}` } satisfies ExecResult
         }
 
@@ -141,14 +177,16 @@ export function registerAgentExecHandlers(ipcMain: IpcMain, getWorkspace: () => 
             // Let a server print its startup lines, then hand control back.
             await Promise.race([job.done, new Promise(r => setTimeout(r, BACKGROUND_SETTLE_MS))])
             job.readFrom = job.output.length
-            return { ok: true, output: job.output, exitCode: job.exitCode, running: job.running, durationMs: Date.now() - started } satisfies ExecResult
+            const result: ExecResult = { ok: true, output: job.output, exitCode: job.exitCode, running: job.running, durationMs: Date.now() - started }
+            if (!job.running) deleteJob(options.id)
+            return result
         }
 
         let timedOut = false
         const timer = setTimeout(() => { timedOut = true; void kill(job) }, timeout)
         await job.done
         clearTimeout(timer)
-        jobs.delete(options.id)
+        deleteJob(options.id)
         return {
             ok: true,
             output: job.output,
@@ -164,7 +202,7 @@ export function registerAgentExecHandlers(ipcMain: IpcMain, getWorkspace: () => 
         if (!job) return { ok: false, output: '', running: false, exitCode: null, error: 'No such process. It may have been stopped already.' }
         const output = job.output.slice(job.readFrom)
         job.readFrom = job.output.length
-        if (!job.running) jobs.delete(id)
+        if (!job.running) deleteJob(id)
         return { ok: true, output, running: job.running, exitCode: job.exitCode }
     })
 
@@ -172,7 +210,7 @@ export function registerAgentExecHandlers(ipcMain: IpcMain, getWorkspace: () => 
         const job = jobs.get(id)
         if (!job) return { ok: false }
         await kill(job)
-        jobs.delete(id)
+        deleteJob(id)
         return { ok: true }
     })
 }
@@ -180,6 +218,9 @@ export function registerAgentExecHandlers(ipcMain: IpcMain, getWorkspace: () => 
 /** Stops every command the agent started. Returns how many were running. */
 export async function stopAllAgentProcesses(): Promise<number> {
     const running = [...jobs.values()].filter(j => j.running)
+    for (const job of jobs.values()) {
+        if (job.evictTimer) clearTimeout(job.evictTimer)
+    }
     await Promise.all(running.map(kill))
     jobs.clear()
     return running.length

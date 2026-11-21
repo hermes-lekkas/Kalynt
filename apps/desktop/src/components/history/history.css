@@ -66,6 +66,11 @@
     white-space: nowrap;
 }
 
+.commit__time,
+.commit__hash {
+    font-variant-numeric: tabular-nums;
+}
+
 .commit__hash {
     color: var(--text-3);
     font-size: var(--fs-xs);
@@ -75,10 +80,18 @@
 .commit__detail {
     display: flex;
     flex-direction: column;
-    align-items: flex-start;
+    align-items: stretch;
     gap: var(--sp-3);
-    padding: 0 var(--sp-3) var(--sp-5) calc(22px + var(--sp-5) + var(--sp-3));
+    padding: 0 var(--sp-4) var(--sp-5) calc(22px + var(--sp-5) + var(--sp-3));
     background: var(--surface);
+}
+
+.commit__meta-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-4);
+    flex-wrap: wrap;
 }
 
 .commit__body {
@@ -92,6 +105,98 @@
     color: var(--text-3);
     font-size: var(--fs-xs);
 }
+
+.commit__files {
+    margin-top: var(--sp-2);
+    padding-top: var(--sp-3);
+    border-top: 1px solid var(--line);
+}
+
+.commit__files-heading {
+    margin-bottom: var(--sp-2);
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semibold);
+    color: var(--text-3);
+    font-variant-numeric: tabular-nums;
+}
+
+.commit__files-note {
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+}
+
+.commit__file-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.commit__file-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    width: 100%;
+    height: 28px;
+    padding: 0 var(--sp-3);
+    border-radius: var(--r-1);
+    text-align: left;
+    color: var(--text-2);
+    font-size: var(--fs-sm);
+}
+
+.commit__file-row:hover {
+    background: var(--hover);
+    color: var(--text);
+}
+
+.commit__file-icon {
+    flex-shrink: 0;
+}
+
+.commit__file-name {
+    flex-shrink: 0;
+    color: var(--text);
+    font-weight: var(--fw-medium);
+}
+
+.commit__file-dir {
+    flex: 1;
+    min-width: 0;
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+}
+
+.commit__file-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+    opacity: 0;
+}
+
+.commit__file-row:hover .commit__file-action,
+.commit__file-row:focus-visible .commit__file-action {
+    opacity: 1;
+    color: var(--text);
+}
+
+.commit__file-status {
+    width: 16px;
+    flex-shrink: 0;
+    text-align: center;
+    font-family: var(--font-code);
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semibold);
+}
+
+.commit__file-status--modified { color: var(--info); }
+.commit__file-status--added { color: var(--success); }
+.commit__file-status--deleted { color: var(--danger); }
+.commit__file-status--renamed { color: var(--warning); }
 
 @media (max-width: 900px) {
     .commit__main {

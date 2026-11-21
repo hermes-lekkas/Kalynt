@@ -19,6 +19,25 @@ export const BETA_CONFIG = {
 // All models are available to all users in this open-source project
 export type TierType = 'starter' | 'pro' | 'enterprise' | 'beta'
 
+export type ThemePreference = 'light' | 'dark' | 'system'
+export type ResolvedTheme = 'light' | 'dark'
+
+export interface ExtensionThemeSelection {
+    id: string
+    extensionId: string
+    label: string
+    uiTheme: 'vs' | 'vs-dark' | 'hc-black' | 'hc-light'
+}
+
+export function resolveTheme(theme: ThemePreference): ResolvedTheme {
+    if (theme === 'light') return 'light'
+    if (theme === 'dark') return 'dark'
+    if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+        return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+    }
+    return 'dark'
+}
+
 export interface Space {
     id: string
     name: string
@@ -47,10 +66,12 @@ interface AppState {
     connectedPeers: Peer[]
     sidebarCollapsed: boolean
     _hasHydrated: boolean
-    startupStatus: string // [NEW] Real-time status for splash screen
-    showSettings: boolean // [NEW] Global settings toggle
-    settingsTab: string | null // [NEW] Current active settings tab
-    theme: 'light' | 'dark' // [NEW]
+    startupStatus: string
+    showSettings: boolean
+    settingsTab: string | null
+    theme: ThemePreference
+    resolvedTheme: ResolvedTheme
+    extensionTheme: ExtensionThemeSelection | null
 
     // Actions
     initialize: () => Promise<void>
@@ -60,11 +81,13 @@ interface AppState {
     renameSpace: (id: string, name: string) => void
     setConnectedPeers: (peers: Peer[]) => void
     toggleSidebarCollapsed: () => void
-    setStartupStatus: (status: string) => void // [NEW]
-    setShowSettings: (show: boolean) => void // [NEW]
-    setSettingsTab: (tab: string | null) => void // [NEW]
-    setTheme: (theme: 'light' | 'dark') => void // [NEW]
-    reorderSpaces: (fromIndex: number, toIndex: number) => void // [NEW]
+    setStartupStatus: (status: string) => void
+    setShowSettings: (show: boolean) => void
+    setSettingsTab: (tab: string | null) => void
+    setTheme: (theme: ThemePreference) => void
+    setResolvedTheme: (resolvedTheme: ResolvedTheme) => void
+    setExtensionTheme: (extensionTheme: ExtensionThemeSelection | null) => void
+    reorderSpaces: (fromIndex: number, toIndex: number) => void
 
     // API Key actions (now async for safeStorage)
     setAPIKey: (provider: string, key: string) => Promise<void>
@@ -84,7 +107,7 @@ export const useAppStore = create<AppState>()(
     persist(
         (set, get) => ({
             isInitialized: false,
-            version: 'v1.0 beta',
+            version: '2.1.0',
             spaces: [],
             currentSpace: null,
             apiKeys: {},
@@ -98,14 +121,42 @@ export const useAppStore = create<AppState>()(
             showSettings: false,
             settingsTab: null,
             theme: 'dark',
+            resolvedTheme: 'dark',
+            extensionTheme: null,
 
             setStartupStatus: (status) => set({ startupStatus: status }),
             setShowSettings: (show) => set({ showSettings: show }),
             setSettingsTab: (tab) => set({ settingsTab: tab }),
-            setTheme: (theme) => set({ theme }),
+            setTheme: (theme) => {
+                const resolved = resolveTheme(theme)
+                set({ theme, resolvedTheme: resolved, extensionTheme: null })
+                void import('../services/extensions/themeService').then(({ restoreBuiltinTheme }) => restoreBuiltinTheme(resolved)).catch(() => undefined)
+            },
+            setResolvedTheme: (resolvedTheme) => set({ resolvedTheme }),
+            setExtensionTheme: (extensionTheme) => {
+                if (!extensionTheme) {
+                    const resolved = resolveTheme(get().theme)
+                    set({ extensionTheme: null, resolvedTheme: resolved })
+                    void import('../services/extensions/themeService').then(({ restoreBuiltinTheme }) => restoreBuiltinTheme(resolved)).catch(() => undefined)
+                    return
+                }
+                const base: ResolvedTheme = extensionTheme.uiTheme === 'vs' || extensionTheme.uiTheme === 'hc-light' ? 'light' : 'dark'
+                set({ extensionTheme, theme: base, resolvedTheme: base })
+            },
 
             reorderSpaces: (fromIndex, toIndex) => {
                 const { spaces } = get()
+                if (
+                    !Number.isInteger(fromIndex) ||
+                    !Number.isInteger(toIndex) ||
+                    fromIndex < 0 ||
+                    toIndex < 0 ||
+                    fromIndex >= spaces.length ||
+                    toIndex >= spaces.length ||
+                    fromIndex === toIndex
+                ) {
+                    return
+                }
                 const newSpaces = [...spaces]
                 const [moved] = newSpaces.splice(fromIndex, 1)
                 newSpaces.splice(toIndex, 0, moved)
@@ -120,7 +171,7 @@ export const useAppStore = create<AppState>()(
                     try {
                         set({ startupStatus: 'Reading app version' })
                         const version = await globalThis.electronAPI.getVersion()
-                        set({ version })
+                        if (version) set({ version })
                     } catch (error) {
                         logger.general.warn('Failed to get app version from Electron', error)
                     }
@@ -128,6 +179,14 @@ export const useAppStore = create<AppState>()(
                     // Load API keys from secure storage
                     set({ startupStatus: 'Unlocking saved API keys' })
                     await get().loadAPIKeys()
+
+                    // Initialize extension IPC listeners (show-message, contributions) & restore any active extension theme
+                    void import('../services/extensions/themeService')
+                        .then(({ ensureExtensionThemeWatchers, syncActiveExtensionTheme }) => {
+                            ensureExtensionThemeWatchers()
+                            return syncActiveExtensionTheme()
+                        })
+                        .catch(error => logger.general.warn('Failed to synchronize extension theme', error))
                 }
 
                 set({ isInitialized: true, startupStatus: 'Ready' })
@@ -135,25 +194,20 @@ export const useAppStore = create<AppState>()(
 
             setCurrentSpace: (space) => set({ currentSpace: space }),
 
-            createSpace: (name, spaceId) => {
-                const { spaces, connectedPeers } = get()
-
-                // Free beta - check collaborator limit only
-                if (connectedPeers.length >= BETA_CONFIG.maxCollaborators) {
-                    throw new Error(`Maximum ${BETA_CONFIG.maxCollaborators} collaborators per workspace.`)
-                }
+            createSpace: (name, spaceId, category = 'programming') => {
+                const { spaces } = get()
 
                 // Check if space with this ID already exists (for joining)
-                const existing = spaces.find(s => s.id === spaceId)
-                if (existing) {
-                    return existing
+                if (spaceId) {
+                    const existing = spaces.find(s => s.id === spaceId)
+                    if (existing) return existing
                 }
 
                 const newSpace: Space = {
                     id: spaceId || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2)),
                     name,
                     createdAt: Date.now(),
-                    category: 'programming'
+                    category
                 }
 
                 set({ spaces: [...spaces, newSpace] })
@@ -188,10 +242,8 @@ export const useAppStore = create<AppState>()(
             },
 
             removeAPIKey: async (provider) => {
-                // Remove from secure storage
                 const result = await globalThis.electronAPI?.safeStorage?.delete(`apiKey_${provider}`)
                 if (!result?.success) throw new Error(result?.error || 'The key could not be removed from secure storage.')
-                // Update in-memory state
                 const { apiKeys } = get()
                 const newKeys = { ...apiKeys }
                 delete newKeys[provider as keyof APIKeys]
@@ -209,13 +261,11 @@ export const useAppStore = create<AppState>()(
 
             hasRequiredKeys: () => {
                 const { apiKeys } = get()
-                // Check if at least one provider has a key
                 return Object.keys(apiKeys).some(k => apiKeys[k as keyof APIKeys])
             },
 
             setUserName: (name) => {
                 set({ userName: name })
-                // Sync to memberStore for P2P display name
                 import('../stores/memberStore').then(({ useMemberStore }) => {
                     useMemberStore.getState().setDisplayName(name)
                 })
@@ -236,24 +286,19 @@ export const useAppStore = create<AppState>()(
             partialize: (state) => ({
                 spaces: state.spaces,
                 currentSpace: state.currentSpace,
-                // Note: apiKeys are now stored in safeStorage, not localStorage
+                // Note: apiKeys are stored in safeStorage, not localStorage
                 userName: state.userName,
                 sidebarCollapsed: state.sidebarCollapsed,
-                theme: state.theme
+                theme: state.theme,
+                extensionTheme: state.extensionTheme
             }),
             onRehydrateStorage: () => {
-                console.log('[AppStore] Starting hydration...')
                 return (state, error) => {
                     if (error) {
-                        console.error('[AppStore] Hydration error:', error)
-                    } else {
-                        console.log('[AppStore] Hydration completed successfully')
-                        console.log('[AppStore] Loaded spaces:', state?.spaces?.length || 0)
-                        console.log('[AppStore] Current space:', state?.currentSpace?.name || 'None')
-                        console.log('[AppStore] Username:', state?.userName || 'Not set')
-
-                        // Sync userName to memberStore for P2P display name
-                        if (state?.userName && state.userName !== 'Local User') {
+                        logger.general.error('AppStore hydration error', error)
+                    } else if (state) {
+                        state.resolvedTheme = resolveTheme(state.theme ?? 'dark')
+                        if (state.userName && state.userName !== 'Local User') {
                             import('../stores/memberStore').then(({ useMemberStore }) => {
                                 useMemberStore.getState().setDisplayName(state.userName)
                             })
@@ -267,6 +312,3 @@ export const useAppStore = create<AppState>()(
         }
     )
 )
-
-// Log immediately after store creation to verify
-console.log('[AppStore] Store created, initial hydration state:', useAppStore.getState()._hasHydrated)

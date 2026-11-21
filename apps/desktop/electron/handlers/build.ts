@@ -5,11 +5,11 @@
  */
 import { ipcMain, BrowserWindow } from 'electron'
 import { spawn, type ChildProcess } from 'child_process'
-import * as path from 'path'
 import type { Task, TaskExecution } from '../../src/types/tasks'
 import { getAllTasks, parseProblems, resolveMatcher, substituteVariables } from './build-tasks'
 import { killProcessTree, wrapWindowsCommand } from './code-exec/binaries'
 import { sendToWindow } from '../utils/window'
+import { validatePath } from '../utils/pathValidator'
 
 interface RunningTask {
     process: ChildProcess
@@ -45,11 +45,11 @@ function executeTask(task: Task, workspacePath: string, getWindow: () => Browser
     let useShell = task.type !== 'process'
     let windowsVerbatimArguments: boolean | undefined
     if (task.type === 'npm') {
-        ;({ command, args, windowsVerbatimArguments } = wrapWindowsCommand(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', task.command, ...args]))
+        ({ command, args, windowsVerbatimArguments } = wrapWindowsCommand(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', task.command, ...args]))
         useShell = false
     }
 
-    const cwd = task.options?.cwd ? path.resolve(workspacePath, sub(task.options.cwd)) : workspacePath
+    const cwd = task.options?.cwd ? validatePath(workspacePath, sub(task.options.cwd)) : workspacePath
     const env = { ...process.env, ...task.options?.env, FORCE_COLOR: '1' }
 
     send('build:output', { taskId, type: 'start', data: `\x1b[1m> ${task.label}\x1b[0m\n` })
@@ -102,20 +102,28 @@ function executeTask(task: Task, workspacePath: string, getWindow: () => Browser
 export function setupBuildHandlers(
     ipc: typeof ipcMain,
     getMainWindow: () => BrowserWindow | null,
-    _getWorkspacePath: () => string | null
+    getWorkspacePath: () => string | null
 ) {
-    ipc.handle('build:getTasks', async (_, workspacePath: string) => {
+    const resolveWorkspace = (requested?: string): string => {
+        const current = getWorkspacePath()
+        if (!current) throw new Error('No workspace open')
+        return requested ? validatePath(current, requested) : current
+    }
+
+    ipc.handle('build:getTasks', async (_, workspacePath?: string) => {
         try {
-            return { success: true, tasks: getAllTasks(workspacePath) }
+            const safeWorkspace = resolveWorkspace(workspacePath)
+            return { success: true, tasks: getAllTasks(safeWorkspace) }
         } catch (error: any) {
             return { success: false, error: error.message }
         }
     })
 
-    ipc.handle('build:executeTask', async (_, task: Task, workspacePath: string) => {
+    ipc.handle('build:executeTask', async (_, task: Task, workspacePath?: string) => {
         try {
             if (!task?.command) return { success: false, error: 'This task has no command to run' }
-            return { success: true, taskId: executeTask(task, workspacePath, getMainWindow) }
+            const safeWorkspace = resolveWorkspace(workspacePath)
+            return { success: true, taskId: executeTask(task, safeWorkspace, getMainWindow) }
         } catch (error: any) {
             return { success: false, error: error.message }
         }

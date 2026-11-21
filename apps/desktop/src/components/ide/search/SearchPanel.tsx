@@ -1,57 +1,196 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
  */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { CaseSensitive, ChevronRight, Filter, Regex, Replace, ReplaceAll, Square, WholeWord, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+    CaseSensitive, ChevronRight, ChevronsDownUp, ChevronsUpDown,
+    Filter, Regex, Replace, ReplaceAll, Square, WholeWord, X
+} from 'lucide-react'
 import { Button, EmptyState, IconButton, ProgressBar, TextInput, VirtualList } from '../../ui'
+import { useLayoutStore } from '../../../stores/layoutStore'
+import { usePermissions } from '../../../hooks/usePermissions'
 import { FileGlyph } from '../explorer/fileIcons'
 import { dirName, relativePath } from '../languages'
 import { useWorkspaceSearch } from './useWorkspaceSearch'
-import type { SearchMatch } from './searchUtils'
-import { FOCUS_SEARCH_EVENT } from '../hooks/useIdeCommands'
+import { buildPattern, formatReplacementPreview, type SearchMatch } from './searchUtils'
+import { FOCUS_REPLACE_EVENT, FOCUS_SEARCH_EVENT } from '../hooks/useIdeCommands'
+import type { OpenFilesApi } from '../hooks/useOpenFiles'
 import './search.css'
+
+export { FOCUS_REPLACE_EVENT }
+export const FIND_IN_FOLDER_EVENT = 'kalynt-find-in-folder'
 
 type Row = { kind: 'file'; path: string; name: string; count: number; open: boolean } | { kind: 'match'; match: SearchMatch }
 
 interface SearchPanelProps {
     folder: string | null
+    buffers: OpenFilesApi
     visible: boolean
-    onOpenMatch: (path: string, line: number) => void
+    onOpenMatch: (path: string, line: number, column?: number) => void
+    canEdit?: boolean
 }
 
-export function SearchPanel({ folder, visible, onOpenMatch }: SearchPanelProps) {
-    const s = useWorkspaceSearch(folder)
+export function SearchPanel({ folder, buffers, visible, onOpenMatch, canEdit: canEditProp }: SearchPanelProps) {
+    const permissions = usePermissions()
+    const canEdit = canEditProp ?? permissions.canEdit
+    const s = useWorkspaceSearch(folder, buffers)
     const [showReplace, setShowReplace] = useState(false)
     const [showFilters, setShowFilters] = useState(false)
     const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
     const [historyOpen, setHistoryOpen] = useState(false)
     const inputRef = useRef<HTMLInputElement>(null)
+    const replaceInputRef = useRef<HTMLInputElement>(null)
+    const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+    const searchRef = useRef(s.search)
+    searchRef.current = s.search
+    const clearRef = useRef(s.clear)
+    clearRef.current = s.clear
+    const setIncludeRef = useRef(s.setInclude)
+    setIncludeRef.current = s.setInclude
+    const visibleRef = useRef(visible)
+    visibleRef.current = visible
+    const showReplaceRef = useRef(showReplace)
+    showReplaceRef.current = showReplace
+    const prevVisibleRef = useRef(false)
+    const pendingFocusRef = useRef<'search' | 'replace' | null>(null)
+    const focusFrameRef = useRef<number | null>(null)
+
+    const scheduleFocus = useCallback((target: 'search' | 'replace') => {
+        if (focusFrameRef.current !== null) cancelAnimationFrame(focusFrameRef.current)
+        focusFrameRef.current = requestAnimationFrame(() => {
+            focusFrameRef.current = null
+            if (target === 'replace' && replaceInputRef.current && !replaceInputRef.current.disabled) {
+                replaceInputRef.current.focus()
+                replaceInputRef.current.select()
+            } else {
+                inputRef.current?.focus()
+                inputRef.current?.select()
+            }
+        })
+    }, [])
+
+    useEffect(() => () => {
+        if (focusFrameRef.current !== null) cancelAnimationFrame(focusFrameRef.current)
+    }, [])
+
+    // Focus search / replace inputs on FOCUS_SEARCH_EVENT, FOCUS_REPLACE_EVENT, and FIND_IN_FOLDER_EVENT.
+    // Ctrl+Shift+H is owned by useIdeShortcuts (respecting IDEWorkspace's active guard).
+    useEffect(() => {
+        const onFocusSearch = () => {
+            pendingFocusRef.current = 'search'
+            if (visibleRef.current) {
+                pendingFocusRef.current = null
+                scheduleFocus('search')
+            }
+        }
+        const onFocusReplace = () => {
+            pendingFocusRef.current = 'replace'
+            setShowReplace(true)
+            if (visibleRef.current && showReplaceRef.current) {
+                pendingFocusRef.current = null
+                scheduleFocus('replace')
+            }
+        }
+        const onFindInFolder = (e: Event) => {
+            const detail = (e as CustomEvent<{ include?: string }>).detail
+            if (detail?.include !== undefined) {
+                setShowFilters(true)
+                setIncludeRef.current(detail.include)
+            }
+            pendingFocusRef.current = 'search'
+            useLayoutStore.getState().showSidePanel('search')
+            if (visibleRef.current) {
+                pendingFocusRef.current = null
+                scheduleFocus('search')
+            }
+        }
+        window.addEventListener(FOCUS_SEARCH_EVENT, onFocusSearch)
+        window.addEventListener(FOCUS_REPLACE_EVENT, onFocusReplace)
+        window.addEventListener(FIND_IN_FOLDER_EVENT, onFindInFolder)
+        return () => {
+            window.removeEventListener(FOCUS_SEARCH_EVENT, onFocusSearch)
+            window.removeEventListener(FOCUS_REPLACE_EVENT, onFocusReplace)
+            window.removeEventListener(FIND_IN_FOLDER_EVENT, onFindInFolder)
+        }
+    }, [scheduleFocus])
 
     useEffect(() => {
-        const focus = () => requestAnimationFrame(() => { inputRef.current?.focus(); inputRef.current?.select() })
-        if (visible) focus()
-        window.addEventListener(FOCUS_SEARCH_EVENT, focus)
-        return () => window.removeEventListener(FOCUS_SEARCH_EVENT, focus)
-    }, [visible])
+        const becameVisible = visible && !prevVisibleRef.current
+        prevVisibleRef.current = visible
+        if (!visible) return
+        const pending = pendingFocusRef.current
+        if (pending === 'replace') {
+            if (!showReplace) return
+            pendingFocusRef.current = null
+            scheduleFocus('replace')
+        } else if (pending === 'search' || becameVisible) {
+            pendingFocusRef.current = null
+            scheduleFocus('search')
+        }
+    }, [visible, showReplace, scheduleFocus])
 
-    // Re-run when options change and there is something to refresh.
-    const optionsKey = `${s.options.regex}${s.options.caseSensitive}${s.options.wholeWord}`
+    // Debounced search-as-you-type across query, options, include, and exclude.
+    const optionsKey = `${s.options.regex}|${s.options.caseSensitive}|${s.options.wholeWord}`
     useEffect(() => {
-        if (s.query.trim() && s.progress) s.search()
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [optionsKey])
+        if (debounceRef.current) clearTimeout(debounceRef.current)
+        if (!folder) return
+        if (!s.query) {
+            clearRef.current()
+            return
+        }
+        debounceRef.current = setTimeout(() => {
+            debounceRef.current = null
+            void searchRef.current(undefined, { recordHistory: false })
+        }, 220)
+        return () => {
+            if (debounceRef.current) clearTimeout(debounceRef.current)
+        }
+    }, [folder, s.query, s.include, s.exclude, optionsKey])
 
-    const rows = useMemo<Row[]>(() => {
+    const runImmediate = (overrideQuery?: string) => {
+        if (debounceRef.current) {
+            clearTimeout(debounceRef.current)
+            debounceRef.current = null
+        }
+        setHistoryOpen(false)
+        void s.search(overrideQuery, { recordHistory: true })
+    }
+
+    const { rows, filePaths } = useMemo<{ rows: Row[]; filePaths: string[] }>(() => {
         const byFile = new Map<string, SearchMatch[]>()
-        s.results.forEach(m => byFile.set(m.filePath, [...(byFile.get(m.filePath) ?? []), m]))
+        for (const m of s.results) {
+            let list = byFile.get(m.filePath)
+            if (!list) {
+                list = []
+                byFile.set(m.filePath, list)
+            }
+            list.push(m)
+        }
         const out: Row[] = []
+        const paths: string[] = []
         byFile.forEach((matches, path) => {
+            paths.push(path)
             const open = !collapsed.has(path)
             out.push({ kind: 'file', path, name: matches[0].fileName, count: matches.length, open })
-            if (open) matches.forEach(match => out.push({ kind: 'match', match }))
+            if (open) {
+                for (const match of matches) out.push({ kind: 'match', match })
+            }
         })
-        return out
+        return { rows: out, filePaths: paths }
     }, [s.results, collapsed])
+
+    const activePattern = useMemo(() => {
+        if (!s.query || !s.options.regex) return null
+        const p = buildPattern(s.query, s.options)
+        return typeof p === 'string' ? null : p
+    }, [s.query, s.options])
+
+    const allCollapsed = filePaths.length > 0 && filePaths.every(p => collapsed.has(p))
+
+    const toggleCollapseAll = () => {
+        if (allCollapsed) setCollapsed(new Set())
+        else setCollapsed(new Set(filePaths))
+    }
 
     const toggleFile = (path: string) => setCollapsed(prev => {
         const next = new Set(prev)
@@ -65,7 +204,13 @@ export function SearchPanel({ folder, visible, onOpenMatch }: SearchPanelProps) 
     }
 
     const option = (key: keyof typeof s.options, label: string, icon: ReactNode) => (
-        <IconButton size="sm" label={label} icon={icon} active={s.options[key]} onClick={() => s.setOptions({ ...s.options, [key]: !s.options[key] })} />
+        <IconButton
+            size="sm"
+            label={label}
+            icon={icon}
+            active={s.options[key]}
+            onClick={() => s.setOptions({ ...s.options, [key]: !s.options[key] })}
+        />
     )
 
     const summary = s.progress && (
@@ -79,62 +224,116 @@ export function SearchPanel({ folder, visible, onOpenMatch }: SearchPanelProps) 
             <div className="side-head">
                 <h2 className="side-head__title">Search</h2>
                 <div className="side-head__actions">
-                    <IconButton size="sm" label="Replace" icon={<Replace size={14} />} active={showReplace} onClick={() => setShowReplace(v => !v)} />
+                    {filePaths.length > 0 && (
+                        <IconButton
+                            size="sm"
+                            label={allCollapsed ? 'Expand all' : 'Collapse all'}
+                            icon={allCollapsed ? <ChevronsUpDown size={14} /> : <ChevronsDownUp size={14} />}
+                            onClick={toggleCollapseAll}
+                        />
+                    )}
+                    <IconButton size="sm" label="Toggle replace" shortcut="Ctrl+Shift+H" icon={<Replace size={14} />} active={showReplace} onClick={() => setShowReplace(v => !v)} />
                     <IconButton size="sm" label="Files to include or exclude" icon={<Filter size={14} />} active={showFilters} onClick={() => setShowFilters(v => !v)} />
-                    <IconButton size="sm" label="Clear results" icon={<X size={14} />} onClick={() => { s.setQuery(''); s.clear() }} disabled={!s.query && !s.results.length} />
+                    <IconButton size="sm" label="Clear results" icon={<X size={14} />} onClick={() => { s.setQuery(''); s.clear(); setCollapsed(new Set()) }} disabled={!s.query && !s.results.length} />
                 </div>
             </div>
 
-            <form className="search-panel__form" onSubmit={e => { e.preventDefault(); setHistoryOpen(false); s.search() }}>
-                <TextInput
-                    ref={inputRef}
-                    size="sm"
-                    value={s.query}
-                    invalid={!!s.error}
-                    placeholder="Search"
-                    aria-label="Search text"
-                    onChange={e => s.setQuery(e.target.value)}
-                    onKeyDown={e => {
-                        if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-                            e.preventDefault()
-                            setHistoryOpen(false)
-                            s.search()
-                        }
-                    }}
-                    onFocus={() => setHistoryOpen(true)}
-                    onBlur={() => setTimeout(() => setHistoryOpen(false), 120)}
-                    trailing={<>
-                        {option('caseSensitive', 'Match case', <CaseSensitive size={14} />)}
-                        {option('wholeWord', 'Match whole word', <WholeWord size={14} />)}
-                        {option('regex', 'Use regular expression', <Regex size={14} />)}
-                    </>}
-                />
+            <form className="search-panel__form" onSubmit={e => { e.preventDefault(); runImmediate() }}>
+                <div className="search-panel__query-wrap">
+                    <TextInput
+                        ref={inputRef}
+                        size="sm"
+                        value={s.query}
+                        invalid={!!s.error}
+                        placeholder="Search"
+                        aria-label="Search text"
+                        onChange={e => s.setQuery(e.target.value)}
+                        onKeyDown={e => {
+                            if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                                e.preventDefault()
+                                runImmediate()
+                            } else if (e.key === 'Escape' && historyOpen) {
+                                e.stopPropagation()
+                                setHistoryOpen(false)
+                            }
+                        }}
+                        onFocus={() => setHistoryOpen(true)}
+                        onBlur={() => setTimeout(() => setHistoryOpen(false), 120)}
+                    />
+                    {historyOpen && !s.query && s.history.length > 0 && (
+                        <ul className="search-panel__history" aria-label="Recent searches">
+                            {s.history.slice(0, 8).map(h => (
+                                <li key={h}>
+                                    <button
+                                        type="button"
+                                        className="mono truncate"
+                                        onMouseDown={e => e.preventDefault()}
+                                        onClick={() => { s.setQuery(h); runImmediate(h) }}
+                                    >
+                                        {h}
+                                    </button>
+                                </li>
+                            ))}
+                        </ul>
+                    )}
+                </div>
+
+                <div className="search-panel__options" role="toolbar" aria-label="Search options">
+                    {option('caseSensitive', 'Match case', <CaseSensitive size={14} />)}
+                    {option('wholeWord', 'Match whole word', <WholeWord size={14} />)}
+                    {option('regex', 'Use regular expression', <Regex size={14} />)}
+                    {showReplace && (
+                        <IconButton
+                            size="sm"
+                            label="Preserve case"
+                            icon={<span className="search-panel__ab">AB</span>}
+                            active={s.keepCase}
+                            onClick={() => s.setKeepCase(!s.keepCase)}
+                            disabled={s.options.regex}
+                        />
+                    )}
+                </div>
+
                 {s.error && <p className="search-panel__error" role="alert">{s.error}</p>}
-                {historyOpen && !s.query && s.history.length > 0 && (
-                    <ul className="search-panel__history" aria-label="Recent searches">
-                        {s.history.slice(0, 8).map(h => (
-                            <li key={h}><button type="button" className="mono truncate" onMouseDown={e => e.preventDefault()} onClick={() => { s.setQuery(h); setHistoryOpen(false); s.search(h) }}>{h}</button></li>
-                        ))}
-                    </ul>
-                )}
+
                 {showReplace && (
                     <div className="search-panel__replace">
-                        <TextInput size="sm" value={s.replacement} placeholder="Replace with" aria-label="Replacement text" onChange={e => s.setReplacement(e.target.value)} />
-                        <IconButton size="sm" label="Keep the case of each match" icon={<span className="search-panel__ab">AB</span>} active={s.keepCase} onClick={() => s.setKeepCase(!s.keepCase)} disabled={s.options.regex} />
-                        <IconButton size="sm" label="Replace all" icon={<ReplaceAll size={14} />} onClick={s.replaceAll} disabled={!s.results.length || s.replacing} />
+                        <TextInput
+                            ref={replaceInputRef}
+                            size="sm"
+                            value={s.replacement}
+                            placeholder={canEdit ? 'Replace with' : 'Read-only workspace'}
+                            aria-label="Replacement text"
+                            disabled={!canEdit}
+                            onChange={e => s.setReplacement(e.target.value)}
+                            onKeyDown={e => {
+                                if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && canEdit && s.results.length > 0 && !s.replacing) {
+                                    e.preventDefault()
+                                    void s.replaceAll()
+                                }
+                            }}
+                        />
+                        <IconButton
+                            size="sm"
+                            label={canEdit ? 'Replace all' : 'Replace disabled (read-only)'}
+                            icon={<ReplaceAll size={14} />}
+                            onClick={s.replaceAll}
+                            disabled={!canEdit || !s.results.length || s.replacing || s.isStale}
+                        />
                     </div>
                 )}
+
                 {showFilters && (
                     <div className="search-panel__filters">
-                        <TextInput size="sm" value={s.include} placeholder="Files to include, e.g. ts, tsx" aria-label="Files to include" onChange={e => s.setInclude(e.target.value)} />
-                        <TextInput size="sm" value={s.exclude} placeholder="Folders to exclude" aria-label="Folders to exclude" onChange={e => s.setExclude(e.target.value)} />
+                        <TextInput size="sm" value={s.include} placeholder="Files to include (e.g. src/**/*.{ts,tsx})" aria-label="Files to include" onChange={e => s.setInclude(e.target.value)} />
+                        <TextInput size="sm" value={s.exclude} placeholder="Files to exclude" aria-label="Folders or files to exclude" onChange={e => s.setExclude(e.target.value)} />
                     </div>
                 )}
             </form>
 
             {(s.searching || summary) && (
                 <div className="search-panel__status" role="status">
-                    <span>{s.searching && !summary ? 'Searching…' : summary}</span>
+                    <span className="search-panel__summary">{s.searching && !summary ? 'Searching…' : summary}</span>
                     {s.searching && <Button size="sm" variant="ghost" icon={<Square size={11} />} onClick={s.stop}>Stop</Button>}
                 </div>
             )}
@@ -154,30 +353,72 @@ export function SearchPanel({ folder, visible, onOpenMatch }: SearchPanelProps) 
                                 <span className="search-file__name">{row.name}</span>
                                 <span className="search-file__dir truncate">{relativePath(dirName(row.path), folder)}</span>
                             </button>
-                            {showReplace && (
-                                <IconButton size="sm" className="search-file__replace" label={`Replace in ${row.name}`} icon={<ReplaceAll size={13} />} onClick={() => s.replaceInFile(row.path)} />
-                            )}
+                            <span className="search-file__actions">
+                                {showReplace && (
+                                    <IconButton
+                                        size="sm"
+                                        className="search-file__replace"
+                                        label={canEdit ? `Replace in ${row.name}` : 'Replace disabled (read-only)'}
+                                        icon={<ReplaceAll size={13} />}
+                                        disabled={!canEdit || s.replacing || s.isStale}
+                                        onClick={() => s.replaceInFile(row.path)}
+                                    />
+                                )}
+                                <IconButton
+                                    size="sm"
+                                    className="search-file__dismiss"
+                                    label={`Dismiss ${row.name}`}
+                                    icon={<X size={12} />}
+                                    onClick={() => s.dismissFile(row.path)}
+                                />
+                            </span>
                             <span className="search-file__count">{row.count}</span>
                         </div>
-                    ) : (
-                        <div key={`m-${row.match.filePath}-${row.match.line}-${row.match.column}`} className="search-match">
-                            <button type="button" className="search-match__open" onClick={() => onOpenMatch(row.match.filePath, row.match.line)} title={`Line ${row.match.line}`}>
-                                <span className="search-match__line">{row.match.line}</span>
-                                <span className="search-match__text mono">
-                                    {row.match.before}
-                                    <mark className={showReplace && s.replacement ? 'is-replacing' : ''}>{row.match.matchText}</mark>
-                                    {showReplace && s.replacement && <ins>{s.replacement}</ins>}
-                                    {row.match.after}
+                    ) : (() => {
+                        const preview = showReplace
+                            ? formatReplacementPreview(row.match.matchText, s.replacement, s.keepCase, s.options.regex, activePattern)
+                            : ''
+                        return (
+                            <div key={`m-${row.match.filePath}-${row.match.line}-${row.match.column}`} className="search-match">
+                                <button
+                                    type="button"
+                                    className="search-match__open"
+                                    onClick={() => onOpenMatch(row.match.filePath, row.match.line, row.match.column)}
+                                    title={`Line ${row.match.line}, Col ${row.match.column}`}
+                                >
+                                    <span className="search-match__line">{row.match.line}</span>
+                                    <span className="search-match__text mono">
+                                        {row.match.before}
+                                        <mark className={showReplace ? 'is-replacing' : ''}>{row.match.matchText}</mark>
+                                        {showReplace && preview.length > 0 && <ins>{preview}</ins>}
+                                        {row.match.after}
+                                    </span>
+                                </button>
+                                <span className="search-match__actions">
+                                    {showReplace && (
+                                        <IconButton
+                                            size="sm"
+                                            className="search-match__replace"
+                                            label={canEdit ? 'Replace this match' : 'Replace disabled (read-only)'}
+                                            icon={<Replace size={13} />}
+                                            disabled={!canEdit || s.replacing || s.isStale}
+                                            onClick={() => s.replaceOne(row.match)}
+                                        />
+                                    )}
+                                    <IconButton
+                                        size="sm"
+                                        className="search-match__dismiss"
+                                        label="Dismiss match"
+                                        icon={<X size={12} />}
+                                        onClick={() => s.dismissMatch(row.match)}
+                                    />
                                 </span>
-                            </button>
-                            {showReplace && (
-                                <IconButton size="sm" className="search-match__replace" label="Replace this match" icon={<Replace size={13} />} onClick={() => s.replaceOne(row.match)} />
-                            )}
-                        </div>
-                    )}
+                            </div>
+                        )
+                    })()}
                 />
             ) : !s.searching && !s.progress ? (
-                <p className="search-panel__hint">Press Enter to search every file in {relativePath(folder, null).split('/').pop()}.</p>
+                <p className="search-panel__hint">Type to search across {relativePath(folder, null).split('/').pop()}.</p>
             ) : null}
         </div>
     )

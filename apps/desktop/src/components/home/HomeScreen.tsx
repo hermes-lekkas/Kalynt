@@ -12,7 +12,8 @@ import { MachineSummary } from './MachineSummary'
 import { QuickStart } from './QuickStart'
 import { NewWorkspaceDialog } from './NewWorkspaceDialog'
 import { CloneDialog } from './CloneDialog'
-import { openFolderAsWorkspace } from './workspaceActions'
+import { isBrowserMode, openFolderAsWorkspace } from './workspaceActions'
+import '../../services/extensions/monacoThemeBridge'
 import './home.css'
 
 export function HomeScreen() {
@@ -21,6 +22,7 @@ export function HomeScreen() {
     const openCollaboration = useUiStore(s => s.openCollaboration)
     const [query, setQuery] = useState('')
     const [dialog, setDialog] = useState<'new' | 'clone' | null>(null)
+    const browserMode = isBrowserMode()
 
     const sorted = useMemo(() => {
         const q = query.trim().toLowerCase()
@@ -29,25 +31,41 @@ export function HomeScreen() {
         return q ? list.filter(s => s.name.toLowerCase().includes(q) || records[s.id]?.folder?.toLowerCase().includes(q)) : list
     }, [spaces, records, query])
 
-    const actions = (
-        <div className="home__actions">
-            <Button variant="primary" icon={<Plus size={15} />} onClick={() => setDialog('new')}>New workspace</Button>
-            <Button icon={<FolderOpen size={15} />} onClick={() => openFolderAsWorkspace()}>Open folder</Button>
-            <Button icon={<GitBranch size={15} />} onClick={() => setDialog('clone')}>Clone repository</Button>
-            <Button icon={<LogIn size={15} />} onClick={() => openCollaboration('join')}>Join a session</Button>
-        </div>
-    )
-
     return (
         <div className="home">
             <div className="home__inner">
                 <header className="home__header">
                     <h1 className="home__title">{spaces.length === 0 ? 'Start your first workspace' : 'Workspaces'}</h1>
-                    <p className="home__lede">
-                        A workspace is a folder on this machine together with its agent conversations, tasks and history.
-                        Share it with a link to edit together, peer to peer, without a server in between.
-                    </p>
-                    {actions}
+                    {spaces.length === 0 && (
+                        <p className="home__lede">
+                            A local folder paired with AI conversations, tasks and peer-to-peer live collaboration.
+                        </p>
+                    )}
+                    <div className="home__actions">
+                        <Button variant="primary" icon={<Plus size={15} />} onClick={() => setDialog('new')}>New workspace</Button>
+                        <Button
+                            icon={<FolderOpen size={15} />}
+                            disabled={browserMode}
+                            title={browserMode ? 'Requires the desktop app' : undefined}
+                            onClick={() => openFolderAsWorkspace()}
+                        >
+                            Open folder
+                        </Button>
+                        <Button
+                            icon={<GitBranch size={15} />}
+                            disabled={browserMode}
+                            title={browserMode ? 'Requires the desktop app' : undefined}
+                            onClick={() => setDialog('clone')}
+                        >
+                            Clone repository
+                        </Button>
+                        <Button icon={<LogIn size={15} />} onClick={() => openCollaboration('join')}>Join session</Button>
+                    </div>
+                    {browserMode && (
+                        <p className="home__browser-note" role="status">
+                            Browser preview mode: opening local folders and cloning repositories require the desktop app. Create a workspace to try tasks and collaboration here.
+                        </p>
+                    )}
                 </header>
 
                 <QuickStart />

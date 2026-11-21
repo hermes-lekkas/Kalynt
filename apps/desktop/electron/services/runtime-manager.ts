@@ -8,12 +8,15 @@
 import path from 'path'
 import fs from 'fs'
 import { execFile } from 'child_process'
+import { validatePath } from '../utils/pathValidator'
 import { downloadFile, type DownloadProgress } from './runtimes/http'
 import { installableRuntimes, resolveSource, type RuntimeSource } from './runtimes/sources'
-import { extractArchive, findBinDir, makeExecutable, runRustup, versionOf } from './runtimes/installer'
+import { extractArchive, findBinDir, makeExecutable, runRustup, rustupInstallerFilename, versionOf } from './runtimes/installer'
 import { forgetRuntime, readManifest, recordRuntime, setRuntimesDir } from './runtimes/manifest'
 
 type Log = (message: string) => void
+
+const SAFE_RUNTIME_ID = /^[a-z0-9_-]+$/i
 
 // How to ask an installed tool for its version.
 const VERSION_COMMANDS: Record<string, string[]> = {
@@ -43,14 +46,27 @@ export class RuntimeManager {
         return installableRuntimes()
     }
 
+    private assertValidRuntimeId(runtimeId: string): string {
+        if (typeof runtimeId !== 'string' || !SAFE_RUNTIME_ID.test(runtimeId)) {
+            throw new Error(`Invalid runtime identifier: ${String(runtimeId)}`)
+        }
+        return runtimeId
+    }
+
+    getDownloadsDir(): string {
+        return path.join(this.runtimesDir, 'downloads')
+    }
+
     async downloadRuntime(runtimeId: string, onProgress: (p: DownloadProgress) => void, onLog?: Log): Promise<{ success: boolean; path?: string; error?: string }> {
         try {
-            const source = await resolveSource(runtimeId)
-            this.pending.set(runtimeId, source)
-            onLog?.(`Downloading ${runtimeId} ${source.version}`)
-            const downloads = path.join(this.runtimesDir, 'downloads')
+            const safeId = this.assertValidRuntimeId(runtimeId)
+            const source = await resolveSource(safeId)
+            this.pending.set(safeId, source)
+            onLog?.(`Downloading ${safeId} ${source.version}`)
+            const downloads = this.getDownloadsDir()
             fs.mkdirSync(downloads, { recursive: true })
-            const dest = path.join(downloads, `${runtimeId}.download`)
+            const downloadName = source.installer ? rustupInstallerFilename() : `${safeId}.download`
+            const dest = validatePath(downloads, downloadName)
             await downloadFile(source.url, dest, onProgress)
             return { success: true, path: dest }
         } catch (error) {
@@ -61,30 +77,67 @@ export class RuntimeManager {
     }
 
     async installRuntime(runtimeId: string, archivePath: string, onLog?: Log): Promise<{ success: boolean; installPath?: string; error?: string }> {
-        const installPath = path.join(this.runtimesDir, runtimeId)
+        let safeId: string
+        let safeArchivePath: string
+        let installPath: string
         try {
-            const source = this.pending.get(runtimeId) ?? await resolveSource(runtimeId)
+            safeId = this.assertValidRuntimeId(runtimeId)
+            if (!this.installable().includes(safeId)) {
+                return { success: false, error: `Unsupported runtime: ${safeId}` }
+            }
+            if (typeof archivePath !== 'string' || !archivePath.trim() || archivePath.includes('\0')) {
+                return { success: false, error: 'Invalid runtime archive path' }
+            }
+            const downloadsDir = this.getDownloadsDir()
+            fs.mkdirSync(downloadsDir, { recursive: true })
+            safeArchivePath = validatePath(downloadsDir, archivePath)
+            if (path.resolve(safeArchivePath) === path.resolve(downloadsDir)) {
+                return { success: false, error: 'Invalid runtime archive path' }
+            }
+            const stat = fs.lstatSync(safeArchivePath)
+            if (!stat.isFile() || stat.isSymbolicLink()) {
+                return { success: false, error: 'Runtime archive must be a downloaded file inside the runtime cache directory' }
+            }
+            installPath = validatePath(this.runtimesDir, safeId)
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            onLog?.(`Installation failed: ${message}`)
+            return { success: false, error: `Invalid runtime archive path: ${message}` }
+        }
+
+        try {
+            const source = this.pending.get(safeId) ?? await resolveSource(safeId)
             fs.rmSync(installPath, { recursive: true, force: true })
             fs.mkdirSync(installPath, { recursive: true })
 
             let env: Record<string, string> | undefined
             if (source.installer) {
                 onLog?.('Running the installer; this can take a few minutes')
-                env = await runRustup(archivePath, installPath, onLog)
+                env = await runRustup(safeArchivePath, installPath, onLog)
             } else {
                 onLog?.('Unpacking')
-                await extractArchive(archivePath, installPath, onLog)
+                await extractArchive(safeArchivePath, installPath, onLog)
             }
 
             const binDir = findBinDir(installPath, source.exe)
             if (!binDir) throw new Error(`Couldn't find ${source.exe} in the downloaded files`)
             const exe = fs.readdirSync(binDir).find(f => f === source.exe || f.startsWith(`${source.exe}.`)) ?? source.exe
             makeExecutable(path.join(binDir, exe))
-            if (runtimeId === 'java') env = { JAVA_HOME: path.dirname(binDir) }
+            if (safeId === 'java') env = { JAVA_HOME: path.dirname(binDir) }
 
-            const version = (await versionOf(path.join(binDir, exe), runtimeId)) ?? source.version
-            recordRuntime(runtimeId, { version, installPath, binDirs: [binDir], env })
-            onLog?.(`Installed ${runtimeId} ${version}. Kalynt's terminals and Run use it now.`)
+            let versionExe = path.join(binDir, exe)
+            if (safeId === 'rust') {
+                const rustcName = fs.readdirSync(binDir).find(f => f === 'rustc' || f === 'rustc.exe')
+                if (rustcName) {
+                    const rustcPath = path.join(binDir, rustcName)
+                    makeExecutable(rustcPath)
+                    versionExe = rustcPath
+                }
+            }
+
+            const version = (await versionOf(versionExe, safeId, env)) ?? source.version
+            recordRuntime(safeId, { version, installPath, binDirs: [binDir], env })
+            onLog?.(`Installed ${safeId} ${version}. Kalynt's terminals and Run use it now.`)
             return { success: true, installPath }
         } catch (error) {
             fs.rmSync(installPath, { recursive: true, force: true })
@@ -92,17 +145,24 @@ export class RuntimeManager {
             onLog?.(`Installation failed: ${message}`)
             return { success: false, error: message }
         } finally {
-            this.pending.delete(runtimeId)
-            fs.rmSync(archivePath, { force: true })
+            this.pending.delete(safeId)
+            fs.rmSync(safeArchivePath, { force: true })
         }
     }
 
     async uninstallRuntime(runtimeId: string): Promise<{ success: boolean; error?: string }> {
-        const managed = readManifest()[runtimeId]
+        let safeId: string
+        try {
+            safeId = this.assertValidRuntimeId(runtimeId)
+        } catch (error) {
+            return { success: false, error: error instanceof Error ? error.message : String(error) }
+        }
+        const managed = readManifest()[safeId]
         if (!managed) return { success: false, error: 'This runtime was not installed by Kalynt' }
         try {
-            fs.rmSync(managed.installPath, { recursive: true, force: true })
-            forgetRuntime(runtimeId)
+            const safeInstallPath = validatePath(this.runtimesDir, managed.installPath)
+            fs.rmSync(safeInstallPath, { recursive: true, force: true })
+            forgetRuntime(safeId)
             return { success: true }
         } catch (error) {
             return { success: false, error: error instanceof Error ? error.message : String(error) }

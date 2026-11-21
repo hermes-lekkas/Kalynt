@@ -1,32 +1,117 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
  */
-import { useState } from 'react'
-import { Moon, Sun } from 'lucide-react'
-import { useAppStore } from '../../stores/appStore'
-import { useLayoutStore } from '../../stores/layoutStore'
+import { useEffect, useRef, useState } from 'react'
+import { Monitor, Moon, Palette, RotateCcw, Sun } from 'lucide-react'
+import { useAppStore, type ThemePreference } from '../../stores/appStore'
+import {
+    EDITOR_PREF_DEFAULTS,
+    useLayoutStore,
+    type AutoSaveMode,
+    type LineNumbersMode,
+    type RenderWhitespaceMode
+} from '../../stores/layoutStore'
 import { Button, Select, Switch, TextInput } from '../ui'
 import { inlineCompletionsEnabled, setInlineCompletionsEnabled } from '../ide/editor/inlineCompletionsPref'
 import { SavedNote, SettingRow, SettingsPage, SettingsSection } from './parts'
 import { pickProvider } from '../../services/aiService'
 import { providerInfo } from '../../types/aiProviders'
+import { extensionService } from '../../services/extensions/extensionService'
+import { selectExtensionTheme, uiThemeBase, type ContributedThemeEntry } from '../../services/extensions/themeService'
+
+const FONT_PRESETS: ReadonlyArray<{ value: string; label: string }> = [
+    { value: '', label: 'JetBrains Mono (Default)' },
+    { value: "'Fira Code', 'JetBrains Mono', ui-monospace, monospace", label: 'Fira Code' },
+    { value: "'Cascadia Code', 'JetBrains Mono', ui-monospace, monospace", label: 'Cascadia Code' },
+    { value: "'SF Mono', Menlo, Consolas, ui-monospace, monospace", label: 'SF Mono / Consolas' },
+    { value: 'ui-monospace, monospace', label: 'System monospace' }
+]
 
 export function GeneralSettings() {
-    const { userName, setUserName, theme, setTheme, apiKeys } = useAppStore()
-    const layout = useLayoutStore()
+    const userName = useAppStore(s => s.userName)
+    const setUserName = useAppStore(s => s.setUserName)
+    const theme = useAppStore(s => s.theme)
+    const resolvedTheme = useAppStore(s => s.resolvedTheme)
+    const setTheme = useAppStore(s => s.setTheme)
+    const extensionTheme = useAppStore(s => s.extensionTheme)
+    const apiKeys = useAppStore(s => s.apiKeys)
+
+    const editorFontSize = useLayoutStore(s => s.editorFontSize)
+    const fontFamily = useLayoutStore(s => s.fontFamily)
+    const tabSize = useLayoutStore(s => s.tabSize)
+    const insertSpaces = useLayoutStore(s => s.insertSpaces)
+    const autoSave = useLayoutStore(s => s.autoSave)
+    const formatOnSave = useLayoutStore(s => s.formatOnSave)
+    const lineNumbers = useLayoutStore(s => s.lineNumbers)
+    const renderWhitespace = useLayoutStore(s => s.renderWhitespace)
+    const wordWrap = useLayoutStore(s => s.wordWrap)
+    const minimap = useLayoutStore(s => s.minimap)
+    const stickyScroll = useLayoutStore(s => s.stickyScroll)
+    const setEditorPref = useLayoutStore(s => s.setEditorPref)
+
     const [name, setName] = useState(userName === 'Local User' ? '' : userName)
     const [saved, setSaved] = useState(false)
     const [completions, setCompletions] = useState(inlineCompletionsEnabled)
+    const [extensionThemes, setExtensionThemes] = useState<ContributedThemeEntry[]>([])
+    const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const completionProvider = pickProvider(apiKeys)
     const canComplete = !!completionProvider
+
+    useEffect(() => {
+        let cancelled = false
+        const loadThemes = () => {
+            void extensionService.getContributions().then(contribs => {
+                if (cancelled) return
+                const list = Array.isArray(contribs?.themes) ? (contribs.themes as ContributedThemeEntry[]) : []
+                setExtensionThemes(list.filter(t => typeof t?.id === 'string' && typeof t?.extensionId === 'string'))
+            }).catch(() => {
+                if (!cancelled) setExtensionThemes([])
+            })
+        }
+        loadThemes()
+        const offContrib = extensionService.onContributionsChanged(loadThemes)
+        const offInstalled = extensionService.onInstalledChange(loadThemes)
+        return () => {
+            cancelled = true
+            offContrib()
+            offInstalled()
+        }
+    }, [])
+
+    useEffect(() => {
+        setName(userName === 'Local User' ? '' : userName)
+    }, [userName])
+
+    useEffect(() => () => {
+        if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
+    }, [])
 
     const saveName = () => {
         const next = name.trim()
         if (!next || next === userName) return
         setUserName(next)
         setSaved(true)
-        setTimeout(() => setSaved(false), 1800)
+        if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
+        savedTimerRef.current = setTimeout(() => setSaved(false), 1800)
     }
+
+    const editorCustomized = editorFontSize !== EDITOR_PREF_DEFAULTS.editorFontSize
+        || fontFamily !== EDITOR_PREF_DEFAULTS.fontFamily
+        || tabSize !== EDITOR_PREF_DEFAULTS.tabSize
+        || insertSpaces !== EDITOR_PREF_DEFAULTS.insertSpaces
+        || autoSave !== EDITOR_PREF_DEFAULTS.autoSave
+        || formatOnSave !== EDITOR_PREF_DEFAULTS.formatOnSave
+        || lineNumbers !== EDITOR_PREF_DEFAULTS.lineNumbers
+        || renderWhitespace !== EDITOR_PREF_DEFAULTS.renderWhitespace
+        || wordWrap !== EDITOR_PREF_DEFAULTS.wordWrap
+        || minimap !== EDITOR_PREF_DEFAULTS.minimap
+        || stickyScroll !== EDITOR_PREF_DEFAULTS.stickyScroll
+
+    const themeChoices: ReadonlyArray<{ id: ThemePreference; label: string; icon: JSX.Element }> = [
+        { id: 'dark', label: 'Dark', icon: <Moon size={14} /> },
+        { id: 'light', label: 'Light', icon: <Sun size={14} /> },
+        { id: 'system', label: 'System', icon: <Monitor size={14} /> }
+    ]
 
     return (
         <SettingsPage title="General">
@@ -44,42 +129,164 @@ export function GeneralSettings() {
                 </div>
             </SettingsSection>
 
-            <SettingsSection title="Appearance">
+            <SettingsSection
+                title="Appearance"
+                description={extensionTheme
+                    ? `Using extension theme “${extensionTheme.label}”. Select Dark, Light, or System to switch back.`
+                    : theme === 'system'
+                        ? `Following your operating system (${resolvedTheme === 'light' ? 'Light' : 'Dark'}).`
+                        : undefined}
+            >
                 <div className="theme-choice" role="radiogroup" aria-label="Theme">
-                    {([['dark', 'Dark', <Moon key="m" size={14} />], ['light', 'Light', <Sun key="s" size={14} />]] as const).map(([id, label, icon]) => (
-                        <button
-                            key={id}
-                            type="button"
-                            role="radio"
-                            aria-checked={theme === id}
-                            className={`theme-choice__card ${theme === id ? 'is-selected' : ''}`}
-                            onClick={() => setTheme(id)}
-                        >
-                            <span className={`theme-choice__preview theme-choice__preview--${id}`} aria-hidden>
-                                <span /><span /><span />
-                            </span>
-                            <span className="theme-choice__label">{icon}{label}</span>
-                        </button>
-                    ))}
+                    {themeChoices.map(({ id, label, icon }) => {
+                        const selected = !extensionTheme && theme === id
+                        return (
+                            <button
+                                key={id}
+                                type="button"
+                                role="radio"
+                                aria-checked={selected}
+                                className={`theme-choice__card ${selected ? 'is-selected' : ''}`}
+                                onClick={() => setTheme(id)}
+                            >
+                                <span className={`theme-choice__preview theme-choice__preview--${id}`} aria-hidden>
+                                    <span /><span /><span />
+                                </span>
+                                <span className="theme-choice__label">{icon}{label}</span>
+                            </button>
+                        )
+                    })}
+                    {extensionThemes.map(extTheme => {
+                        const selected = extensionTheme?.id === extTheme.id
+                        const base = uiThemeBase(extTheme.uiTheme)
+                        return (
+                            <button
+                                key={extTheme.id}
+                                type="button"
+                                role="radio"
+                                aria-checked={selected}
+                                className={`theme-choice__card ${selected ? 'is-selected' : ''}`}
+                                title={extTheme.extensionName ? `Contributed by ${extTheme.extensionName}` : extTheme.extensionId}
+                                onClick={() => void selectExtensionTheme(extTheme)}
+                            >
+                                <span className={`theme-choice__preview theme-choice__preview--${base}`} aria-hidden>
+                                    <span /><span /><span />
+                                </span>
+                                <span className="theme-choice__label">
+                                    <Palette size={14} />
+                                    <span className="truncate">{extTheme.label}</span>
+                                </span>
+                            </button>
+                        )
+                    })}
                 </div>
             </SettingsSection>
 
-            <SettingsSection title="Editor">
+            <SettingsSection
+                title="Editor"
+                description="Applied immediately across open files."
+                actions={editorCustomized ? (
+                    <Button
+                        size="sm"
+                        variant="ghost"
+                        icon={<RotateCcw size={13} />}
+                        onClick={() => setEditorPref({ ...EDITOR_PREF_DEFAULTS })}
+                    >
+                        Reset defaults
+                    </Button>
+                ) : undefined}
+            >
                 <SettingRow
-                    label="Text size"
+                    label="Font size"
+                    description="Controls code font size and line height in the editor."
                     htmlFor="set-font-size"
                     control={
-                        <Select id="set-font-size" size="sm" value={layout.editorFontSize} onChange={e => layout.setEditorPref({ editorFontSize: Number(e.target.value) })}>
+                        <Select id="set-font-size" size="sm" value={editorFontSize} onChange={e => setEditorPref({ editorFontSize: Number(e.target.value) })}>
                             {[11, 12, 13, 14, 15, 16, 18, 20].map(n => <option key={n} value={n}>{n} px</option>)}
                         </Select>
                     }
                 />
-                <SettingRow label="Wrap long lines" control={<Switch label="Wrap long lines" checked={layout.wordWrap} onChange={v => layout.setEditorPref({ wordWrap: v })} />} />
-                <SettingRow label="Show minimap" control={<Switch label="Show minimap" checked={layout.minimap} onChange={v => layout.setEditorPref({ minimap: v })} />} />
+                <SettingRow
+                    label="Font family"
+                    description="Monospace typeface used in code editors."
+                    htmlFor="set-font-family"
+                    control={
+                        <Select id="set-font-family" size="sm" value={fontFamily} onChange={e => setEditorPref({ fontFamily: e.target.value })}>
+                            {FONT_PRESETS.map(p => <option key={p.label} value={p.value}>{p.label}</option>)}
+                        </Select>
+                    }
+                />
+                <SettingRow
+                    label="Tab size"
+                    description="Number of spaces equal to one indentation level."
+                    htmlFor="set-tab-size"
+                    control={
+                        <Select id="set-tab-size" size="sm" value={tabSize} onChange={e => setEditorPref({ tabSize: Number(e.target.value) })}>
+                            {[2, 4, 8].map(n => <option key={n} value={n}>{n} spaces</option>)}
+                        </Select>
+                    }
+                />
+                <SettingRow
+                    label="Insert spaces"
+                    description="Insert spaces when pressing Tab instead of literal tab characters."
+                    control={<Switch label="Insert spaces" checked={insertSpaces} onChange={v => setEditorPref({ insertSpaces: v })} />}
+                />
+                <SettingRow
+                    label="Auto-save"
+                    description="Automatically write dirty files to disk after a pause or when switching tabs or leaving the window. Auto-save skips Format on save."
+                    htmlFor="set-auto-save"
+                    control={
+                        <Select id="set-auto-save" size="sm" value={autoSave} onChange={e => setEditorPref({ autoSave: e.target.value as AutoSaveMode })}>
+                            <option value="off">Off</option>
+                            <option value="afterDelay">After delay (1 s)</option>
+                            <option value="onFocusChange">On focus change</option>
+                        </Select>
+                    }
+                />
+                <SettingRow
+                    label="Format on save"
+                    description="Run the active language formatter on manual saves (Ctrl+S / Save all). Auto-save skips formatting to avoid disrupting your cursor and undo history."
+                    control={<Switch label="Format on save" checked={formatOnSave} onChange={v => setEditorPref({ formatOnSave: v })} />}
+                />
+                <SettingRow
+                    label="Line numbers"
+                    description="Control how line numbers appear in the editor gutter."
+                    htmlFor="set-line-numbers"
+                    control={
+                        <Select id="set-line-numbers" size="sm" value={lineNumbers} onChange={e => setEditorPref({ lineNumbers: e.target.value as LineNumbersMode })}>
+                            <option value="on">On</option>
+                            <option value="relative">Relative</option>
+                            <option value="off">Off</option>
+                        </Select>
+                    }
+                />
+                <SettingRow
+                    label="Render whitespace"
+                    description="Show subtle dots and arrows for spaces and tabs."
+                    htmlFor="set-render-whitespace"
+                    control={
+                        <Select id="set-render-whitespace" size="sm" value={renderWhitespace} onChange={e => setEditorPref({ renderWhitespace: e.target.value as RenderWhitespaceMode })}>
+                            <option value="selection">Selection</option>
+                            <option value="boundary">Boundary</option>
+                            <option value="all">All</option>
+                            <option value="none">None</option>
+                        </Select>
+                    }
+                />
+                <SettingRow
+                    label="Wrap long lines"
+                    description="Soft-wrap lines that exceed the editor viewport width."
+                    control={<Switch label="Wrap long lines" checked={wordWrap} onChange={v => setEditorPref({ wordWrap: v })} />}
+                />
+                <SettingRow
+                    label="Show minimap"
+                    description="Render a condensed overview of the file along the right edge."
+                    control={<Switch label="Show minimap" checked={minimap} onChange={v => setEditorPref({ minimap: v })} />}
+                />
                 <SettingRow
                     label="Sticky scroll"
                     description="Keeps the enclosing function or class visible at the top while you scroll."
-                    control={<Switch label="Sticky scroll" checked={layout.stickyScroll} onChange={v => layout.setEditorPref({ stickyScroll: v })} />}
+                    control={<Switch label="Sticky scroll" checked={stickyScroll} onChange={v => setEditorPref({ stickyScroll: v })} />}
                 />
             </SettingsSection>
 
@@ -87,7 +294,7 @@ export function GeneralSettings() {
                 <SettingRow
                     label="Suggest code as you type"
                     description={completionProvider
-                        ? `Shows grey inline suggestions. The code above your cursor is sent to ${completionProvider === 'local-server' ? 'the local server selected for the agent' : providerInfo(completionProvider).label} each time you pause.`
+                        ? `Shows inline suggestions. Context around your cursor is sent to ${completionProvider === 'local-server' ? 'the local server selected for the agent' : providerInfo(completionProvider).label} when you pause.`
                         : 'Choose a cloud model or local server in the agent menu first. Built-in local model completions are not available.'}
                     control={
                         <Switch

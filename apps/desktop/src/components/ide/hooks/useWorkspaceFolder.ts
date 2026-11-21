@@ -27,21 +27,31 @@ export function useWorkspaceFolder(spaceId: string) {
 
     useEffect(() => {
         setReadyFolder(null)
-        if (!savedFolder) return
+        if (!savedFolder) {
+            void Promise.resolve(window.electronAPI?.fs?.setWorkspace?.(null)).catch((error: unknown) => logger.ide.warn('Failed to close workspace folder', { error }))
+            return
+        }
         let cancelled = false
         Promise.resolve(window.electronAPI?.fs?.setWorkspace?.(savedFolder))
             .then(result => {
                 if (cancelled) return
                 const failed = result && result.success === false && window.electronAPI?.platform !== 'browser'
-                if (failed) addNotification(`Couldn't open ${savedFolder}: ${result.error ?? 'the folder is unavailable'}`, 'error')
+                if (failed) {
+                    addNotification(`Couldn't open ${savedFolder}: ${result.error ?? 'the folder is unavailable'}`, 'error')
+                    setFolder(spaceId, null)
+                    return
+                }
                 setReadyFolder(savedFolder)
             })
             .catch(error => {
                 logger.ide.error('Failed to set workspace folder', error)
-                if (!cancelled) setReadyFolder(savedFolder)
+                if (!cancelled) {
+                    addNotification(`Couldn't open ${savedFolder}: ${error instanceof Error ? error.message : String(error)}`, 'error')
+                    setFolder(spaceId, null)
+                }
             })
         return () => { cancelled = true }
-    }, [savedFolder, addNotification])
+    }, [savedFolder, spaceId, setFolder, addNotification])
 
     // AIME indexes the workspace in the background so the agent has codebase
     // context; failures never block opening the folder.

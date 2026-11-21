@@ -4,7 +4,29 @@
 import path from 'node:path'
 import fs from 'node:fs'
 
-const isInside = (base: string, target: string) => target === base || target.startsWith(base + path.sep)
+const isInside = (base: string, target: string) => {
+    const relative = path.relative(base, target)
+    return relative === '' || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative))
+}
+
+/** Resolve the nearest existing ancestor before appending missing segments. */
+function realLocation(target: string): string {
+    let ancestor = target
+    const missing: string[] = []
+    for (;;) {
+        try { fs.lstatSync(ancestor); break }
+        catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+            const parent = path.dirname(ancestor)
+            if (parent === ancestor) throw error
+            missing.unshift(path.basename(ancestor))
+            ancestor = parent
+        }
+    }
+    // lstat also detects a dangling symlink: realpath must fail rather than
+    // accepting it as a missing ordinary directory.
+    return path.resolve(fs.realpathSync(ancestor), ...missing)
+}
 
 /**
  * Resolves `target` against `base` and throws unless the result stays inside
@@ -20,19 +42,15 @@ export function validatePath(base: string, target: string): string {
         throw new Error('Path traversal detected')
     }
 
-    if (fs.existsSync(resolvedTarget)) {
-        let realTarget: string
-        let realBase: string
-        try {
-            realTarget = fs.realpathSync(resolvedTarget)
-            realBase = fs.realpathSync(resolvedBase)
-        } catch (e) {
-            if ((e as NodeJS.ErrnoException).code === 'ENOENT') return resolvedTarget
-            throw new Error('Path validation failed: ' + (e as Error).message)
-        }
-        if (!isInside(realBase, realTarget)) {
-            throw new Error('Path traversal via symlink detected')
-        }
+    let realTarget: string, realBase: string
+    try {
+        realTarget = realLocation(resolvedTarget)
+        realBase = realLocation(resolvedBase)
+    } catch (error) {
+        throw new Error('Path validation failed: ' + (error as Error).message)
+    }
+    if (!isInside(realBase, realTarget)) {
+        throw new Error('Path traversal via symlink detected')
     }
 
     return resolvedTarget

@@ -8,41 +8,49 @@
 .ide {
     flex: 1;
     min-height: 0;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     background: var(--surface);
+    overflow: hidden;
 }
 
 .ide__main {
     flex: 1;
     min-height: 0;
+    min-width: 0;
     display: flex;
+    overflow: hidden;
 }
 
 .ide__side,
 .ide__right {
     /* Saved widths give way in narrow windows so the editor keeps its room. */
     flex-shrink: 1;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     background: var(--surface);
+    overflow: hidden;
 }
 
+/* Reconciled with LAYOUT_LIMITS in layoutStore.ts */
 .ide__side {
-    min-width: 160px;
+    min-width: 180px;
 }
 
 .ide__right {
-    min-width: 260px;
+    min-width: 280px;
 }
 
 .ide__center {
     flex: 1 1 0;
-    min-width: 320px;
+    min-width: 280px;
     min-height: 0;
     display: flex;
     flex-direction: column;
     background: var(--bg);
+    overflow: hidden;
 }
 
 .ide__switching {
@@ -104,6 +112,7 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
+    overflow: hidden;
 }
 
 .side-head {
@@ -144,6 +153,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: var(--sp-3);
     height: var(--statusbar-h);
     padding: 0 var(--sp-3);
     flex-shrink: 0;
@@ -159,23 +169,63 @@
     align-items: center;
     gap: var(--sp-1);
     min-width: 0;
+    overflow: hidden;
+}
+
+.statusbar__group--left {
+    flex: 1 1 auto;
+}
+
+.statusbar__group--right {
+    flex: 0 1 auto;
+    justify-content: flex-end;
 }
 
 .statusbar__item {
     display: inline-flex;
     align-items: center;
-    gap: var(--sp-3);
+    gap: var(--sp-2);
     height: 20px;
     padding: 0 var(--sp-3);
     border-radius: var(--r-1);
     color: var(--text-2);
     white-space: nowrap;
+    flex-shrink: 0;
     font-size: var(--fs-xs);
 }
 
-button.statusbar__item:hover {
+button.statusbar__item:hover:not(:disabled) {
     background: var(--hover);
     color: var(--text);
+}
+
+button.statusbar__item:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+.statusbar__branch {
+    min-width: 0;
+    max-width: 200px;
+    flex-shrink: 1;
+    overflow: hidden;
+}
+
+.statusbar__agent {
+    min-width: 0;
+    max-width: 210px;
+    flex-shrink: 1;
+    overflow: hidden;
+}
+
+.statusbar__diag {
+    gap: var(--sp-3);
+}
+
+.statusbar__diag-count {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
 }
 
 .statusbar__static {
@@ -196,8 +246,13 @@ button.statusbar__item:hover {
     color: var(--warning);
 }
 
+.statusbar__item.is-danger {
+    color: var(--danger);
+}
+
 .statusbar__agent svg {
     color: var(--text-3);
+    flex-shrink: 0;
 }
 
 .statusbar__agent.is-busy {
@@ -211,4 +266,16 @@ button.statusbar__item:hover {
 
 .statusbar__agent.is-waiting {
     background: var(--agent-soft);
+}
+
+@media (max-width: 1080px) {
+    .statusbar__hide-md {
+        display: none;
+    }
+}
+
+@media (max-width: 880px) {
+    .statusbar__hide-sm {
+        display: none;
+    }
 }

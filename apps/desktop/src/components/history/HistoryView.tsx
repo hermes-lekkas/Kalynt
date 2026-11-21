@@ -1,16 +1,20 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
  *
- * The workspace's history as recorded by Git, with a way to back the
- * folder up. Commits are made from Source control in the code view.
+ * The workspace's history as recorded by Git, with expandable commit file lists
+ * and Monaco diff inspection. Commits are made from Source control in the code view.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Archive, Copy, GitBranch, GitCommitHorizontal, RefreshCw } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Archive, Copy, FileDiff, GitBranch, GitCommitHorizontal, RefreshCw } from 'lucide-react'
 import type { Space } from '../../stores/appStore'
 import { useWorkspaceFolderStore, folderName } from '../../stores/workspaceFolderStore'
 import { useLayoutStore } from '../../stores/layoutStore'
 import { useNotificationStore } from '../../stores/notificationStore'
 import { Avatar, Button, EmptyState, IconButton, SearchInput, Select, Spinner } from '../ui'
+import { DiffDialog, type CommitDiffTarget } from '../ide/git/DiffDialog'
+import type { CommitFile } from '../ide/git/useGit'
+import { FileGlyph } from '../ide/explorer/fileIcons'
+import { baseName, dirName } from '../ide/languages'
 import '../workspace/workspace.css'
 import './history.css'
 
@@ -26,6 +30,14 @@ interface Commit {
 const day = (iso: string) => new Date(iso).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
 const time = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
+function statusTone(status: string): string {
+    const code = status.charAt(0).toUpperCase()
+    if (code === 'A') return 'added'
+    if (code === 'D') return 'deleted'
+    if (code === 'R' || code === 'C') return 'renamed'
+    return 'modified'
+}
+
 export default function HistoryView({ space }: { space: Space }) {
     const folder = useWorkspaceFolderStore(s => s.records[space.id]?.folder ?? null)
     const showSidePanel = useLayoutStore(s => s.showSidePanel)
@@ -38,12 +50,17 @@ export default function HistoryView({ space }: { space: Space }) {
     const [author, setAuthor] = useState('')
     const [open, setOpen] = useState<string | null>(null)
     const [backingUp, setBackingUp] = useState(false)
+    const [filesByHash, setFilesByHash] = useState<Record<string, { loading: boolean; files?: CommitFile[]; error?: string }>>({})
+    const [diffTarget, setDiffTarget] = useState<CommitDiffTarget | null>(null)
+    const generation = useRef(0)
 
     const load = useCallback(async () => {
         if (!folder) return
+        const gen = ++generation.current
         setError(null)
         const git = window.electronAPI?.git
         const [log, status] = await Promise.all([git?.log({ repoPath: folder, maxCount: 300 }), git?.status(folder)])
+        if (gen !== generation.current) return
         if (!log?.success) {
             setCommits([])
             setError(log?.error?.includes('Not a git repository') ? 'not-a-repo' : log?.error || 'The history could not be read.')
@@ -55,7 +72,45 @@ export default function HistoryView({ space }: { space: Space }) {
         })))
     }, [folder])
 
-    useEffect(() => { load() }, [load])
+    useEffect(() => {
+        generation.current++
+        setCommits(null)
+        setOpen(null)
+        setFilesByHash({})
+        if (folder) void load()
+        return () => { generation.current++ }
+    }, [folder, load])
+
+    const toggleCommit = useCallback(async (hash: string) => {
+        if (open === hash) {
+            setOpen(null)
+            return
+        }
+        setOpen(hash)
+        if (!folder || filesByHash[hash]?.files) return
+        setFilesByHash(prev => ({ ...prev, [hash]: { loading: true } }))
+        const res = await window.electronAPI?.git?.commitFiles?.({ repoPath: folder, hash })
+        setFilesByHash(prev => ({
+            ...prev,
+            [hash]: res?.success
+                ? { loading: false, files: (res.files ?? []) as CommitFile[] }
+                : { loading: false, error: res?.error || 'Could not load changed files.' }
+        }))
+    }, [open, folder, filesByHash])
+
+    const openCommitFileDiff = useCallback((commit: Commit, file: CommitFile) => {
+        if (!folder) return
+        setDiffTarget({
+            hash: commit.hash,
+            shortHash: commit.hash.slice(0, 7),
+            file: file.path,
+            message: commit.message,
+            loadDiff: async () => {
+                const res = await window.electronAPI?.git?.commitDiff?.({ repoPath: folder, hash: commit.hash, file: file.path })
+                return res?.success ? { diff: res.diff as string } : { error: res?.error || 'The commit diff could not be loaded.' }
+            }
+        })
+    }, [folder])
 
     const authors = useMemo(() => Array.from(new Set((commits ?? []).map(c => c.author))).sort(), [commits])
     const groups = useMemo(() => {
@@ -64,7 +119,15 @@ export default function HistoryView({ space }: { space: Space }) {
             (!author || c.author === author) &&
             (!q || c.message.toLowerCase().includes(q) || c.hash.startsWith(q) || c.author.toLowerCase().includes(q)))
         const map = new Map<string, Commit[]>()
-        list.forEach(c => map.set(day(c.date), [...(map.get(day(c.date)) ?? []), c]))
+        for (const c of list) {
+            const label = day(c.date)
+            let bucket = map.get(label)
+            if (!bucket) {
+                bucket = []
+                map.set(label, bucket)
+            }
+            bucket.push(c)
+        }
         return Array.from(map.entries())
     }, [commits, query, author])
 
@@ -125,29 +188,77 @@ export default function HistoryView({ space }: { space: Space }) {
                     <section key={date} className="history__day" aria-label={date}>
                         <h2 className="history__date">{date}</h2>
                         <ol className="history__list">
-                            {list.map(c => (
-                                <li key={c.hash} className={`commit ${open === c.hash ? 'is-open' : ''}`}>
-                                    <button type="button" className="commit__main" onClick={() => setOpen(open === c.hash ? null : c.hash)} aria-expanded={open === c.hash}>
-                                        <Avatar name={c.author} size={22} />
-                                        <span className="commit__message">{c.message}</span>
-                                        <span className="commit__author">{c.author}</span>
-                                        <span className="commit__time">{time(c.date)}</span>
-                                        <span className="commit__hash mono">{c.hash.slice(0, 7)}</span>
-                                    </button>
-                                    {open === c.hash && (
-                                        <div className="commit__detail selectable">
-                                            {c.body && <p className="commit__body">{c.body}</p>}
-                                            <p className="commit__full mono">{c.hash}</p>
-                                            <p className="commit__when">{new Date(c.date).toLocaleString()}{c.email ? `, ${c.email}` : ''}</p>
-                                            <Button size="sm" variant="ghost" icon={<Copy size={13} />} onClick={() => { navigator.clipboard.writeText(c.hash); addNotification('Commit hash copied', 'info') }}>Copy hash</Button>
-                                        </div>
-                                    )}
-                                </li>
-                            ))}
+                            {list.map(c => {
+                                const isOpen = open === c.hash
+                                const entry = filesByHash[c.hash]
+                                return (
+                                    <li key={c.hash} className={`commit ${isOpen ? 'is-open' : ''}`}>
+                                        <button type="button" className="commit__main" onClick={() => void toggleCommit(c.hash)} aria-expanded={isOpen}>
+                                            <Avatar name={c.author} size={22} />
+                                            <span className="commit__message">{c.message}</span>
+                                            <span className="commit__author">{c.author}</span>
+                                            <span className="commit__time">{time(c.date)}</span>
+                                            <span className="commit__hash mono">{c.hash.slice(0, 7)}</span>
+                                        </button>
+                                        {isOpen && (
+                                            <div className="commit__detail selectable">
+                                                {c.body && <p className="commit__body">{c.body}</p>}
+                                                <div className="commit__meta-bar">
+                                                    <div>
+                                                        <p className="commit__full mono">{c.hash}</p>
+                                                        <p className="commit__when">{new Date(c.date).toLocaleString()}{c.email ? `, ${c.email}` : ''}</p>
+                                                    </div>
+                                                    <Button size="sm" variant="ghost" icon={<Copy size={13} />} onClick={() => { navigator.clipboard.writeText(c.hash); addNotification('Commit hash copied', 'info') }}>Copy hash</Button>
+                                                </div>
+
+                                                <div className="commit__files">
+                                                    {entry?.loading ? (
+                                                        <Spinner label="Loading changed files" />
+                                                    ) : entry?.error ? (
+                                                        <p className="commit__files-note">{entry.error}</p>
+                                                    ) : entry?.files && entry.files.length > 0 ? (
+                                                        <>
+                                                            <p className="commit__files-heading">Changed files ({entry.files.length})</p>
+                                                            <ul className="commit__file-list">
+                                                                {entry.files.map(f => (
+                                                                    <li key={`${c.hash}-${f.path}`}>
+                                                                        <button
+                                                                            type="button"
+                                                                            className="commit__file-row"
+                                                                            onClick={() => openCommitFileDiff(c, f)}
+                                                                            title={`View diff for ${f.path}`}
+                                                                        >
+                                                                            <FileGlyph name={baseName(f.path)} size={14} className="commit__file-icon" />
+                                                                            <span className="commit__file-name">{baseName(f.path)}</span>
+                                                                            <span className="commit__file-dir truncate">{dirName(f.path)}</span>
+                                                                            <span className="commit__file-action"><FileDiff size={13} aria-hidden /> Diff</span>
+                                                                            <span className={`commit__file-status commit__file-status--${statusTone(f.status)}`}>{f.status.charAt(0)}</span>
+                                                                        </button>
+                                                                    </li>
+                                                                ))}
+                                                            </ul>
+                                                        </>
+                                                    ) : (
+                                                        <p className="commit__files-note">No changed files recorded.</p>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </li>
+                                )
+                            })}
                         </ol>
                     </section>
                 ))}
             </div>
+
+            {diffTarget && (
+                <DiffDialog
+                    commitDiff={diffTarget}
+                    folder={folder}
+                    onClose={() => setDiffTarget(null)}
+                />
+            )}
         </div>
     )
 }

@@ -17,7 +17,7 @@ import { TAG_CLICK_EVENT } from './chat/Markdown'
 import { AGENT_EVENTS } from '../ide/hooks/useIdeCommands'
 import { AGENT_MENTION_EVENT } from '../ide/explorer/FileExplorer'
 import { useModelChoice } from './chat/useModelChoice'
-import { sessionLabel, useAgentChat } from './chat/useAgentChat'
+import { useAgentChat } from './chat/useAgentChat'
 import { AgentChat } from './chat/AgentChat'
 import { ChatHistory } from './chat/ChatHistory'
 import { WorkspaceReview } from './review/WorkspaceReview'
@@ -32,6 +32,8 @@ interface AgentPanelProps {
     canUseAgent: boolean
     visible: boolean
 }
+
+type PanelTab = 'agent' | 'review' | 'team'
 
 export function AgentPanel({ space, folder, files, canUseAgent, visible }: AgentPanelProps) {
     const rightTab = useLayoutStore(s => s.rightTab)
@@ -61,59 +63,56 @@ export function AgentPanel({ space, folder, files, canUseAgent, visible }: Agent
         }
     }, [])
 
+    const activeTab: PanelTab = rightTab === 'team' ? 'team' : agentView === 'review' ? 'review' : 'agent'
+    const selectTab = (tab: PanelTab) => {
+        if (tab === 'team') {
+            setRightTab('team')
+        } else {
+            setRightTab('agent')
+            setAgentView(tab === 'review' ? 'review' : 'chat')
+        }
+    }
     const working = activity !== 'idle'
 
     return (
         <div className="agent-panel">
             <header className="agent-panel__head">
                 <Tabs
-                    ariaLabel="Agent and team"
-                    value={rightTab}
-                    onChange={setRightTab}
+                    ariaLabel="Agent, review and team"
+                    value={activeTab}
+                    onChange={selectTab}
                     items={[
                         { id: 'agent', label: 'Agent' },
+                        { id: 'review', label: 'Review' },
                         { id: 'team', label: 'Team', badge: team.unread > 0 ? team.unread : undefined }
                     ]}
                 />
                 <div className="agent-panel__actions">
-                    {rightTab === 'agent' ? (
+                    {activeTab === 'agent' && (
                         <>
                             <ChatHistory chat={chat} />
                             <IconButton size="sm" label="New conversation" icon={<MessageSquarePlus size={14} />} onClick={chat.newChat} disabled={chat.running} />
                         </>
-                    ) : (
+                    )}
+                    {activeTab === 'team' && (
                         <IconButton size="sm" label="Members and invites" icon={<Users size={14} />} onClick={() => openCollaboration('members')} />
                     )}
                 </div>
                 <span className={`agent-wire ${working ? 'is-live' : ''}`} aria-hidden />
             </header>
 
-            {rightTab === 'agent' && (
-                <div className="agent-panel__sub">
-                    <Tabs
-                        variant="segmented"
-                        size="sm"
-                        ariaLabel="Agent mode"
-                        value={agentView}
-                        onChange={setAgentView}
-                        items={[{ id: 'chat', label: 'Chat' }, { id: 'review', label: 'Review code' }]}
-                    />
-                    {agentView === 'chat' && chat.session && <span className="agent-panel__title truncate" title={sessionLabel(chat.session.title)}>{sessionLabel(chat.session.title)}</span>}
-                </div>
-            )}
-
             <div className="agent-panel__body">
-                <div className="agent-panel__view" hidden={rightTab !== 'agent' || agentView !== 'chat'}>
+                <div className="agent-panel__view" hidden={activeTab !== 'agent'}>
                     <RegionBoundary name="Agent chat">
-                        <AgentChat chat={chat} model={model} files={files} folder={folder} canUseAgent={canUseAgent} />
+                        <AgentChat spaceId={space.id} chat={chat} model={model} files={files} folder={folder} canUseAgent={canUseAgent} />
                     </RegionBoundary>
                 </div>
-                <div className="agent-panel__view" hidden={rightTab !== 'agent' || agentView !== 'review'}>
+                <div className="agent-panel__view" hidden={activeTab !== 'review'}>
                     <RegionBoundary name="Code review">
                         <WorkspaceReview folder={folder} model={model} />
                     </RegionBoundary>
                 </div>
-                <div className="agent-panel__view" hidden={rightTab !== 'team'}>
+                <div className="agent-panel__view" hidden={activeTab !== 'team'}>
                     <RegionBoundary name="Team chat">
                         <TeamChat team={team} files={files} folder={folder} />
                     </RegionBoundary>

@@ -24,6 +24,10 @@ const DISPLAY_NAME: Record<string, string> = {
     graphql: 'GraphQL', elixir: 'Elixir', clojure: 'Clojure', julia: 'Julia', plaintext: 'Plain text'
 }
 
+export const LANGUAGE_OPTIONS: ReadonlyArray<{ id: string; label: string }> = Object.entries(DISPLAY_NAME)
+    .map(([id, label]) => ({ id, label }))
+    .sort((a, b) => a.label.localeCompare(b.label))
+
 /** Languages the code runner backend can execute. */
 export const RUNNABLE_LANGUAGES = new Set([
     'javascript', 'typescript', 'python', 'rust', 'go', 'java', 'csharp', 'fsharp', 'ruby', 'php',
@@ -44,21 +48,31 @@ export function languageLabel(language: string | null | undefined): string {
 }
 
 export function baseName(path: string): string {
-    return path.split(/[/\\]/).pop() || path
+    const trimmed = path.replace(/[/\\]+$/, '')
+    if (!trimmed) return path.startsWith('/') ? '/' : path
+    return trimmed.split(/[/\\]/).pop() || trimmed
 }
 
 export function dirName(path: string): string {
-    const parts = path.split(/[/\\]/)
-    parts.pop()
-    return parts.join('/')
+    const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '')
+    if (!normalized) return path.startsWith('/') || path.startsWith('\\') ? '/' : ''
+    const idx = normalized.lastIndexOf('/')
+    if (idx === -1) return ''
+    if (idx === 0) return '/'
+    const dir = normalized.slice(0, idx)
+    // Preserve Windows drive root (e.g. "C:/foo" -> "C:/").
+    if (/^[A-Za-z]:$/.test(dir)) return `${dir}/`
+    return dir
 }
 
 /** Path relative to the workspace root, using forward slashes. */
 export function relativePath(path: string, root: string | null): string {
-    const normalized = path.replace(/\\/g, '/')
+    const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '') || (path.startsWith('/') ? '/' : '')
     if (!root) return normalized
-    const normalizedRoot = root.replace(/\\/g, '/').replace(/\/+$/, '')
-    return normalized.startsWith(normalizedRoot + '/') ? normalized.slice(normalizedRoot.length + 1) : normalized
+    const normalizedRoot = root.replace(/\\/g, '/').replace(/\/+$/, '') || (root.startsWith('/') ? '/' : '')
+    if (normalized === normalizedRoot) return ''
+    const prefix = normalizedRoot === '/' ? '/' : `${normalizedRoot}/`
+    return normalized.startsWith(prefix) ? normalized.slice(prefix.length) : normalized
 }
 
 export function samePath(a: string | null | undefined, b: string | null | undefined): boolean {

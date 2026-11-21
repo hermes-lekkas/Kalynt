@@ -1,19 +1,46 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
  */
-import { Files, GitBranch, PanelBottom, PanelRight, Search } from 'lucide-react'
+import { useEffect } from 'react'
+import { Bug, Files, GitBranch, ListTree, PanelBottom, PanelRight, Search } from 'lucide-react'
 import { useLayoutStore, type SidePanel } from '../../stores/layoutStore'
 import { formatShortcut } from '../../stores/commandStore'
 import { IconButton } from '../ui'
+import { useActiveRunnerStore } from './hooks/useRunner'
 
 const PANELS: Array<{ id: SidePanel; label: string; shortcut: string; Icon: typeof Files }> = [
     { id: 'files', label: 'Explorer', shortcut: 'Ctrl+Shift+E', Icon: Files },
     { id: 'search', label: 'Search', shortcut: 'Ctrl+Shift+F', Icon: Search },
-    { id: 'git', label: 'Source control', shortcut: 'Ctrl+Shift+G', Icon: GitBranch }
+    { id: 'git', label: 'Source control', shortcut: 'Ctrl+Shift+G', Icon: GitBranch },
+    { id: 'debug', label: 'Run & Debug', shortcut: 'Ctrl+Shift+D', Icon: Bug },
+    { id: 'outline', label: 'Outline', shortcut: 'Ctrl+Shift+O', Icon: ListTree }
 ]
 
-export function ActivityBar({ gitChanges }: { gitChanges: number }) {
-    const { sidebarOpen, sidePanel, toggleSidePanel, bottomOpen, setBottomOpen, rightOpen, setRightOpen } = useLayoutStore()
+export interface ActivityBarProps {
+    gitChanges: number
+    debugActive?: boolean
+}
+
+export function ActivityBar({ gitChanges, debugActive }: ActivityBarProps) {
+    const { sidebarOpen, sidePanel, toggleSidePanel, showSidePanel, bottomOpen, setBottomOpen, rightOpen, setRightOpen } = useLayoutStore()
+    const runner = useActiveRunnerStore(s => s.runner)
+
+    const isDebugging = debugActive ?? runner?.isDebugging ?? false
+    let breakpointCount = 0
+    if (runner) {
+        runner.breakpoints.forEach(lines => { breakpointCount += lines.length })
+    }
+
+    useEffect(() => {
+        const onOpenOutline = () => showSidePanel('outline')
+        const onOpenDebug = () => showSidePanel('debug')
+        window.addEventListener('kalynt-open-outline', onOpenOutline)
+        window.addEventListener('kalynt-open-debug', onOpenDebug)
+        return () => {
+            window.removeEventListener('kalynt-open-outline', onOpenOutline)
+            window.removeEventListener('kalynt-open-debug', onOpenDebug)
+        }
+    }, [showSidePanel])
 
     return (
         <nav className="activity-bar" aria-label="Side bar views">
@@ -26,7 +53,8 @@ export function ActivityBar({ gitChanges }: { gitChanges: number }) {
                         shortcut={formatShortcut(shortcut)}
                         icon={<Icon size={18} strokeWidth={1.6} />}
                         active={sidebarOpen && sidePanel === id}
-                        badge={id === 'git' ? gitChanges : undefined}
+                        tone={id === 'debug' && isDebugging ? 'danger' : 'default'}
+                        badge={id === 'git' ? gitChanges : id === 'debug' && breakpointCount > 0 ? breakpointCount : undefined}
                         onClick={() => toggleSidePanel(id)}
                     />
                 ))}

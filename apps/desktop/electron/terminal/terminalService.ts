@@ -3,13 +3,14 @@
  */
 // main-process/terminal.ts
 import * as pty from 'node-pty'
-import { BrowserWindow } from 'electron'
+import type { BrowserWindow } from 'electron'
 import { EventEmitter } from 'node:events'
-import { ShellIntegrationService } from './shellIntegration'
+import { ShellIntegrationService, type CommandRecord, type ShellIntegrationData } from './shellIntegration'
 import { LanguageRuntimeGateway } from './languageGateway'
 import { TaskRunnerService } from './taskRunner'
-import { TerminalSessionManager } from './terminalManager'
+import { TerminalSessionManager, isValidSessionId } from './terminalManager'
 import { resolveSpawnTarget, getDefaultShell } from './terminalEnv'
+import { sendToWindow } from '../utils/window'
 
 // Enhanced terminal interface
 export interface KalyntTerminal extends pty.IPty {
@@ -37,7 +38,7 @@ export class TerminalService extends EventEmitter {
     public readonly sessionManager: TerminalSessionManager
     private readonly terminalHistory = new Map<string, string[]>()
     private readonly maxHistorySize = 1000
-    // HIGH-002 FIX: Track cleanup timeouts to prevent race conditions
+    // Track cleanup timeouts to prevent race conditions
     private readonly cleanupTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
     constructor(
@@ -49,6 +50,27 @@ export class TerminalService extends EventEmitter {
         this.languageGateway = new LanguageRuntimeGateway()
         this.taskRunner = new TaskRunnerService()
         this.sessionManager = new TerminalSessionManager()
+
+        // Keep session records synchronized with shell integration
+        this.shellIntegration.on('command_recorded', (command: CommandRecord) => {
+            if (command.command) {
+                this.sessionManager.addToCommandHistory(command.terminalId, command.command, command.exitCode)
+            }
+        })
+
+        this.shellIntegration.on('integration_data', (event: ShellIntegrationData) => {
+            if (event.type === 'cwd_change' && event.data?.cwd) {
+                const terminal = this.terminals.get(event.terminalId)
+                if (terminal) {
+                    terminal.cwd = event.data.cwd
+                }
+                this.sessionManager.updateSession(event.terminalId, { cwd: event.data.cwd })
+            }
+        })
+    }
+
+    private send(channel: string, payload: unknown): void {
+        sendToWindow(this.getMainWindow(), channel, payload)
     }
 
     async spawnTerminal(options: {
@@ -63,8 +85,6 @@ export class TerminalService extends EventEmitter {
         metadata?: any
     }): Promise<{ success: boolean; pid?: number; error?: string }> {
         try {
-            const mainWindow = this.getMainWindow()
-
             // A running terminal with this id is reattached; a stopped one is replaced.
             const existing = this.terminals.get(options.id)
             if (existing && existing.status === 'stopped') {
@@ -72,9 +92,10 @@ export class TerminalService extends EventEmitter {
                 this.cleanupTimers.delete(options.id)
                 this.terminals.delete(options.id)
                 this.terminalHistory.delete(options.id)
+                this.shellIntegration.detachFromTerminal(options.id)
             } else if (existing) {
                 const terminal = existing
-                mainWindow?.webContents.send('terminal:restored', {
+                this.send('terminal:restored', {
                     id: options.id,
                     pid: terminal.pid,
                     title: terminal.title
@@ -91,24 +112,35 @@ export class TerminalService extends EventEmitter {
                 id: options.id
             })
 
-            // Spawn PTY process
-            const ptyProcess = pty.spawn(shell, [], {
-                name: 'xterm-256color',
-                cols: options.cols || 80,
-                rows: options.rows || 24,
-                cwd: cwd,
-                env: env,
-                encoding: 'utf8',
-                handleFlowControl: true,
-                useConpty: process.platform === 'win32'
-            }) as KalyntTerminal
+            const cols = options.cols || 80
+            const rows = options.rows || 24
+
+            // Prepare shell integration args/env before spawning (no post-spawn PTY write injection)
+            const integrationSpawn = this.shellIntegration.prepareSpawn(options.id, shell, env)
+
+            let ptyProcess: KalyntTerminal
+            try {
+                ptyProcess = pty.spawn(shell, integrationSpawn.args, {
+                    name: 'xterm-256color',
+                    cols,
+                    rows,
+                    cwd,
+                    env: integrationSpawn.env,
+                    encoding: 'utf8',
+                    handleFlowControl: true,
+                    useConpty: process.platform === 'win32'
+                }) as KalyntTerminal
+            } catch (spawnError) {
+                this.shellIntegration.detachFromTerminal(options.id)
+                throw spawnError
+            }
 
             // Enhance with metadata
             ptyProcess.id = options.id
             ptyProcess.title = options.title || `Terminal ${options.id}`
             ptyProcess.shell = shell
             ptyProcess.cwd = cwd
-            ptyProcess.env = env
+            ptyProcess.env = integrationSpawn.env
             ptyProcess.status = 'running'
             ptyProcess.processType = options.processType || 'shell'
             ptyProcess.metadata = options.metadata || {}
@@ -117,6 +149,34 @@ export class TerminalService extends EventEmitter {
             this.terminals.set(options.id, ptyProcess)
             this.terminalHistory.set(options.id, [])
 
+            // Register/update session in sessionManager so saveTerminalState works
+            if (isValidSessionId(options.id)) {
+                if (this.sessionManager.getSession(options.id)) {
+                    this.sessionManager.updateSession(options.id, {
+                        title: ptyProcess.title,
+                        shell,
+                        cwd,
+                        cols,
+                        rows,
+                        status: 'running',
+                        processType: ptyProcess.processType,
+                        metadata: ptyProcess.metadata
+                    })
+                } else {
+                    this.sessionManager.createSession({
+                        id: options.id,
+                        title: ptyProcess.title,
+                        shell,
+                        cwd,
+                        env,
+                        cols,
+                        rows,
+                        processType: ptyProcess.processType,
+                        metadata: ptyProcess.metadata
+                    })
+                }
+            }
+
             // Setup shell integration
             this.shellIntegration.attachToTerminal(options.id, ptyProcess, shell)
 
@@ -124,19 +184,19 @@ export class TerminalService extends EventEmitter {
             this.setupTerminalEvents(options.id, ptyProcess)
 
             // Notify renderer
-            mainWindow?.webContents.send('terminal:spawned', {
+            this.send('terminal:spawned', {
                 id: options.id,
                 pid: ptyProcess.pid,
                 title: ptyProcess.title,
-                cwd: cwd,
-                shell: shell
+                cwd,
+                shell
             })
 
             console.log(`[Terminal] Spawned ${shell} with PID ${ptyProcess.pid} in ${cwd}`)
             return { success: true, pid: ptyProcess.pid }
         } catch (error) {
             console.error('[Terminal] Spawn error:', error)
-            return { success: false, error: String(error) }
+            return { success: false, error: error instanceof Error ? error.message : String(error) }
         }
     }
 
@@ -151,8 +211,6 @@ export class TerminalService extends EventEmitter {
     }
 
     private handleTerminalData(id: string, data: string) {
-        const mainWindow = this.getMainWindow()
-
         // Store in history
         const history = this.terminalHistory.get(id) || []
         history.push(data)
@@ -162,7 +220,7 @@ export class TerminalService extends EventEmitter {
         this.terminalHistory.set(id, history)
 
         // Send to renderer
-        mainWindow?.webContents.send('terminal:data', {
+        this.send('terminal:data', {
             id,
             data,
             type: 'output'
@@ -176,7 +234,7 @@ export class TerminalService extends EventEmitter {
         const terminal = this.terminals.get(id)
         if (!terminal) return
 
-        // HIGH-002 FIX: Clear any existing cleanup timer for this terminal
+        // Clear any existing cleanup timer for this terminal
         const existingTimer = this.cleanupTimers.get(id)
         if (existingTimer) {
             clearTimeout(existingTimer)
@@ -186,25 +244,27 @@ export class TerminalService extends EventEmitter {
         terminal.status = 'stopped'
         terminal.lastExitCode = exitCode
 
-        const mainWindow = this.getMainWindow()
-        mainWindow?.webContents.send('terminal:exit', {
+        // Detach shell integration immediately so closed PTYs do not leak
+        this.shellIntegration.detachFromTerminal(id)
+        this.sessionManager.stopSession(id)
+
+        this.send('terminal:exit', {
             id,
             exitCode,
             signal,
             title: terminal.title
         })
 
-        // HIGH-002 FIX: Track cleanup timer and check terminal existence before deletion
+        // Track cleanup timer and check terminal existence before deletion
         const cleanupTimer = setTimeout(() => {
-            // Only delete if terminal is still in stopped state (not restarted)
             const currentTerminal = this.terminals.get(id)
             if (currentTerminal?.status === 'stopped') {
                 this.terminals.delete(id)
                 this.terminalHistory.delete(id)
             }
             this.cleanupTimers.delete(id)
-        }, 30000) // Keep metadata for 30 seconds
-        
+        }, 30000)
+
         this.cleanupTimers.set(id, cleanupTimer)
     }
 
@@ -216,8 +276,7 @@ export class TerminalService extends EventEmitter {
         env?: { [key: string]: string }
         languageId?: string
         taskType?: 'build' | 'test' | 'run' | 'debug'
-    }): Promise<{ success: boolean; pid?: number; error?: string }> {
-        // Create a task definition from the options
+    }): Promise<{ success: boolean; executionId?: string; error?: string }> {
         const task = {
             id: options.id,
             label: options.command,
@@ -248,6 +307,7 @@ export class TerminalService extends EventEmitter {
     }
 
     async loadLanguageServer(options: {
+        sessionId?: string
         languageId: string
         workspacePath: string
         rootUri?: string
@@ -270,7 +330,7 @@ export class TerminalService extends EventEmitter {
 
     async writeToTerminal(id: string, data: string): Promise<boolean> {
         const terminal = this.terminals.get(id)
-        if (!terminal) return false
+        if (!terminal || terminal.status !== 'running') return false
 
         terminal.write(data)
         return true
@@ -278,10 +338,11 @@ export class TerminalService extends EventEmitter {
 
     async resizeTerminal(id: string, cols: number, rows: number): Promise<boolean> {
         const terminal = this.terminals.get(id)
-        if (!terminal) return false
+        if (!terminal || terminal.status !== 'running') return false
 
         try {
             terminal.resize(cols, rows)
+            this.sessionManager.updateSession(id, { cols, rows })
             return true
         } catch (error) {
             console.error(`[Terminal] Resize error for ${id}:`, error)
@@ -306,14 +367,12 @@ export class TerminalService extends EventEmitter {
 
     async sendSignal(id: string, signal: string): Promise<boolean> {
         const terminal = this.terminals.get(id)
-        if (!terminal) return false
+        if (!terminal || terminal.status !== 'running') return false
 
         try {
-            // On Unix systems, send signals
             if (process.platform !== 'win32') {
                 process.kill(terminal.pid, signal as any)
             } else {
-                // Windows doesn't support signals well, use kill
                 terminal.kill()
             }
             return true
@@ -353,7 +412,6 @@ export class TerminalService extends EventEmitter {
         const source = this.terminals.get(sourceId)
         if (!source) return false
 
-        // Create a new terminal with same configuration
         return (await this.spawnTerminal({
             id: newId,
             shell: source.shell,
@@ -367,9 +425,8 @@ export class TerminalService extends EventEmitter {
 
     async sendTerminalSequence(id: string, sequence: string): Promise<boolean> {
         const terminal = this.terminals.get(id)
-        if (!terminal) return false
+        if (!terminal || terminal.status !== 'running') return false
 
-        // Handle special sequences
         switch (sequence) {
             case 'break':
                 terminal.write('\x03') // Ctrl+C
@@ -393,6 +450,7 @@ export class TerminalService extends EventEmitter {
     async broadcastToTerminals(data: string, filter?: (term: KalyntTerminal) => boolean): Promise<number> {
         let count = 0
         for (const [_id, terminal] of Array.from(this.terminals)) {
+            if (terminal.status !== 'running') continue
             if (!filter || filter(terminal)) {
                 terminal.write(data)
                 count++
@@ -422,40 +480,60 @@ export class TerminalService extends EventEmitter {
             timestamp: Date.now()
         }
 
-        // Store in session manager
-        this.sessionManager.saveSession(state.id)
+        if (isValidSessionId(state.id)) {
+            if (!this.sessionManager.getSession(state.id)) {
+                this.sessionManager.createSession({
+                    id: state.id,
+                    title: state.title,
+                    shell: state.shell,
+                    cwd: state.cwd,
+                    env: state.env,
+                    processType: state.processType,
+                    metadata: state.metadata
+                })
+            } else {
+                this.sessionManager.updateSession(state.id, {
+                    title: state.title,
+                    shell: state.shell,
+                    cwd: state.cwd,
+                    status: state.status === 'running' ? 'running' : 'stopped',
+                    metadata: state.metadata
+                })
+            }
+            this.sessionManager.saveSession(state.id)
+        }
 
         return { success: true, state }
     }
 
     async restoreTerminalState(state: any): Promise<{ success: boolean; id?: string; error?: string }> {
         try {
-            // Create new terminal with saved state
+            const restoredId = state?.id || `restored-${Date.now()}`
             const result = await this.spawnTerminal({
-                id: state.id || `restored-${Date.now()}`,
-                shell: state.shell,
-                cwd: state.cwd,
-                env: state.env,
-                title: state.title,
-                processType: state.processType,
-                metadata: state.metadata
+                id: restoredId,
+                shell: state?.shell,
+                cwd: state?.cwd,
+                env: state?.env,
+                title: state?.title,
+                processType: state?.processType,
+                metadata: state?.metadata
             })
 
-            if (result.success && state.history) {
-                // Restore history
-                this.terminalHistory.set(state.id, state.history)
+            if (!result.success) {
+                return { success: false, error: result.error }
+            }
 
-                // Send history to renderer
-                const mainWindow = this.getMainWindow()
-                mainWindow?.webContents.send('terminal:history', {
-                    id: state.id,
+            if (Array.isArray(state?.history)) {
+                this.terminalHistory.set(restoredId, state.history)
+                this.send('terminal:history', {
+                    id: restoredId,
                     history: state.history
                 })
             }
 
-            return result
+            return { success: true, id: restoredId }
         } catch (error) {
-            return { success: false, error: String(error) }
+            return { success: false, error: error instanceof Error ? error.message : String(error) }
         }
     }
 
@@ -463,8 +541,13 @@ export class TerminalService extends EventEmitter {
         return getDefaultShell()
     }
 
-    // Cleanup all terminals
-    dispose() {
+    // Cleanup all terminals and owned subsystems
+    async dispose(): Promise<void> {
+        for (const timer of this.cleanupTimers.values()) {
+            clearTimeout(timer)
+        }
+        this.cleanupTimers.clear()
+
         for (const [id, terminal] of Array.from(this.terminals)) {
             try {
                 terminal.kill()
@@ -475,8 +558,10 @@ export class TerminalService extends EventEmitter {
 
         this.terminals.clear()
         this.terminalHistory.clear()
-        this.languageGateway.dispose()
+        this.shellIntegration.dispose()
+        this.sessionManager.dispose()
         this.taskRunner.dispose()
+        await this.languageGateway.dispose()
 
         this.removeAllListeners()
     }

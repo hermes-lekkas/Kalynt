@@ -7,12 +7,12 @@
  */
 import { spawn, type ChildProcess } from 'child_process'
 import type { BrowserWindow } from 'electron'
-import type { Breakpoint, DebugConfiguration, StackFrame, Variable } from '../../../src/types/debug'
+import type { Breakpoint, DebugConfiguration, Scope, StackFrame, Variable } from '../../../src/types/debug'
 import { sendToWindow } from '../../utils/window'
 import { killProcessTree } from '../code-exec/binaries'
 import { AdapterMissingError, debugEnv, launchAdapter } from './adapters'
 import { prepareNativeProgram, resolveVariables } from './configurations'
-import type { DapConnection, DapMessage } from './transport'
+import { DapConnection, connectWithRetry, type DapMessage } from './transport'
 
 export interface InitialBreakpoints {
     file: string
@@ -31,6 +31,10 @@ interface Session {
     id: string
     configuration: DebugConfiguration
     connection: DapConnection
+    /** Child DAP connections spawned via `startDebugging` (e.g. vscode-js-debug targets). */
+    children: DapConnection[]
+    /** Connection currently holding the paused/active target thread. */
+    activeConnection: DapConnection
     threadId?: number
     breakpoints: Map<string, Breakpoint[]>
     watches: WatchExpression[]
@@ -40,9 +44,24 @@ interface Session {
 
 // Launch configuration keys that only mean something to the editor.
 const EDITOR_ONLY_KEYS = new Set(['type', 'request', 'name', 'preLaunchTask', 'postDebugTask', 'internalConsoleOptions', 'presentation'])
+const NODE_ADAPTER_TYPES = new Set(['node', 'pwa-node', 'node-terminal'])
 
 const toDapBreakpoints = (breakpoints: Breakpoint[]) =>
     breakpoints.map(bp => ({ line: bp.line, column: bp.column, condition: bp.condition, hitCondition: bp.hitCondition, logMessage: bp.logMessage }))
+
+export function buildLaunchArguments(resolved: DebugConfiguration, workspacePath: string): Record<string, unknown> {
+    const launchArgs = Object.fromEntries(Object.entries(resolved).filter(([key]) => !EDITOR_ONLY_KEYS.has(key)))
+    if (NODE_ADAPTER_TYPES.has(resolved.type)) {
+        // js-debug-dap routes launch/attach handlers by `type` (e.g. 'pwa-node').
+        launchArgs.type = resolved.type === 'node' ? 'pwa-node' : resolved.type
+        if (resolved.request !== 'attach') {
+            if (!launchArgs.cwd) launchArgs.cwd = workspacePath
+            if (!launchArgs.console) launchArgs.console = 'internalConsole'
+            if (!launchArgs.skipFiles) launchArgs.skipFiles = ['<node_internals>/**']
+        }
+    }
+    return launchArgs
+}
 
 export class DebugSessionManager {
     private readonly sessions = new Map<string, Session>()
@@ -77,49 +96,74 @@ export class DebugSessionManager {
             throw error
         }
 
-        const session: Session = { id: sessionId, configuration: resolved, connection, breakpoints: new Map(), watches: [], debuggees: [] }
+        const session: Session = {
+            id: sessionId,
+            configuration: resolved,
+            connection,
+            children: [],
+            activeConnection: connection,
+            breakpoints: new Map(),
+            watches: [],
+            debuggees: []
+        }
         this.sessions.set(sessionId, session)
-        this.wire(session)
+        this.wire(session, connection, false)
 
+        let phase = 'initialize'
         try {
             // Listen first: some adapters (GDB) send 'initialized' right behind the initialize answer.
             const initialized = connection.waitForEvent('initialized', 15_000)
             initialized.catch(() => undefined)
+            const adapterID = NODE_ADAPTER_TYPES.has(resolved.type) && resolved.type === 'node' ? 'pwa-node' : resolved.type
             const init = await connection.request('initialize', {
-                clientID: 'kalynt', clientName: 'Kalynt', adapterID: resolved.type, locale: 'en-US',
+                clientID: 'kalynt', clientName: 'Kalynt', adapterID, locale: 'en-US',
                 pathFormat: 'path', linesStartAt1: true, columnsStartAt1: true,
-                supportsVariableType: true, supportsVariablePaging: true, supportsRunInTerminalRequest: true
+                supportsVariableType: true, supportsVariablePaging: true,
+                supportsRunInTerminalRequest: true, supportsStartDebuggingRequest: true
             })
-            const launchArgs = Object.fromEntries(Object.entries(resolved).filter(([key]) => !EDITOR_ONLY_KEYS.has(key)))
-            // Not awaited yet: debugpy and others answer only after configurationDone.
-            const launched = connection.request(resolved.request === 'attach' ? 'attach' : 'launch', launchArgs, 60_000)
+            phase = resolved.request === 'attach' ? 'attach' : 'launch'
+            const launchArgs = buildLaunchArguments(resolved, workspacePath)
+            // Not awaited yet: debugpy and js-debug answer only after configurationDone.
+            const launched = connection.request(phase, launchArgs, 60_000)
             launched.catch(() => undefined)
 
+            phase = 'waiting for initialized'
             await Promise.race([initialized, launched.then(() => initialized)])
+            phase = 'setBreakpoints'
             for (const { file, lines } of initial) {
                 const breakpoints = lines.map((line, i) => ({ id: `bp-${i}`, file, line, enabled: true, verified: false } as Breakpoint))
                 session.breakpoints.set(file, breakpoints)
                 await connection.request('setBreakpoints', { source: { path: file }, breakpoints: toDapBreakpoints(breakpoints) })
                     .catch(err => output(`Couldn't set breakpoints in ${file}: ${err.message}\n`, 'stderr'))
             }
+            phase = 'configurationDone'
             if (init.body?.supportsConfigurationDoneRequest !== false) await connection.request('configurationDone', {})
+            phase = resolved.request === 'attach' ? 'attach response' : 'launch response'
             await launched
 
             this.send('debug:started', { sessionId, configuration: resolved })
             return sessionId
         } catch (error) {
+            const rawMessage = error instanceof Error ? error.message : String(error)
+            const detailed = rawMessage.includes(phase)
+                ? rawMessage
+                : `Debug adapter failed during ${phase}: ${rawMessage}`
+            output(`${detailed}\n`, 'stderr')
             await this.stopSession(sessionId)
-            throw error
+            throw new Error(detailed)
         }
     }
 
-    private wire(session: Session) {
-        const { id: sessionId, connection } = session
+    private wire(session: Session, connection: DapConnection, isChild: boolean) {
+        const sessionId = session.id
         connection.on('output', (text: string, stream: string) => this.send('debug:output', { sessionId, category: stream, output: text }))
+        connection.on('adapter-error', (error: string) => this.send('debug:error', { sessionId, error }))
+        connection.on('response', (response: DapMessage) => this.send('debug:response', { sessionId, ...response }))
         connection.on('event', (event: DapMessage) => {
             this.send('debug:event', { sessionId, ...event })
             switch (event.event) {
                 case 'stopped':
+                    session.activeConnection = connection
                     if (event.body?.threadId !== undefined) session.threadId = event.body.threadId
                     this.send('debug:stopped', { sessionId, ...event.body })
                     break
@@ -133,25 +177,48 @@ export class DebugSessionManager {
                     this.send('debug:breakpoint', { sessionId, ...event.body })
                     break
                 case 'terminated':
-                    void this.stopSession(sessionId)
+                    if (isChild) {
+                        session.children = session.children.filter(c => c !== connection)
+                        connection.dispose()
+                        if (session.activeConnection === connection) {
+                            session.activeConnection = session.children[session.children.length - 1] ?? session.connection
+                        }
+                    } else {
+                        void this.stopSession(sessionId)
+                    }
                     break
             }
         })
-        connection.on('request', (request: DapMessage) => this.handleReverseRequest(session, request))
+        connection.on('request', (request: DapMessage) => this.handleReverseRequest(session, connection, request))
         connection.on('close', () => {
-            if (this.sessions.has(sessionId)) void this.stopSession(sessionId)
+            if (isChild) {
+                session.children = session.children.filter(c => c !== connection)
+                if (session.activeConnection === connection) {
+                    session.activeConnection = session.children[session.children.length - 1] ?? session.connection
+                }
+            } else if (this.sessions.has(sessionId)) {
+                void this.stopSession(sessionId)
+            }
         })
     }
 
-    /** Requests the adapter sends to us: runInTerminal starts the program here and streams its output. */
-    private handleReverseRequest(session: Session, request: DapMessage) {
+    /**
+     * Handles reverse requests from the adapter:
+     * - `runInTerminal`: starts the program and streams its output.
+     * - `startDebugging`: opens a child DAP session on the adapter's TCP server (used by vscode-js-debug).
+     */
+    private handleReverseRequest(session: Session, sourceConn: DapConnection, request: DapMessage) {
+        if (request.command === 'startDebugging') {
+            void this.handleStartDebugging(session, sourceConn, request)
+            return
+        }
         if (request.command !== 'runInTerminal') {
-            session.connection.respond(request, false, undefined, `${request.command} is not supported`)
+            sourceConn.respond(request, false, undefined, `${request.command} is not supported`)
             return
         }
         const { args = [], cwd, env } = request.arguments ?? {}
         if (!Array.isArray(args) || !args.length) {
-            session.connection.respond(request, false, undefined, 'Nothing to run')
+            sourceConn.respond(request, false, undefined, 'Nothing to run')
             return
         }
         const extra = Object.fromEntries(Object.entries(env ?? {}).filter(([, v]) => typeof v === 'string')) as Record<string, string>
@@ -162,15 +229,95 @@ export class DebugSessionManager {
         proc.stdout?.on('data', forward('stdout'))
         proc.stderr?.on('data', forward('stderr'))
         proc.on('error', err => {
-            this.send('debug:output', { sessionId: session.id, category: 'stderr', output: `Couldn't start the program: ${err.message}\n` })
+            const message = `Couldn't start the program: ${err.message}`
+            this.send('debug:output', { sessionId: session.id, category: 'stderr', output: `${message}\n` })
+            this.send('debug:error', { sessionId: session.id, error: message })
         })
-        session.connection.respond(request, true, { processId: proc.pid })
+        sourceConn.respond(request, true, { processId: proc.pid })
+    }
+
+    private async handleStartDebugging(session: Session, sourceConn: DapConnection, request: DapMessage): Promise<void> {
+        const port = sourceConn.serverPort ?? session.connection.serverPort
+        const host = sourceConn.serverHost ?? session.connection.serverHost ?? '127.0.0.1'
+        if (!port) {
+            sourceConn.respond(request, false, undefined, 'startDebugging requires a socket-based debug adapter')
+            return
+        }
+
+        const childRequestType = request.arguments?.request === 'attach' ? 'attach' : 'launch'
+        const childConfig = (request.arguments?.configuration && typeof request.arguments.configuration === 'object')
+            ? { ...request.arguments.configuration }
+            : {}
+
+        // Acknowledge immediately per DAP spec so the parent binder does not stall waiting to accept the child socket.
+        sourceConn.respond(request, true)
+
+        let childConn: DapConnection | null = null
+        try {
+            const socket = await connectWithRetry(port, 10, 200, () => this.sessions.has(session.id) && !session.connection.isClosed)
+            childConn = new DapConnection()
+            childConn.serverHost = host
+            childConn.serverPort = port
+            childConn.attach(undefined, socket)
+            session.children.push(childConn)
+            session.activeConnection = childConn
+            this.wire(session, childConn, true)
+
+            const childInitialized = childConn.waitForEvent('initialized', 15_000)
+            childInitialized.catch(() => undefined)
+            const childInit = await childConn.request('initialize', {
+                clientID: 'kalynt', clientName: 'Kalynt',
+                adapterID: typeof childConfig.type === 'string' ? childConfig.type : 'pwa-node',
+                locale: 'en-US', pathFormat: 'path', linesStartAt1: true, columnsStartAt1: true,
+                supportsVariableType: true, supportsVariablePaging: true,
+                supportsRunInTerminalRequest: true, supportsStartDebuggingRequest: true
+            })
+            const childLaunched = childConn.request(childRequestType, childConfig, 60_000)
+            childLaunched.catch(() => undefined)
+
+            await Promise.race([childInitialized, childLaunched.then(() => childInitialized)])
+            for (const [file, breakpoints] of session.breakpoints.entries()) {
+                await childConn.request('setBreakpoints', { source: { path: file }, breakpoints: toDapBreakpoints(breakpoints) })
+                    .catch(err => this.send('debug:output', {
+                        sessionId: session.id,
+                        category: 'stderr',
+                        output: `Couldn't set breakpoints in ${file}: ${err.message}\n`
+                    }))
+            }
+            if (childInit.body?.supportsConfigurationDoneRequest !== false) {
+                await childConn.request('configurationDone', {})
+            }
+            await childLaunched
+        } catch (error) {
+            const message = `Child debug target failed (${childRequestType}): ${error instanceof Error ? error.message : String(error)}`
+            this.send('debug:output', { sessionId: session.id, category: 'stderr', output: `${message}\n` })
+            if (childConn) {
+                session.children = session.children.filter(c => c !== childConn)
+                childConn.dispose()
+                if (session.activeConnection === childConn) {
+                    session.activeConnection = session.children[session.children.length - 1] ?? session.connection
+                }
+            }
+        }
+    }
+
+    private targetConnection(session: Session): DapConnection {
+        if (!session.activeConnection.isClosed) return session.activeConnection
+        const liveChild = session.children.find(c => !c.isClosed)
+        if (liveChild) {
+            session.activeConnection = liveChild
+            return liveChild
+        }
+        return session.connection
     }
 
     async setBreakpoints(sessionId: string, file: string, breakpoints: Breakpoint[]): Promise<void> {
         const session = this.get(sessionId)
         session.breakpoints.set(file, breakpoints)
-        await session.connection.request('setBreakpoints', { source: { path: file }, breakpoints: toDapBreakpoints(breakpoints) })
+        const targets = [session.connection, ...session.children].filter(c => !c.isClosed)
+        await Promise.all(targets.map(conn =>
+            conn.request('setBreakpoints', { source: { path: file }, breakpoints: toDapBreakpoints(breakpoints) })
+        ))
     }
 
     private thread(session: Session, threadId?: number) {
@@ -179,22 +326,30 @@ export class DebugSessionManager {
 
     async control(sessionId: string, action: 'continue' | 'next' | 'stepIn' | 'stepOut' | 'pause', threadId?: number): Promise<void> {
         const session = this.get(sessionId)
-        await session.connection.request(action, this.thread(session, threadId))
+        await this.targetConnection(session).request(action, this.thread(session, threadId))
     }
 
     async getCallStack(sessionId: string, threadId?: number): Promise<StackFrame[]> {
         const session = this.get(sessionId)
-        const response = await session.connection.request('stackTrace', this.thread(session, threadId))
+        const response = await this.targetConnection(session).request('stackTrace', this.thread(session, threadId))
         return response.body?.stackFrames ?? []
     }
 
+    async getScopes(sessionId: string, frameId: number): Promise<Scope[]> {
+        const session = this.get(sessionId)
+        const response = await this.targetConnection(session).request('scopes', { frameId })
+        return response.body?.scopes ?? []
+    }
+
     async getVariables(sessionId: string, variablesReference: number): Promise<Variable[]> {
-        const response = await this.get(sessionId).connection.request('variables', { variablesReference })
+        const session = this.get(sessionId)
+        const response = await this.targetConnection(session).request('variables', { variablesReference })
         return response.body?.variables ?? []
     }
 
     async evaluate(sessionId: string, expression: string, frameId?: number): Promise<any> {
-        const response = await this.get(sessionId).connection.request('evaluate', { expression, frameId, context: 'watch' })
+        const session = this.get(sessionId)
+        const response = await this.targetConnection(session).request('evaluate', { expression, frameId, context: 'watch' })
         return response.body
     }
 
@@ -238,6 +393,14 @@ export class DebugSessionManager {
         const session = this.sessions.get(sessionId)
         if (!session) return
         this.sessions.delete(sessionId)
+        const children = [...session.children]
+        session.children = []
+        await Promise.all(children.map(async (child) => {
+            if (!child.isClosed) {
+                await child.request('disconnect', { terminateDebuggee: true }, 2000).catch(() => undefined)
+            }
+            child.dispose()
+        }))
         const { connection } = session
         if (!connection.isClosed) {
             await connection.request('disconnect', { terminateDebuggee: true }, 3000).catch(() => undefined)

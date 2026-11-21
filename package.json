@@ -1,6 +1,6 @@
 {
     "name": "kalynt",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "private": true,
     "description": "Serverless P2P Team Collaboration Platform",
     "workspaces": [
@@ -26,21 +26,19 @@
         "@types/node": "^20.10.0",
         "@typescript-eslint/eslint-plugin": "^8.53.0",
         "@typescript-eslint/parser": "^8.53.0",
-        "app-builder-bin": "^5.0.0-alpha.10",
         "electron": "^40.6.1",
         "eslint": "^8.57.1",
-        "eslint-plugin-react": "^7.37.5",
         "eslint-plugin-react-hooks": "^7.0.1",
         "eslint-plugin-security": "^2.1.1",
         "typescript": "5.7.3"
     },
     "engines": {
-        "node": ">=20.0.0",
+        "node": ">=22.12.0",
         "npm": ">=10.0.0"
     },
     "overrides": {
         "@babel/runtime": ">=7.26.10",
-        "tar": ">=7.5.8",
+        "tar": "^7.5.21",
         "minimist": ">=1.2.8",
         "node-fetch": ">=2.7.0",
         "semver": ">=7.7.1",

@@ -45,12 +45,15 @@ export async function compactIfNeeded(session: AgentSession, target: RunTarget, 
     const summary = result.assistant.text.trim()
     if (!summary) return false
 
+    const moved = session.items.length
     session.archive = [...(session.archive ?? []), ...session.items]
     session.items = [{
         role: 'user',
         content: `This conversation was summarized to save space. Summary of the work so far:\n\n${summary}\n\nContinue from here.`,
         display: 'Earlier messages were summarized to save space.'
     }]
-    session.notes = [...(session.notes ?? []), { at: 0, text: 'Earlier messages were summarized to stay within the model\'s context window.' }]
+    // Keep existing notes anchored to their original transcript positions across compactions.
+    const reindexed = (session.notes ?? []).map(n => ({ ...n, at: n.at - moved }))
+    session.notes = [...reindexed, { at: 0, text: 'Earlier messages were summarized to stay within the model\'s context window.' }]
     return true
 }

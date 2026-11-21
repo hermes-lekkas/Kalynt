@@ -1,12 +1,20 @@
 ﻿/*
  * SPDX-License-Identifier: AGPL-3.0-only
  */
-// P2P File Transfer Service - Tiered transfer with chunking
+// P2P File Transfer Service - Single canonical Y.Doc with WebRTC-friendly chunking & SHA-256 verification
 import * as Y from 'yjs'
-import { collabEngine } from './collabEngine'
-import { p2pService, PeerInfo } from './p2pService'
+import { getSpaceDocument } from '../hooks/useYjs'
+import { normalizeRoomId, p2pService, type PeerInfo } from './p2pService'
+import { useNotificationStore } from '../stores/notificationStore'
 
 export type TransferTier = 'small' | 'medium' | 'large'
+
+export type FileTransferState =
+    | 'local-only'
+    | 'sending'
+    | 'receiving'
+    | 'incomplete'
+    | 'ready'
 
 export interface SharedFile {
     id: string
@@ -17,16 +25,32 @@ export interface SharedFile {
     uploadedBy: string
     ownerId: string
     tier: TransferTier
-    // For small files: full content. For medium/large: chunk references
+    // For inline small files (<= 64 KiB): full Base64 content. For larger files: chunk references.
     content?: string
     chunkCount?: number
+    /** Lowercase hex SHA-256 of raw file bytes, verified on download. */
+    checksum?: string
+    /** True once the uploader finishes writing all chunks into the shared Y.Doc. */
+    uploadComplete?: boolean
+    /** Derived runtime fields populated on read. */
     isLocal: boolean
+    receivedChunks?: number
+    totalChunks?: number
+    transferState?: FileTransferState
 }
 
 export interface FileChunk {
     fileId: string
     index: number
     data: string // Base64
+}
+
+export interface AssembleFileResult {
+    ok: boolean
+    bytes?: Uint8Array
+    checksum?: string
+    error?: string
+    missingChunks?: number[]
 }
 
 export type FileTransferCallback = (files: SharedFile[]) => void
@@ -40,74 +64,191 @@ const TIER_LIMITS = {
     large: 200 * 1024 * 1024     // 200MB
 }
 
-const CHUNK_SIZE = 256 * 1024 // 256KB chunks
+// WebRTC-friendly 64 KiB chunks so 6 MiB+ transfers sync reliably over SCTP DataChannels.
+export const FILE_CHUNK_SIZE = 64 * 1024
+export const MAX_FILE_CHUNKS = 4096
+const PERSISTENT_USER_ID_KEY = 'kalynt-user-id'
 
-class FileTransferService {
-    private docId: string | null = null
+function getOrCreatePersistentUserId(): string {
+    try {
+        if (typeof localStorage !== 'undefined') {
+            const stored = localStorage.getItem(PERSISTENT_USER_ID_KEY)
+            if (stored) return stored
+            const created = crypto.randomUUID()
+            localStorage.setItem(PERSISTENT_USER_ID_KEY, created)
+            return created
+        }
+    } catch {
+        // Fallback when localStorage is unavailable
+    }
+    return crypto.randomUUID()
+}
+
+export function uint8ArrayToBase64(bytes: Uint8Array): string {
+    const STEP = 0x8000
+    let binary = ''
+    for (let i = 0; i < bytes.length; i += STEP) {
+        binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + STEP, bytes.length)))
+    }
+    return btoa(binary)
+}
+
+/**
+ * Decode a single Base64 chunk cleanly into raw bytes.
+ * Decoding each chunk independently avoids Base64 padding corruption when
+ * chunk lengths are not multiples of 3 bytes.
+ */
+export function base64ToUint8Array(base64: string): Uint8Array {
+    const binary = atob(base64)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i)
+    }
+    return bytes
+}
+
+function concatUint8Arrays(chunks: Uint8Array[]): Uint8Array {
+    let totalLength = 0
+    for (const chunk of chunks) {
+        totalLength += chunk.byteLength
+    }
+    const merged = new Uint8Array(totalLength)
+    let offset = 0
+    for (const chunk of chunks) {
+        merged.set(chunk, offset)
+        offset += chunk.byteLength
+    }
+    return merged
+}
+
+export async function computeSha256Hex(bytes: Uint8Array): Promise<string> {
+    const digest = await crypto.subtle.digest('SHA-256', bytes as BufferSource)
+    return Array.from(new Uint8Array(digest))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('')
+}
+
+function isYDocLike(value: unknown): value is Y.Doc {
+    return typeof value === 'object' && value !== null && typeof (value as Y.Doc).getMap === 'function'
+}
+
+export class FileTransferService {
+    private doc: Y.Doc | null = null
     private roomId: string | null = null
-    private localUserId: string = crypto.randomUUID()
+    private localUserId: string = getOrCreatePersistentUserId()
     private onFilesChange: FileTransferCallback | null = null
     private onPeersChange: PeersCallback | null = null
     private onProgress: ProgressCallback | null = null
     private initialized: boolean = false
-    // RACE CONDITION FIX: Track initialization sequence to prevent stale callbacks
     private initSequence: number = 0
+    private currentPeers: PeerInfo[] = []
+    private inFlightUploads: Set<string> = new Set()
 
-    init(roomId: string, docId: string) {
-        // Prevent double init or stale observer issues
-        if (this.initialized && this.roomId === roomId) return
+    private observedFilesMap: Y.Map<SharedFile> | null = null
+    private observedChunksMap: Y.Map<FileChunk> | null = null
+    private filesObserver: (() => void) | null = null
+    private chunksObserver: (() => void) | null = null
+    private roomListenerUnsub: (() => void) | null = null
 
-        // RACE CONDITION FIX: Increment sequence to invalidate any pending callbacks
-        const currentSequence = ++this.initSequence
+    /**
+     * Bind FileTransferService to the room's canonical live Y.Doc.
+     * Pass the live `Y.Doc` from `useYDoc(spaceId)` directly (or a room/doc string,
+     * which falls back to `getSpaceDocument`, never a detached `collabEngine` doc).
+     */
+    init(roomId: string, docOrId?: Y.Doc | string) {
+        const normalizedRoomId = normalizeRoomId(roomId)
+        const targetDoc = isYDocLike(docOrId)
+            ? docOrId
+            : getSpaceDocument(typeof docOrId === 'string' && docOrId.trim() ? docOrId : normalizedRoomId)
 
-        // Set state FIRST before any async operations
-        this.roomId = roomId
-        this.docId = docId
-        this.initialized = true
-
-        const provider = collabEngine.connectP2P(docId, roomId)
-        if (!provider) {
-            console.error('[FileTransfer] Failed to connect P2P, file sharing may not work')
+        if (this.initialized && this.roomId === normalizedRoomId && this.doc === targetDoc) {
+            this.seedCurrentState()
+            return
         }
 
-        // Defer observer setup to next tick to avoid race conditions
-        // with Yjs triggering observers immediately from persisted IndexedDB data
-        setTimeout(() => {
-            // RACE CONDITION FIX: Check sequence to ensure this callback is still valid
-            if (!this.initialized || this.docId !== docId || this.initSequence !== currentSequence) {
-                console.log('[FileTransfer] Skipping stale observer setup')
-                return
+        if (this.initialized) {
+            this.destroy()
+        }
+
+        this.initSequence += 1
+        this.roomId = normalizedRoomId
+        this.doc = targetDoc
+        this.initialized = true
+        this.currentPeers = p2pService.getConnectedPeers(normalizedRoomId)
+
+        const filesMap = this.getFilesMap()
+        if (filesMap) {
+            const observer = () => {
+                if (this.initialized && this.doc === targetDoc) this.notifyFilesChange()
             }
+            filesMap.observe(observer)
+            this.observedFilesMap = filesMap
+            this.filesObserver = observer
+        }
 
-            const filesMap = this.getFilesMap()
-            if (filesMap) {
-                filesMap.observe(() => {
-                    if (this.initialized && this.docId) this.notifyFilesChange()
-                })
+        const chunksMap = this.getChunksMap()
+        if (chunksMap) {
+            const observer = () => {
+                if (this.initialized && this.doc === targetDoc) this.notifyFilesChange()
             }
+            chunksMap.observe(observer)
+            this.observedChunksMap = chunksMap
+            this.chunksObserver = observer
+        }
 
-            const chunksMap = this.getChunksMap()
-            if (chunksMap) {
-                chunksMap.observe(() => {
-                    if (this.initialized && this.docId) this.notifyFilesChange()
-                })
+        this.roomListenerUnsub = p2pService.addRoomListener(normalizedRoomId, {
+            onPeers: (peers) => {
+                this.currentPeers = peers
+                this.onPeersChange?.(peers)
+                if (this.initialized && this.doc === targetDoc) {
+                    this.notifyFilesChange()
+                }
             }
-
-            // Trigger initial load
-            this.notifyFilesChange()
-        }, 0)
-
-        p2pService.setRoomCallbacks(roomId, {
-            onPeers: (peers) => this.onPeersChange?.(peers)
         })
 
-        console.log('[FileTransfer] Initialized for room:', roomId)
+        this.seedCurrentState()
+        console.log('[FileTransfer] Initialized on canonical Y.Doc for room:', normalizedRoomId)
+    }
+
+    private seedCurrentState() {
+        if (!this.initialized || !this.roomId) return
+        this.currentPeers = p2pService.getConnectedPeers(this.roomId)
+        this.onPeersChange?.(this.currentPeers)
+        this.notifyFilesChange()
     }
 
     destroy() {
         this.initialized = false
-        if (this.docId) collabEngine.disconnectP2P(this.docId)
-        this.docId = null
+        this.initSequence += 1
+        this.inFlightUploads.clear()
+
+        if (this.observedFilesMap && this.filesObserver) {
+            try {
+                this.observedFilesMap.unobserve(this.filesObserver)
+            } catch {
+                // Ignore if doc already destroyed
+            }
+        }
+        this.observedFilesMap = null
+        this.filesObserver = null
+
+        if (this.observedChunksMap && this.chunksObserver) {
+            try {
+                this.observedChunksMap.unobserve(this.chunksObserver)
+            } catch {
+                // Ignore if doc already destroyed
+            }
+        }
+        this.observedChunksMap = null
+        this.chunksObserver = null
+
+        if (this.roomListenerUnsub) {
+            this.roomListenerUnsub()
+            this.roomListenerUnsub = null
+        }
+
+        this.currentPeers = []
+        this.doc = null
         this.roomId = null
     }
 
@@ -115,243 +256,253 @@ class FileTransferService {
         this.onFilesChange = onFiles
         this.onPeersChange = onPeers
         this.onProgress = onProgress || null
+        if (this.initialized) {
+            this.seedCurrentState()
+        }
+    }
+
+    setLocalUserIdForTest(userId: string) {
+        this.localUserId = userId
     }
 
     private getFilesMap(): Y.Map<SharedFile> | null {
-        if (!this.docId || !this.initialized) return null
-        return collabEngine.getMap<SharedFile>(this.docId, 'shared-files')
+        if (!this.doc || !this.initialized) return null
+        return this.doc.getMap<SharedFile>('shared-files')
     }
 
     private getChunksMap(): Y.Map<FileChunk> | null {
-        if (!this.docId || !this.initialized) return null
-        return collabEngine.getMap<FileChunk>(this.docId, 'file-chunks')
+        if (!this.doc || !this.initialized) return null
+        return this.doc.getMap<FileChunk>('file-chunks')
+    }
+
+    private countReceivedChunks(file: SharedFile, chunksMap: Y.Map<FileChunk> | null): number {
+        if (file.content && !file.chunkCount) return 1
+        const total = file.chunkCount ?? 0
+        if (total <= 0 || !chunksMap) return 0
+        let received = 0
+        for (let i = 0; i < total; i++) {
+            if (chunksMap.has(`${file.id}-${i}`)) {
+                received++
+            }
+        }
+        return received
+    }
+
+    private computeTransferState(file: SharedFile, isLocal: boolean, receivedChunks: number, totalChunks: number): FileTransferState {
+        const peerCount = this.getPeers().length
+        const isChunked = Boolean(file.chunkCount && file.chunkCount > 0)
+        const hasAllData = isChunked
+            ? receivedChunks >= totalChunks && totalChunks > 0
+            : Boolean(file.content)
+
+        if (isLocal) {
+            if (this.inFlightUploads.has(file.id)) {
+                return 'sending'
+            }
+            if (!hasAllData || file.uploadComplete === false) {
+                return 'incomplete'
+            }
+            return peerCount > 0 ? 'ready' : 'local-only'
+        }
+
+        if (hasAllData) {
+            return 'ready'
+        }
+
+        return peerCount > 0 ? 'receiving' : 'incomplete'
+    }
+
+    private enrichFile(file: SharedFile, chunksMap: Y.Map<FileChunk> | null): SharedFile {
+        const isLocal = file.ownerId === this.localUserId
+        const totalChunks = file.chunkCount && file.chunkCount > 0 ? file.chunkCount : 1
+        const receivedChunks = this.countReceivedChunks(file, chunksMap)
+        const transferState = this.computeTransferState(file, isLocal, receivedChunks, totalChunks)
+        return {
+            ...file,
+            isLocal,
+            receivedChunks,
+            totalChunks,
+            transferState
+        }
     }
 
     private notifyFilesChange() {
         if (!this.onFilesChange || !this.initialized) return
-
-        const filesMap = this.getFilesMap()
-        if (!filesMap) return
-
-        const files: SharedFile[] = []
-
-        filesMap.forEach((file) => {
-            files.push({
-                ...file,
-                isLocal: file.ownerId === this.localUserId
-            })
-        })
-
-        files.sort((a, b) => b.uploadedAt - a.uploadedAt)
-        this.onFilesChange(files)
+        this.onFilesChange(this.getFiles())
     }
 
-    // Determine the actual tier based on file size (with fallback)
     determineTier(fileSize: number, requestedTier: TransferTier): TransferTier {
         if (fileSize <= TIER_LIMITS.small) return 'small'
         if (fileSize <= TIER_LIMITS.medium) return requestedTier === 'small' ? 'medium' : requestedTier
         if (fileSize <= TIER_LIMITS.large) return 'large'
 
-        // File too large
         throw new Error(`File size ${(fileSize / 1024 / 1024).toFixed(1)}MB exceeds maximum of 200MB`)
     }
 
-    // Get tier info for UI
     getTierInfo(tier: TransferTier): { label: string; maxSize: string; description: string } {
         switch (tier) {
             case 'small':
-                return { label: 'Quick', maxSize: '5MB', description: 'Instant sync (â‰¤5MB)' }
+                return { label: 'Quick', maxSize: '5MB', description: 'Fast sync (≤5MB)' }
             case 'medium':
-                return { label: 'Standard', maxSize: '50MB', description: 'Chunked transfer (â‰¤50MB)' }
+                return { label: 'Standard', maxSize: '50MB', description: 'Chunked transfer (≤50MB)' }
             case 'large':
-                return { label: 'Large', maxSize: '200MB', description: 'Streaming (â‰¤200MB)' }
+                return { label: 'Large', maxSize: '200MB', description: 'Chunked transfer (≤200MB)' }
         }
     }
 
-    async shareFile(file: File, uploaderName: string, requestedTier: TransferTier = 'small'): Promise<{ success: boolean; actualTier?: TransferTier; error?: string }> {
-        if (!this.docId) return { success: false, error: 'Not initialized' }
+    async shareFile(
+        file: File | { name: string; size: number; type: string; arrayBuffer: () => Promise<ArrayBuffer> },
+        uploaderName: string,
+        requestedTier: TransferTier = 'small'
+    ): Promise<{ success: boolean; fileId?: string; actualTier?: TransferTier; checksum?: string; error?: string }> {
+        if (!this.doc || !this.initialized) return { success: false, error: 'Not initialized' }
 
-        // Validate file
         if (!file) return { success: false, error: 'No file provided' }
         if (file.size < 0) return { success: false, error: 'Invalid file size' }
         if (file.size === 0) return { success: false, error: 'Cannot upload empty file' }
-        
-        // Check maximum size (200MB)
+
         const MAX_FILE_SIZE = 200 * 1024 * 1024
         if (file.size > MAX_FILE_SIZE) {
-            return { 
-                success: false, 
-                error: `File size ${(file.size / 1024 / 1024).toFixed(1)}MB exceeds maximum of 200MB` 
+            return {
+                success: false,
+                error: `File size ${(file.size / 1024 / 1024).toFixed(1)}MB exceeds maximum of 200MB`
             }
         }
 
-        // Check available storage (IndexedDB has ~50-100MB limit in some browsers)
-        const estimatedStorage = file.size * 1.4 // Base64 overhead
+        const estimatedStorage = file.size * 1.4
         if (estimatedStorage > 50 * 1024 * 1024) {
             console.warn('[FileTransfer] Large file may exceed browser storage limits')
         }
 
+        const startSequence = this.initSequence
+        const fileId = crypto.randomUUID()
+
         try {
             const actualTier = this.determineTier(file.size, requestedTier)
-            const fileId = crypto.randomUUID()
+            const rawBuffer = await file.arrayBuffer()
+            if (!this.initialized || this.initSequence !== startSequence) {
+                return { success: false, error: 'File transfer was reset during upload' }
+            }
 
-            if (actualTier === 'small') {
-                // Direct inline transfer
-                const content = await this.fileToBase64(file)
+            const bytes = new Uint8Array(rawBuffer)
+            const checksum = await computeSha256Hex(bytes)
+
+            if (!this.initialized || this.initSequence !== startSequence) {
+                return { success: false, error: 'File transfer was reset during upload' }
+            }
+
+            const filesMap = this.getFilesMap()
+            if (!filesMap) return { success: false, error: 'Not initialized' }
+
+            if (bytes.byteLength <= FILE_CHUNK_SIZE) {
+                const content = uint8ArrayToBase64(bytes)
                 const sharedFile: SharedFile = {
                     id: fileId,
                     name: file.name,
-                    size: file.size,
+                    size: bytes.byteLength,
                     type: file.type || 'application/octet-stream',
                     uploadedAt: Date.now(),
                     uploadedBy: uploaderName,
                     ownerId: this.localUserId,
                     tier: actualTier,
                     content,
+                    checksum,
+                    uploadComplete: true,
                     isLocal: true
                 }
 
-                const filesMap = this.getFilesMap()
-                if (!filesMap) return { success: false, error: 'Not initialized' }
                 filesMap.set(fileId, sharedFile)
+                this.onProgress?.(fileId, 100)
             } else {
-                // Chunked transfer for medium/large
-                const chunks = await this.splitFileIntoChunks(file, fileId)
+                const totalChunks = Math.ceil(bytes.byteLength / FILE_CHUNK_SIZE)
+                if (totalChunks > MAX_FILE_CHUNKS) {
+                    throw new Error(`File would create ${totalChunks} chunks, maximum is ${MAX_FILE_CHUNKS}. Try a smaller file.`)
+                }
 
-                // Store file metadata first
+                this.inFlightUploads.add(fileId)
                 const sharedFile: SharedFile = {
                     id: fileId,
                     name: file.name,
-                    size: file.size,
+                    size: bytes.byteLength,
                     type: file.type || 'application/octet-stream',
                     uploadedAt: Date.now(),
                     uploadedBy: uploaderName,
                     ownerId: this.localUserId,
                     tier: actualTier,
-                    chunkCount: chunks.length,
+                    chunkCount: totalChunks,
+                    checksum,
+                    uploadComplete: false,
                     isLocal: true
                 }
 
-                const filesMap = this.getFilesMap()
-                if (!filesMap) return { success: false, error: 'Not initialized' }
                 filesMap.set(fileId, sharedFile)
 
-                // Upload chunks with progress
                 const chunksMap = this.getChunksMap()
-                if (chunksMap) {
-                    for (let i = 0; i < chunks.length; i++) {
-                        chunksMap.set(`${fileId}-${i}`, chunks[i])
-                        this.onProgress?.(fileId, ((i + 1) / chunks.length) * 100)
+                if (!chunksMap) {
+                    this.inFlightUploads.delete(fileId)
+                    return { success: false, error: 'Not initialized' }
+                }
 
-                        // Small delay to prevent overwhelming the sync
-                        if (actualTier === 'large' && i % 10 === 0) {
-                            await new Promise(r => setTimeout(r, 50))
-                        }
+                for (let i = 0; i < totalChunks; i++) {
+                    if (!this.initialized || this.initSequence !== startSequence) {
+                        this.inFlightUploads.delete(fileId)
+                        return { success: false, error: 'Upload cancelled before completion' }
                     }
+
+                    const start = i * FILE_CHUNK_SIZE
+                    const end = Math.min(start + FILE_CHUNK_SIZE, bytes.byteLength)
+                    const slice = bytes.subarray(start, end)
+                    const data = uint8ArrayToBase64(slice)
+
+                    chunksMap.set(`${fileId}-${i}`, {
+                        fileId,
+                        index: i,
+                        data
+                    })
+
+                    this.onProgress?.(fileId, Math.round(((i + 1) / totalChunks) * 100))
+
+                    // Yield between chunk writes so WebRTC DataChannels flush and the UI stays responsive on 6 MiB+ files.
+                    await new Promise<void>(resolve => setTimeout(resolve, i % 4 === 3 ? 12 : 0))
+                }
+
+                this.inFlightUploads.delete(fileId)
+                if (this.initialized && this.initSequence === startSequence) {
+                    filesMap.set(fileId, {
+                        ...sharedFile,
+                        uploadComplete: true
+                    })
                 }
             }
 
-            console.log(`[FileTransfer] Shared file (${actualTier}):`, file.name)
-            return { success: true, actualTier }
+            console.log(`[FileTransfer] Shared file (${actualTier}, sha256=${checksum.slice(0, 12)}):`, file.name)
+            return { success: true, fileId, actualTier, checksum }
         } catch (err) {
+            this.inFlightUploads.delete(fileId)
             console.error('[FileTransfer] Failed to share file:', err)
-            return { success: false, error: String(err) }
+            return { success: false, error: err instanceof Error ? err.message : String(err) }
         }
-    }
-
-    private async splitFileIntoChunks(file: File, fileId: string): Promise<FileChunk[]> {
-        const chunks: FileChunk[] = []
-        const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
-
-        // Limit maximum chunks to prevent memory issues
-        const MAX_CHUNKS = 1000
-        if (totalChunks > MAX_CHUNKS) {
-            throw new Error(`File would create ${totalChunks} chunks, maximum is ${MAX_CHUNKS}. Try a smaller file.`)
-        }
-
-        for (let i = 0; i < totalChunks; i++) {
-            try {
-                const start = i * CHUNK_SIZE
-                const end = Math.min(start + CHUNK_SIZE, file.size)
-                const blob = file.slice(start, end)
-                const data = await this.blobToBase64(blob)
-
-                // Validate chunk data
-                if (!data || data.length === 0) {
-                    throw new Error(`Failed to encode chunk ${i}: empty data`)
-                }
-
-                chunks.push({
-                    fileId,
-                    index: i,
-                    data
-                })
-
-                // Yield to event loop every 10 chunks to prevent blocking
-                if (i % 10 === 0 && i > 0) {
-                    await new Promise(resolve => setTimeout(resolve, 0))
-                }
-            } catch (error) {
-                throw new Error(`Failed to process chunk ${i}: ${error}`)
-            }
-        }
-
-        return chunks
-    }
-
-    private blobToBase64(blob: Blob): Promise<string> {
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader()
-            const timeout = setTimeout(() => {
-                reader.abort()
-                reject(new Error('Blob read timeout (10s)'))
-            }, 10000)
-
-            reader.readAsDataURL(blob)
-            reader.onload = () => {
-                clearTimeout(timeout)
-                try {
-                    const result = reader.result as string
-                    if (!result || !result.includes(',')) {
-                        reject(new Error('Invalid blob data'))
-                        return
-                    }
-                    resolve(result.split(',')[1])
-                } catch (error) {
-                    reject(new Error(`Failed to process blob: ${error}`))
-                }
-            }
-            reader.onerror = () => {
-                clearTimeout(timeout)
-                reject(new Error(`BlobReader error: ${reader.error?.message || 'unknown'}`))
-            }
-            reader.onabort = () => {
-                clearTimeout(timeout)
-                reject(new Error('Blob read aborted'))
-            }
-        })
     }
 
     removeFile(fileId: string, isAdmin: boolean = false): boolean {
-        if (!this.docId || !this.initialized) return false
+        if (!this.doc || !this.initialized) return false
 
         const filesMap = this.getFilesMap()
         if (!filesMap) return false
         const file = filesMap.get(fileId)
 
-        // Only the owner or an admin can remove a file
         if (file && (file.ownerId === this.localUserId || isAdmin)) {
-            // Remove chunks if it's a chunked file
-            if (file.chunkCount) {
-                const chunksMap = this.getChunksMap()
-                if (chunksMap) {
-                    for (let i = 0; i < file.chunkCount; i++) {
-                        chunksMap.delete(`${fileId}-${i}`)
+            this.doc.transact(() => {
+                if (file.chunkCount) {
+                    const chunksMap = this.getChunksMap()
+                    if (chunksMap) {
+                        for (let i = 0; i < file.chunkCount; i++) {
+                            chunksMap.delete(`${fileId}-${i}`)
+                        }
                     }
                 }
-            }
-
-            filesMap.delete(fileId)
+                filesMap.delete(fileId)
+            })
             console.log(`[FileTransfer] Removed file (${isAdmin ? 'Admin' : 'Owner'}):`, fileId)
             return true
         }
@@ -359,64 +510,91 @@ class FileTransferService {
         return false
     }
 
-    // Clear all files in the space (admin only)
     clearAllFiles(): boolean {
-        if (!this.docId || !this.initialized) return false
+        if (!this.doc || !this.initialized) return false
 
         const filesMap = this.getFilesMap()
         const chunksMap = this.getChunksMap()
         if (!filesMap) return false
 
-        // Clear all chunks first
-        if (chunksMap) {
-            chunksMap.clear()
-        }
-
-        // Clear files index
-        filesMap.clear()
+        this.doc.transact(() => {
+            if (chunksMap) {
+                chunksMap.clear()
+            }
+            filesMap.clear()
+        })
         console.log('[FileTransfer] Cleared all files')
         return true
     }
 
-    async downloadFile(file: SharedFile): Promise<boolean> {
+    /**
+     * Reassemble raw bytes for a shared file and verify size + SHA-256 integrity.
+     */
+    async assembleFileBytes(file: SharedFile): Promise<AssembleFileResult> {
+        let fileBytes: Uint8Array
+
+        if (file.content && !file.chunkCount) {
+            fileBytes = base64ToUint8Array(file.content)
+        } else if (file.chunkCount && file.chunkCount > 0) {
+            const chunksMap = this.getChunksMap()
+            if (!chunksMap) {
+                return { ok: false, error: 'File transfer is not initialized.' }
+            }
+
+            const missingChunks: number[] = []
+            const decodedChunks: Uint8Array[] = []
+            for (let i = 0; i < file.chunkCount; i++) {
+                const chunk = chunksMap.get(`${file.id}-${i}`)
+                if (!chunk) {
+                    missingChunks.push(i)
+                    continue
+                }
+                decodedChunks.push(base64ToUint8Array(chunk.data))
+                this.onProgress?.(file.id, Math.round(((i + 1) / file.chunkCount) * 100))
+            }
+
+            if (missingChunks.length > 0) {
+                return {
+                    ok: false,
+                    missingChunks,
+                    error: `Missing ${missingChunks.length} of ${file.chunkCount} chunks. Transfer is incomplete.`
+                }
+            }
+
+            fileBytes = concatUint8Arrays(decodedChunks)
+        } else {
+            return { ok: false, error: 'File content is not available.' }
+        }
+
+        if (file.size > 0 && fileBytes.byteLength !== file.size) {
+            return {
+                ok: false,
+                error: `File size mismatch (expected ${file.size} bytes, got ${fileBytes.byteLength} bytes).`
+            }
+        }
+
+        const checksum = await computeSha256Hex(fileBytes)
+        if (file.checksum && checksum !== file.checksum) {
+            return {
+                ok: false,
+                checksum,
+                error: 'File integrity check failed (SHA-256 mismatch).'
+            }
+        }
+
+        return { ok: true, bytes: fileBytes, checksum }
+    }
+
+    async downloadFile(file: SharedFile): Promise<{ success: boolean; error?: string }> {
         try {
-            let fullContent: string
-
-            if (file.tier === 'small' && file.content) {
-                fullContent = file.content
-            } else if (file.chunkCount) {
-                // Reassemble from chunks
-                const chunksMap = this.getChunksMap()
-                if (!chunksMap) {
-                    alert('File transfer not initialized')
-                    return false
-                }
-                const chunks: string[] = []
-
-                for (let i = 0; i < file.chunkCount; i++) {
-                    const chunk = chunksMap.get(`${file.id}-${i}`)
-                    if (!chunk) {
-                        alert(`Missing chunk ${i + 1}/${file.chunkCount}. Transfer may be incomplete.`)
-                        return false
-                    }
-                    chunks.push(chunk.data)
-                    this.onProgress?.(file.id, ((i + 1) / file.chunkCount) * 100)
-                }
-
-                fullContent = chunks.join('')
-            } else {
-                alert('File content not available')
-                return false
+            const assembled = await this.assembleFileBytes(file)
+            if (!assembled.ok || !assembled.bytes) {
+                const msg = assembled.error || 'Transfer is incomplete.'
+                useNotificationStore.getState().addNotification(msg, 'error')
+                return { success: false, error: msg }
             }
 
-            // Decode and download
-            const byteCharacters = atob(fullContent)
-            const byteNumbers = new Uint8Array(byteCharacters.length)
-            for (let i = 0; i < byteCharacters.length; i++) {
-                byteNumbers[i] = byteCharacters.charCodeAt(i)
-            }
-            const blob = new Blob([byteNumbers], { type: file.type })
-
+            const blob = new Blob([assembled.bytes as BlobPart], { type: file.type })
             const url = window.URL.createObjectURL(blob)
             const a = document.createElement('a')
             a.href = url
@@ -426,25 +604,24 @@ class FileTransferService {
             document.body.removeChild(a)
             window.URL.revokeObjectURL(url)
 
-            return true
+            return { success: true }
         } catch (err) {
             console.error('[FileTransfer] Download failed:', err)
-            return false
+            const msg = err instanceof Error ? err.message : String(err)
+            return { success: false, error: msg }
         }
     }
 
     getFiles(): SharedFile[] {
-        if (!this.docId || !this.initialized) return []
+        if (!this.doc || !this.initialized) return []
 
         const filesMap = this.getFilesMap()
         if (!filesMap) return []
+        const chunksMap = this.getChunksMap()
         const files: SharedFile[] = []
 
         filesMap.forEach((file) => {
-            files.push({
-                ...file,
-                isLocal: file.ownerId === this.localUserId
-            })
+            files.push(this.enrichFile(file, chunksMap))
         })
 
         return files.sort((a, b) => b.uploadedAt - a.uploadedAt)
@@ -452,40 +629,8 @@ class FileTransferService {
 
     getPeers(): PeerInfo[] {
         if (!this.roomId) return []
-        return p2pService.getConnectedPeers(this.roomId)
-    }
-
-    private fileToBase64(file: File): Promise<string> {
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader()
-            const timeout = setTimeout(() => {
-                reader.abort()
-                reject(new Error('File read timeout (30s)'))
-            }, 30000)
-
-            reader.readAsDataURL(file)
-            reader.onload = () => {
-                clearTimeout(timeout)
-                try {
-                    const result = reader.result as string
-                    if (!result || !result.includes(',')) {
-                        reject(new Error('Invalid FileReader result'))
-                        return
-                    }
-                    resolve(result.split(',')[1])
-                } catch (error) {
-                    reject(new Error(`Failed to process file data: ${error}`))
-                }
-            }
-            reader.onerror = () => {
-                clearTimeout(timeout)
-                reject(new Error(`FileReader error: ${reader.error?.message || 'unknown error'}`))
-            }
-            reader.onabort = () => {
-                clearTimeout(timeout)
-                reject(new Error('File read aborted'))
-            }
-        })
+        const live = p2pService.getConnectedPeers(this.roomId)
+        return live.length > 0 ? live : this.currentPeers
     }
 
     getLocalUserId(): string {

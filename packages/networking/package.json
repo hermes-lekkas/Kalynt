@@ -1,6 +1,6 @@
 {
     "name": "@kalynt/networking",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "author": {
         "name": "Hermes Lekkas",
         "email": "hermeslekkasdev@gmail.com"
@@ -8,6 +8,10 @@
     "private": true,
     "main": "src/index.ts",
     "types": "src/index.ts",
+    "scripts": {
+        "build": "tsc",
+        "test": "tsc --noEmit"
+    },
     "dependencies": {
         "simple-peer": "^9.11.1",
         "y-webrtc": "^10.3.0",

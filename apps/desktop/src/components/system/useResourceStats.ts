@@ -49,7 +49,7 @@ export function useResourceStats(intervalMs = 3000): ResourceSnapshot | null {
             try {
                 const [stats, status] = await Promise.all([
                     hardwareService.getRealTimeStats(),
-                    window.electronAPI?.ipcRenderer?.invoke('performance:get-status').catch(() => null)
+                    window.electronAPI?.performance?.getStatus?.().catch(() => null)
                 ])
                 const rss = num(status?.memory?.rss)
                 if (!cancelled) setSnapshot(toSnapshot(stats, rss))

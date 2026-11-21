@@ -24,7 +24,7 @@ html {
     font-size: var(--fs-md);
     line-height: var(--lh-base);
     color: var(--text);
-    background: var(--bg);
+    background: var(--surface);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
@@ -113,15 +113,19 @@ pre {
 
 :focus-visible {
     outline: 2px solid var(--focus);
-    outline-offset: 1px;
+    outline-offset: -1px;
 }
 
-/* Scrollbars: thin, quiet, visible on hover */
-* {
-    scrollbar-width: thin;
-    scrollbar-color: var(--line-strong) transparent;
+/* Keep focus rings crisp inside compact overflow-clipped chrome bars */
+.titlebar :focus-visible,
+.statusbar :focus-visible,
+.editor-tabs :focus-visible,
+.bottom-panel__head :focus-visible,
+.activity-bar :focus-visible {
+    outline-offset: -2px;
 }
 
+/* Scrollbars: custom rounded WebKit scrollbars (do NOT set standard scrollbar-width/color on *, which disables ::-webkit-scrollbar in Chromium 121+) */
 ::-webkit-scrollbar {
     width: 10px;
     height: 10px;
@@ -132,14 +136,18 @@ pre {
 }
 
 ::-webkit-scrollbar-thumb {
-    background: var(--line-strong);
+    background: color-mix(in srgb, var(--line-strong) 82%, transparent);
     border: 3px solid transparent;
     border-radius: 999px;
     background-clip: content-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background-color: var(--text-4);
+    background-color: var(--text-3);
+}
+
+::-webkit-scrollbar-thumb:active {
+    background-color: var(--text-2);
 }
 
 ::-webkit-scrollbar-corner {
@@ -162,6 +170,10 @@ pre {
 /* Utilities */
 .mono {
     font-family: var(--font-code);
+}
+
+.tabular-nums {
+    font-variant-numeric: tabular-nums;
 }
 
 .truncate {

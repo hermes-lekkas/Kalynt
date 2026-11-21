@@ -4,25 +4,59 @@
 import { useMemo, useRef, useState } from 'react'
 import { Check, ChevronDown, GitBranch, Plus } from 'lucide-react'
 import { Popover, SearchInput, promptText } from '../../ui'
+import { usePermissions } from '../../../hooks/usePermissions'
 import type { GitApi } from './useGit'
 
-export function BranchMenu({ git }: { git: GitApi }) {
+interface RemoteEntry {
+    raw: string
+    remote: string
+    shortName: string
+    ref: string
+}
+
+function parseRemoteBranch(raw: string): RemoteEntry {
+    const stripped = raw.replace(/^remotes\//, '')
+    const slash = stripped.indexOf('/')
+    if (slash < 0) return { raw, remote: '', shortName: stripped, ref: stripped }
+    return {
+        raw,
+        remote: stripped.slice(0, slash),
+        shortName: stripped.slice(slash + 1),
+        ref: stripped
+    }
+}
+
+export function BranchMenu({ git, canEdit: canEditProp }: { git: GitApi; canEdit?: boolean }) {
+    const permissions = usePermissions()
+    const canEdit = canEditProp ?? permissions.canEdit
     const triggerRef = useRef<HTMLButtonElement>(null)
     const [open, setOpen] = useState(false)
     const [query, setQuery] = useState('')
 
     const { local, remote } = useMemo(() => {
+        const allLocal: string[] = []
+        const allRemote: RemoteEntry[] = []
+
+        for (const b of git.branches) {
+            if (b.startsWith('remotes/')) {
+                if (b.endsWith('/HEAD')) continue
+                allRemote.push(parseRemoteBranch(b))
+            } else {
+                allLocal.push(b)
+            }
+        }
+
         const q = query.trim().toLowerCase()
-        const all = git.branches.filter(b => !q || b.toLowerCase().includes(q))
         return {
-            local: all.filter(b => !b.startsWith('remotes/')),
-            remote: all.filter(b => b.startsWith('remotes/') && !b.endsWith('/HEAD'))
+            local: q ? allLocal.filter(b => b.toLowerCase().includes(q)) : allLocal,
+            remote: q ? allRemote.filter(r => r.ref.toLowerCase().includes(q)) : allRemote
         }
     }, [git.branches, query])
 
     const close = () => { setOpen(false); setQuery('') }
 
     const create = async () => {
+        if (!canEdit) return
         close()
         const name = await promptText({
             title: 'New branch',
@@ -35,14 +69,21 @@ export function BranchMenu({ git }: { git: GitApi }) {
         if (name) git.createBranch(name)
     }
 
-    const item = (name: string, label = name) => (
-        <li key={name}>
-            <button type="button" className={`branch-menu__item ${name === git.branch ? 'is-current' : ''}`} onClick={() => { close(); if (name !== git.branch) git.checkout(label) }}>
-                <span className="mono truncate">{label}</span>
-                {name === git.branch && <Check size={14} aria-hidden />}
-            </button>
-        </li>
-    )
+    const checkoutLocal = (name: string) => {
+        close()
+        if (!canEdit || name === git.branch) return
+        git.checkout(name)
+    }
+
+    const checkoutRemote = (entry: RemoteEntry) => {
+        close()
+        if (!canEdit) return
+        // Avoid redundant checkout if the active local branch already tracks this exact remote ref.
+        if (git.tracking === entry.ref) return
+        // Pass the explicit remote ref so main-process checkout creates or switches to a local
+        // tracking branch for this exact remote without ever detaching HEAD.
+        git.checkout(entry.ref, { remoteRef: entry.ref })
+    }
 
     return (
         <>
@@ -64,17 +105,50 @@ export function BranchMenu({ git }: { git: GitApi }) {
                     <div className="branch-menu__search">
                         <SearchInput size="sm" value={query} onChange={setQuery} placeholder="Find a branch" autoFocus />
                     </div>
-                    <button type="button" className="branch-menu__create" onClick={create}>
-                        <Plus size={14} aria-hidden /> Create branch…
-                    </button>
+                    {canEdit && (
+                        <button type="button" className="branch-menu__create" onClick={create}>
+                            <Plus size={14} aria-hidden /> Create branch…
+                        </button>
+                    )}
                     <ul className="branch-menu__list" aria-label="Local branches">
-                        {local.map(b => item(b))}
+                        {local.map(b => (
+                            <li key={`local:${b}`}>
+                                <button
+                                    type="button"
+                                    className={`branch-menu__item ${b === git.branch ? 'is-current' : ''}`}
+                                    disabled={!canEdit && b !== git.branch}
+                                    onClick={() => checkoutLocal(b)}
+                                >
+                                    <span className="mono truncate">{b}</span>
+                                    {b === git.branch && <Check size={14} aria-hidden />}
+                                </button>
+                            </li>
+                        ))}
                     </ul>
                     {remote.length > 0 && (
                         <>
                             <p className="branch-menu__heading">Remote</p>
                             <ul className="branch-menu__list" aria-label="Remote branches">
-                                {remote.map(b => item(b, b.replace(/^remotes\/[^/]+\//, '')))}
+                                {remote.map(entry => {
+                                    const isTracking = git.tracking === entry.ref
+                                    return (
+                                        <li key={entry.raw}>
+                                            <button
+                                                type="button"
+                                                className={`branch-menu__item ${isTracking ? 'is-current' : ''}`}
+                                                disabled={!canEdit && !isTracking}
+                                                title={entry.ref}
+                                                onClick={() => checkoutRemote(entry)}
+                                            >
+                                                <span className="mono truncate">
+                                                    {entry.remote && <span className="branch-menu__remote">{entry.remote}/</span>}
+                                                    {entry.shortName}
+                                                </span>
+                                                {isTracking && <Check size={14} aria-hidden />}
+                                            </button>
+                                        </li>
+                                    )
+                                })}
                             </ul>
                         </>
                     )}

@@ -13,11 +13,11 @@ import { UpdateIndicator } from './UpdateIndicator'
 import { WindowControls } from './WindowControls'
 import { LOGO_URL } from './brand'
 
-const VIEWS: { id: MainView; label: string; shortcut: string }[] = [
+const VIEWS: { id: MainView; label: string; shortLabel?: string; shortcut: string }[] = [
     { id: 'code', label: 'Code', shortcut: 'Ctrl+Alt+1' },
     { id: 'tasks', label: 'Tasks', shortcut: 'Ctrl+Alt+2' },
     { id: 'history', label: 'History', shortcut: 'Ctrl+Alt+3' },
-    { id: 'files', label: 'Shared files', shortcut: 'Ctrl+Alt+4' }
+    { id: 'files', label: 'Shared files', shortLabel: 'Files', shortcut: 'Ctrl+Alt+4' }
 ]
 
 export function getPlatform(): string {
@@ -61,7 +61,12 @@ export function Titlebar() {
                                     title={`${view.label} (${formatShortcut(view.shortcut)})`}
                                     onClick={() => setMainView(view.id)}
                                 >
-                                    {view.label}
+                                    {view.shortLabel ? (
+                                        <>
+                                            <span className="titlebar__view-full">{view.label}</span>
+                                            <span className="titlebar__view-short" aria-hidden>{view.shortLabel}</span>
+                                        </>
+                                    ) : view.label}
                                 </button>
                             ))}
                         </nav>

@@ -2,9 +2,18 @@
 node_modules/
 .agents/skills/
 /video
+
+# GitHub directory (allowlist tracked hooks, workflows, and issue templates)
 .github/*
+!.github/ISSUE_TEMPLATE/
+!.github/ISSUE_TEMPLATE/**
 !.github/hooks/
 !.github/hooks/**
+!.github/workflows/
+.github/workflows/*
+!.github/workflows/build.yml
+!.github/workflows/pages.yml
+!.github/workflows/verify.yml
 
 # Build outputs
 /dist/
@@ -15,6 +24,7 @@ node_modules/
 /apps/*/dist
 /apps/*/dist-electron
 /apps/*/release
+*.tsbuildinfo
 
 # Logs
 *.log
@@ -22,15 +32,8 @@ node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-eslint-output.txt
-tsc_output.txt
-validation-output.txt
 
 # Temp/Misc
-
-Applied_Fixes.md
-implement.md
-CROSS_PLATFORM_BUILD.md
 .eslintrc.json
 eslint-report.json
 snyk_report.json
@@ -42,15 +45,21 @@ snyk_report.json
 .env.local
 .env.*.local
 
-# IDE
+# IDE & Agent tooling
 .vscode/
 .idea/
+.claude/
+.gemini/
+.kilocodemodes
+.agent/rules/snyk_rules.md
+.codesight/scan_configs/
+SKILL.md
 *.swp
 *.swo
-.kilocodemodes
 
 # OS
 .DS_Store
+Thumbs.db
 
 # Private Keys - NEVER commit these!
 deploy_key
@@ -63,34 +72,20 @@ id_ed25519
 id_ed25519.pub
 ssh_key*
 .ssh/
-Thumbs.db
-
-# Sub-projects (if managed separately)
-Kalynt Website/
+gha-creds-*.json
 
 # Internal Scripts
 /scripts/*
 !/scripts/install-security-hooks.sh
-.claude/settings.local.json
-.agent/rules/snyk_rules.md
-.codesight/scan_configs/
-.github/workflows/
-!index.html
-!.github/workflows/pages.yml
-SKILL.md
 
-# Documentation cleanup
+# Root HTML & Documentation allowlist
+!index.html
 *.md
 !/docs/adoption/*.md
 !README.MD
-!README_KALYNT_MOBILE.md
 !SECURITY.md
 !SECURITY_HYGIENE.md
 !CONTRIBUTING.md
 !CHANGELOG.md
 !ARCHITECTURE.md
-!PROPRIETARY.md
 !DEVELOPER_GUIDE.md
-.gemini/
-gha-creds-*.json
-.kilocodemodes

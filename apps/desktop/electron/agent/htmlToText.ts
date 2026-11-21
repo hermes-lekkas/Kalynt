@@ -58,10 +58,12 @@ export function htmlToText(html: string, baseUrl: string): { title: string; text
         .replace(/<[^>]+>/g, '')
 
     let text = decodeEntities(body)
-        .replace(/[ \t\f\v ]+/g, ' ')
+        .replace(/[ \t\f\v\u00a0]+/g, ' ')
         .replace(/ *\n */g, '\n')
         .replace(/\n{3,}/g, '\n\n')
         .trim()
+    // Internal NUL-delimited placeholders keep code blocks out of HTML cleanup.
+    // eslint-disable-next-line no-control-regex
     text = text.replace(/\u0000CODE(\d+)\u0000/g, (_m, n: string) => '```\n' + codeBlocks[Number(n)] + '\n```')
     return { title, text }
 }

@@ -5,27 +5,71 @@
 
 .editor-area {
     flex: 1;
+    min-width: 0;
     min-height: 0;
     display: flex;
     flex-direction: column;
     background: var(--bg);
+    overflow: hidden;
 }
 
 /* Tabs */
-.editor-tabs {
+.editor-tabs-wrap {
+    position: relative;
     display: flex;
     align-items: stretch;
     height: 34px;
     flex-shrink: 0;
+    min-width: 0;
+    background: var(--surface);
+    box-shadow: inset 0 -1px 0 var(--line);
+}
+
+.editor-tabs-wrap.has-overflow-left::before,
+.editor-tabs-wrap.has-overflow-right::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 1px;
+    width: 24px;
+    pointer-events: none;
+    z-index: 2;
+}
+
+.editor-tabs-wrap.has-overflow-left::before {
+    left: 0;
+    background: linear-gradient(to right, var(--surface), transparent);
+}
+
+.editor-tabs-wrap.has-overflow-right::after {
+    right: 30px;
+    background: linear-gradient(to left, var(--surface), transparent);
+}
+
+.editor-tabs {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: stretch;
+    height: 34px;
     overflow-x: auto;
     overflow-y: hidden;
-    background: var(--surface);
-    border-bottom: 1px solid var(--line);
     scrollbar-width: none;
 }
 
 .editor-tabs::-webkit-scrollbar {
     display: none;
+}
+
+.editor-tabs__more {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    border-left: 1px solid var(--line);
+    background: var(--surface);
+    box-shadow: inset 0 -1px 0 var(--line);
 }
 
 .editor-tab {
@@ -40,6 +84,7 @@
     cursor: pointer;
     white-space: nowrap;
     flex-shrink: 0;
+    user-select: none;
 }
 
 .editor-tab:hover {
@@ -50,17 +95,8 @@
 .editor-tab.is-active {
     background: var(--bg);
     color: var(--text);
-}
-
-/* Active tab joins the editor surface below it. */
-.editor-tab.is-active::after {
-    content: '';
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: -1px;
-    height: 1px;
-    background: var(--bg);
+    /* Seamlessly covers the strip's inset bottom hairline without clipping. */
+    box-shadow: inset 0 -1px 0 var(--bg);
 }
 
 .editor-tab.is-active::before {
@@ -69,8 +105,21 @@
     left: 0;
     right: 0;
     top: 0;
-    height: 1px;
+    height: 2px;
     background: var(--text-3);
+}
+
+.editor-pane.is-focused .editor-tab.is-active::before,
+.editor-pane.is-focused .editor-pane__tab.is-active::before {
+    background: var(--accent, var(--text));
+}
+
+.editor-tab.is-dragging {
+    opacity: 0.45;
+}
+
+.editor-tab.is-drag-over {
+    box-shadow: inset 2px 0 0 var(--accent, var(--text));
 }
 
 .editor-tab:focus-visible {
@@ -79,6 +128,7 @@
 
 .editor-tab__icon {
     color: var(--text-3);
+    flex-shrink: 0;
 }
 
 .editor-tab__name {
@@ -153,6 +203,8 @@
     height: 30px;
     padding: 0 var(--sp-3) 0 var(--sp-5);
     flex-shrink: 0;
+    min-width: 0;
+    background: var(--bg);
 }
 
 .editor-area__readonly {
@@ -254,6 +306,21 @@
     opacity: 0.4;
 }
 
+.editor-toolbar__menu-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    height: 22px;
+    padding: 0 var(--sp-2);
+    border-radius: var(--r-1);
+    color: var(--text-2);
+}
+
+.editor-toolbar__menu-btn:hover {
+    background: var(--hover);
+    color: var(--text);
+}
+
 .editor-toolbar__debug {
     display: flex;
     align-items: center;
@@ -274,8 +341,10 @@
 /* Panes */
 .editor-area__panes {
     flex: 1;
+    min-width: 0;
     min-height: 0;
     display: flex;
+    overflow: hidden;
 }
 
 .editor-pane {
@@ -284,27 +353,83 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
+    overflow: hidden;
 }
 
 .editor-pane--secondary {
     flex: 1;
 }
 
-.editor-pane__head {
+/* Secondary pane tab-height header (exact 34px match with .editor-tabs) */
+.editor-pane__tabs {
     display: flex;
+    align-items: stretch;
+    justify-content: space-between;
+    height: 34px;
+    flex-shrink: 0;
+    min-width: 0;
+    background: var(--surface);
+    box-shadow: inset 0 -1px 0 var(--line);
+}
+
+.editor-pane__tab {
+    position: relative;
+    display: inline-flex;
     align-items: center;
-    height: 30px;
-    padding: 0 var(--sp-4);
+    gap: var(--sp-3);
+    min-width: 0;
+    max-width: calc(100% - 36px);
+    padding: 0 var(--sp-4) 0 var(--sp-5);
+    border-right: 1px solid var(--line);
+    background: var(--bg);
+    color: var(--text-2);
+    white-space: nowrap;
+    box-shadow: inset 0 -1px 0 var(--bg);
+}
+
+.editor-pane__tab.is-active {
+    color: var(--text);
+}
+
+.editor-pane__tab::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    height: 2px;
+    background: var(--text-3);
+}
+
+.editor-pane__tab:hover {
+    color: var(--text);
+}
+
+.editor-pane__dirty-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--text-2);
     flex-shrink: 0;
 }
 
-.editor-pane__head .k-select {
-    max-width: 100%;
+.editor-pane__chevron {
+    color: var(--text-3);
+    flex-shrink: 0;
+}
+
+.editor-pane__tabs-actions {
+    display: flex;
+    align-items: center;
+    padding: 0 var(--sp-2);
+    flex-shrink: 0;
 }
 
 .editor-pane__body {
     flex: 1;
+    min-width: 0;
     min-height: 0;
+    overflow: hidden;
 }
 
 .editor-pane__loading {
@@ -315,7 +440,7 @@
     justify-content: center;
 }
 
-/* Breakpoints in the glyph margin */
+/* Breakpoints and stopped debugger line in Monaco */
 .ide-breakpoint {
     display: block;
     width: 9px !important;
@@ -324,6 +449,20 @@
     border-radius: 50%;
     background: var(--danger);
     cursor: pointer;
+}
+
+.ide-debug-line {
+    background: var(--warning-soft);
+}
+
+.ide-debug-glyph {
+    display: block;
+    width: 0 !important;
+    height: 0 !important;
+    margin: 5px 0 0 6px;
+    border-top: 5px solid transparent;
+    border-bottom: 5px solid transparent;
+    border-left: 8px solid var(--warning);
 }
 
 /* Empty editor */

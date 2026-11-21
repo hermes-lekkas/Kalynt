@@ -6,9 +6,12 @@
 .k-popover {
     position: fixed;
     z-index: var(--z-popover);
+    max-width: calc(100vw - 16px);
     max-height: calc(100vh - 16px);
     overflow: auto;
-    background: var(--raised);
+    background: var(--glass-bg);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
     border-radius: var(--r-3);
     box-shadow: var(--shadow-pop);
     animation: k-pop-in var(--dur-2) var(--ease);
@@ -31,6 +34,7 @@
     border-radius: var(--r-1);
     color: var(--text);
     cursor: pointer;
+    transition: background var(--dur-1) var(--ease);
 }
 
 .k-menu__item.is-active {
@@ -39,6 +43,7 @@
 
 .k-menu__item[aria-disabled='true'] {
     color: var(--text-4);
+    opacity: 0.65;
     cursor: default;
 }
 
@@ -100,6 +105,8 @@
     justify-content: center;
     padding: var(--sp-8);
     background: var(--scrim);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
     animation: k-fade-in var(--dur-2) var(--ease);
 }
 
@@ -108,7 +115,9 @@
     flex-direction: column;
     width: 100%;
     max-height: calc(100vh - 64px);
-    background: var(--surface);
+    background: var(--glass-surface);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
     border-radius: var(--r-4);
     box-shadow: var(--shadow-dialog);
     animation: k-pop-in var(--dur-3) var(--ease);

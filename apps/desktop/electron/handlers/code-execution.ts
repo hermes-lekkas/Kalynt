@@ -13,13 +13,37 @@ import type { BrowserWindow as BrowserWindowType } from 'electron'
 import { validatePath } from '../utils/pathValidator'
 import { sendToWindow } from '../utils/window'
 import { clearBinaryCache, findBinary, killProcessTree, safeEnv, wrapWindowsCommand } from './code-exec/binaries'
-import { EXTENSIONS, planRun, type Step } from './code-exec/languages'
+import { EXTENSIONS, planRun, sanitizeNimModuleName, type Step } from './code-exec/languages'
+
+export { sanitizeNimModuleName } from './code-exec/languages'
+
+/** Builds a safe temporary source filename for unsaved drafts. */
+export function tempScriptFilename(language: string, id: string): string {
+    const ext = EXTENSIONS[language] ?? '.txt'
+    if (language === 'nim') {
+        return `${sanitizeNimModuleName(id)}${ext}`
+    }
+    const safeId = id.replace(/[^\w-]/g, '_')
+    return `kalynt_${safeId}${ext}`
+}
 
 const runningProcesses = new Map<string, ChildProcess>()
+const htmlPreviewFiles = new Set<string>()
+const htmlCleanupTimers = new Set<NodeJS.Timeout>()
 
 const DEFAULT_RUN_LIMIT_MS = 5 * 60_000
 const COMPILE_LIMIT_MS = 2 * 60_000
 const COMMAND_LIMIT_MS = 30_000
+const HTML_PREVIEW_TTL_MS = 10 * 60_000
+
+/** Removes any temporary HTML preview files created for unsaved HTML runs. */
+export async function cleanupHtmlPreviewFiles(): Promise<void> {
+    for (const timer of htmlCleanupTimers) clearTimeout(timer)
+    htmlCleanupTimers.clear()
+    const files = [...htmlPreviewFiles]
+    htmlPreviewFiles.clear()
+    await Promise.all(files.map(file => fs.promises.rm(file, { force: true }).catch(() => undefined)))
+}
 
 interface ExecuteOptions {
     id: string
@@ -145,17 +169,33 @@ export function registerCodeExecutionHandlers(
             await fs.promises.mkdir(buildDir, { recursive: true })
 
             let script: string
+            let isTempScript = false
             if (options.filePath) {
                 if (!workspace) return { success: false, error: 'Open a folder to run its files' }
                 script = validatePath(workspace, options.filePath)
                 if (!fs.existsSync(script)) return { success: false, error: `${path.basename(script)} doesn't exist on disk` }
             } else {
-                script = path.join(buildDir, `kalynt_${safeId}${EXTENSIONS[language] ?? '.txt'}`)
+                script = path.join(buildDir, tempScriptFilename(language, id))
                 await fs.promises.writeFile(script, options.code ?? '')
+                isTempScript = true
                 cleanup.push(script)
             }
 
             if (language === 'html') {
+                if (isTempScript) {
+                    // Keep the temp HTML file alive long enough for the external browser
+                    // to launch and read it; remove it after a delay or on app shutdown.
+                    const idx = cleanup.indexOf(script)
+                    if (idx !== -1) cleanup.splice(idx, 1)
+                    htmlPreviewFiles.add(script)
+                    const timer = setTimeout(() => {
+                        htmlCleanupTimers.delete(timer)
+                        htmlPreviewFiles.delete(script)
+                        fs.promises.rm(script, { force: true }).catch(() => undefined)
+                    }, HTML_PREVIEW_TTL_MS)
+                    timer.unref?.()
+                    htmlCleanupTimers.add(timer)
+                }
                 await shell.openExternal(pathToFileURL(script).href)
                 return { success: true, stdout: `Opened ${path.basename(script)} in your browser`, stderr: '', exitCode: 0 }
             }
@@ -165,9 +205,9 @@ export function registerCodeExecutionHandlers(
             cleanup.push(...plan.artifacts)
 
             let cwd = workspace || path.dirname(script)
-            if (options.cwd) {
+            if (options.cwd && workspace) {
                 try {
-                    cwd = workspace ? validatePath(workspace, options.cwd) : options.cwd
+                    cwd = validatePath(workspace, options.cwd)
                 } catch {
                     console.warn('[CodeExec] Working folder outside the workspace; using the workspace instead')
                 }
@@ -194,7 +234,7 @@ export function registerCodeExecutionHandlers(
         } catch (error) {
             return { success: false, error: error instanceof Error ? error.message : String(error) }
         } finally {
-            for (const file of cleanup) fs.promises.rm(file, { force: true }).catch(() => undefined)
+            await Promise.all(cleanup.map(file => fs.promises.rm(file, { force: true }).catch(() => undefined)))
         }
     })
 
@@ -263,6 +303,7 @@ export function registerCodeExecutionHandlers(
 
     ipcMain.handle('code:clearCache', async () => {
         clearBinaryCache()
+        await cleanupHtmlPreviewFiles()
         await fs.promises.rm(path.join(app.getPath('temp'), 'kalynt-run'), { recursive: true, force: true }).catch(() => undefined)
         return { success: true }
     })

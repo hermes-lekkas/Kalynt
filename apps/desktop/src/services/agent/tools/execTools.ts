@@ -26,9 +26,6 @@ export function clip(text: string, max: number): string {
     return `${text.slice(0, head)}\n\n… ${text.length - max} characters omitted …\n\n${text.slice(-tail)}`
 }
 
-/** Background processes this conversation started, so the model can only touch its own. */
-const backgroundIds = new Set<string>()
-
 export const runCommandTool: AgentTool = {
     name: 'run_command',
     kind: 'execute',
@@ -71,7 +68,7 @@ export const runCommandTool: AgentTool = {
             const timeoutSeconds = Math.min(Math.max(Number(args.timeout_seconds) || 120, 1), 1800)
             const result = await agent.exec({ id, command, cwd, timeoutMs: timeoutSeconds * 1000, background })
             if (!result.ok) return fail(result.error ?? 'The command could not be started.')
-            if (background && result.running) backgroundIds.add(id)
+            if (background && result.running) ctx.backgroundIds.add(id)
             const display = {
                 type: 'command' as const,
                 command,
@@ -113,12 +110,12 @@ export const commandOutputTool: AgentTool = {
         required: ['process_id']
     },
     title: () => 'Check command output',
-    async execute(args) {
+    async execute(args, ctx) {
         const id = str(args.process_id)
-        if (!backgroundIds.has(id)) return fail('No background command with that id was started in this conversation.')
+        if (!ctx.backgroundIds.has(id)) return fail('No background command with that id was started in this conversation.')
         const result = await agentApi().execRead(id)
-        if (!result.ok) { backgroundIds.delete(id); return fail(result.error ?? 'That process has ended.') }
-        if (!result.running) backgroundIds.delete(id)
+        if (!result.ok) { ctx.backgroundIds.delete(id); return fail(result.error ?? 'That process has ended.') }
+        if (!result.running) ctx.backgroundIds.delete(id)
         const output = clip(result.output.trimEnd(), MODEL_OUTPUT_CHARS) || '(no new output)'
         return {
             content: `${output}\n\n${result.running ? 'Still running.' : `Exited with code ${result.exitCode}.`}`,
@@ -129,7 +126,7 @@ export const commandOutputTool: AgentTool = {
 
 export const stopCommandTool: AgentTool = {
     name: 'stop_command',
-    kind: 'read',
+    kind: 'execute',
     description: 'Stop a background command started with run_command.',
     parameters: {
         type: 'object',
@@ -137,11 +134,11 @@ export const stopCommandTool: AgentTool = {
         required: ['process_id']
     },
     title: () => 'Stop background command',
-    async execute(args) {
+    async execute(args, ctx) {
         const id = str(args.process_id)
-        if (!backgroundIds.has(id)) return fail('No background command with that id was started in this conversation.')
+        if (!ctx.backgroundIds.has(id)) return fail('No background command with that id was started in this conversation.')
         await agentApi().execKill(id)
-        backgroundIds.delete(id)
+        ctx.backgroundIds.delete(id)
         return { content: 'Stopped.' }
     }
 }

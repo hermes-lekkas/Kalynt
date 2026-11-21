@@ -4,12 +4,134 @@
 
 import path from 'node:path'
 import fs from 'node:fs'
+import os from 'node:os'
 import * as chokidar from 'chokidar'
 import type { BrowserWindow as BrowserWindowType } from 'electron'
 import { nativeHelperService } from '../services/native-helper-service'
 import { validatePath } from '../utils/pathValidator'
 import { searchFolder } from './fs-search'
 import { copyFolder } from './fs-backup'
+import { writeTextFile } from './file-write'
+
+const isWindows = process.platform === 'win32'
+
+function normalizeForCompare(target: string): string {
+    const resolved = path.resolve(target)
+    return isWindows ? resolved.toLowerCase() : resolved
+}
+
+function isSameOrInside(parent: string, candidate: string): boolean {
+    const p = normalizeForCompare(parent)
+    const c = normalizeForCompare(candidate)
+    if (c === p) return true
+    const rel = path.relative(p, c)
+    return rel !== '' && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel)
+}
+
+function tryRealpath(target: string): string {
+    try {
+        return fs.realpathSync(target)
+    } catch {
+        return path.resolve(target)
+    }
+}
+
+/**
+ * Rejects dangerous filesystem roots, OS system folders, sensitive credential
+ * stores, and Kalynt's own userData folder (except userData/workspaces/*).
+ */
+function validateWorkspaceDirectory(realTarget: string, userDataPath?: string): string | null {
+    const parsed = path.parse(realTarget)
+    if (parsed.root === realTarget) {
+        return 'Cannot open a filesystem root as a workspace folder'
+    }
+
+    const realHome = tryRealpath(os.homedir())
+    if (normalizeForCompare(realTarget) === normalizeForCompare(realHome)) {
+        return 'Cannot open your entire home directory as a workspace folder; pick a project subfolder'
+    }
+
+    const realTmp = tryRealpath(os.tmpdir())
+    if (normalizeForCompare(realTarget) === normalizeForCompare(realTmp)) {
+        return 'Cannot open the system temp root as a workspace folder'
+    }
+
+    // Protect Kalynt's userData (secure-keys.json, extensions, models, etc.),
+    // while allowing cloned project subdirectories inside userData/workspaces/<repo>.
+    if (userDataPath) {
+        const realUserData = tryRealpath(userDataPath)
+        const realWorkspacesDir = tryRealpath(path.join(realUserData, 'workspaces'))
+        if (isSameOrInside(realUserData, realTarget)) {
+            const insideWorkspaces = isSameOrInside(realWorkspacesDir, realTarget)
+                && normalizeForCompare(realTarget) !== normalizeForCompare(realWorkspacesDir)
+            if (!insideWorkspaces) {
+                return 'Cannot open Kalynt application data as a workspace folder'
+            }
+        }
+    }
+
+    // Sensitive credential & browser profile directories inside $HOME
+    const blockedHomeSubdirs = [
+        '.ssh', '.gnupg', '.aws', '.kube', '.docker', '.config', '.pki',
+        '.mozilla', '.chrome', '.local/share/keyrings',
+        'Library/Keychains', 'Library/Application Support'
+    ]
+    for (const rel of blockedHomeSubdirs) {
+        const blocked = tryRealpath(path.join(realHome, rel))
+        if (isSameOrInside(blocked, realTarget)) {
+            return 'Cannot open a sensitive system or credential directory as a workspace'
+        }
+    }
+
+    if (isWindows) {
+        const systemDrive = process.env.SystemDrive || 'C:'
+        const blockedWin = [
+            process.env.SystemRoot || `${systemDrive}\\Windows`,
+            process.env.ProgramFiles || `${systemDrive}\\Program Files`,
+            process.env['ProgramFiles(x86)'] || `${systemDrive}\\Program Files (x86)`,
+            process.env.ProgramData || `${systemDrive}\\ProgramData`,
+            `${systemDrive}\\System Volume Information`
+        ]
+        for (const dir of blockedWin) {
+            if (isSameOrInside(dir, realTarget)) {
+                return 'Cannot open a Windows system directory as a workspace'
+            }
+        }
+        const appDataRoots = [process.env.APPDATA, process.env.LOCALAPPDATA].filter((v): v is string => Boolean(v))
+        for (const root of appDataRoots) {
+            if (normalizeForCompare(tryRealpath(root)) === normalizeForCompare(realTarget)) {
+                return 'Cannot open AppData root as a workspace folder'
+            }
+        }
+    } else {
+        const blockedPosix = [
+            '/etc', '/proc', '/sys', '/dev', '/boot', '/root',
+            '/bin', '/sbin', '/lib', '/lib64', '/usr',
+            '/System', '/Library', '/Applications',
+            '/private/etc', '/private/var/db', '/private/var/root'
+        ]
+        for (const dir of blockedPosix) {
+            if (isSameOrInside(tryRealpath(dir), realTarget)) {
+                return 'Cannot open an operating system directory as a workspace'
+            }
+        }
+        // Block /var itself and most of /var, while still allowing macOS /var/folders (os.tmpdir)
+        // and subdirectories of /var/tmp.
+        const realVar = tryRealpath('/var')
+        if (isSameOrInside(realVar, realTarget)) {
+            const realVarFolders = tryRealpath('/var/folders')
+            const realVarTmp = tryRealpath('/var/tmp')
+            const allowedVarTemp =
+                (isSameOrInside(realVarFolders, realTarget) && normalizeForCompare(realTarget) !== normalizeForCompare(realVarFolders)) ||
+                (isSameOrInside(realVarTmp, realTarget) && normalizeForCompare(realTarget) !== normalizeForCompare(realVarTmp))
+            if (!allowedVarTemp) {
+                return 'Cannot open a system /var directory as a workspace'
+            }
+        }
+    }
+
+    return null
+}
 
 // Stateful maps for file watchers
 const watchers = new Map<string, chokidar.FSWatcher>()
@@ -38,21 +160,62 @@ export function registerFileSystemHandlers(
     dialog: Electron.Dialog,
     getMainWindow: () => BrowserWindowType | null,
     getCurrentWorkspacePath: () => string | null,
-    setCurrentWorkspacePath: (path: string) => void,
-    getModelsDir: () => string
+    setCurrentWorkspacePath: (path: string | null) => void,
+    getModelsDir: () => string,
+    getUserDataPath?: () => string
 ) {
     // Set workspace and clear all watchers
-    ipcMain.handle('fs:setWorkspace', async (_event, workspacePath: string) => {
-        setCurrentWorkspacePath(workspacePath)
+    const changeWorkspace = async (workspacePath: string | null) => {
+        let resolvedWorkspace: string | null = null
+        if (workspacePath !== null) {
+            try {
+                if (typeof workspacePath !== 'string' || !workspacePath.trim() || workspacePath.includes('\0') || !path.isAbsolute(workspacePath)) {
+                    return { success: false, error: 'Choose an existing workspace folder' }
+                }
+                const stat = await fs.promises.stat(workspacePath)
+                if (!stat.isDirectory()) {
+                    return { success: false, error: 'Choose an existing workspace folder' }
+                }
+                const realTarget = await fs.promises.realpath(workspacePath)
+                const blockedReason = validateWorkspaceDirectory(realTarget, getUserDataPath?.())
+                if (blockedReason) {
+                    console.warn('[FS] Blocked fs:setWorkspace for restricted path:', workspacePath, '->', realTarget)
+                    return { success: false, error: blockedReason }
+                }
+                resolvedWorkspace = path.resolve(workspacePath)
+            } catch (error) {
+                return { success: false, error: String(error) }
+            }
+        }
+        // Re-entering the same folder must not kill a watcher still used by
+        // mounted editor panels (for example when switching workspace tabs).
+        if (resolvedWorkspace === getCurrentWorkspacePath()) return { success: true }
         const closePromises: Promise<void>[] = []
         watchers.forEach((watcher) => {
             closePromises.push(watcher.close())
         })
         await Promise.all(closePromises)
         watchers.clear()
-        console.log('[Main] Workspace set to:', workspacePath)
+        for (const id of nativeWatchers) {
+            if (nativeHelperService.isAvailable()) {
+                await nativeHelperService.request('watch-stop', { watcherId: id }).catch(error => console.warn('[FS] Failed to stop native watcher:', error))
+            }
+        }
+        nativeWatchers.clear()
+        setCurrentWorkspacePath(resolvedWorkspace)
+        console.log('[Main] Workspace set to:', resolvedWorkspace)
         return { success: true }
-    })
+    }
+    // Folder validation and watcher disposal are asynchronous. Serialize them
+    // so rapid workspace switches finish in the order the renderer requested.
+    let pendingWorkspaceChange: Promise<void> = Promise.resolve()
+    const activateWorkspace = (workspacePath: string | null) => {
+        const result = pendingWorkspaceChange.then(() => changeWorkspace(workspacePath))
+            .catch(error => ({ success: false, error: String(error) }))
+        pendingWorkspaceChange = result.then(() => undefined)
+        return result
+    }
+    ipcMain.handle('fs:setWorkspace', (_event, workspacePath: string | null) => activateWorkspace(workspacePath))
 
     // Open folder dialog
     ipcMain.handle('fs:openFolder', async () => {
@@ -64,7 +227,8 @@ export function registerFileSystemHandlers(
         if (result.canceled || result.filePaths.length === 0) {
             return { success: false, canceled: true }
         }
-        setCurrentWorkspacePath(result.filePaths[0])
+        const activated = await activateWorkspace(result.filePaths[0])
+        if (!activated.success) return activated
         console.log('[Main] Workspace opened:', result.filePaths[0])
         return { success: true, path: result.filePaths[0] }
     })
@@ -210,16 +374,14 @@ export function registerFileSystemHandlers(
     })
 
     // Write file contents
-    ipcMain.handle('fs:writeFile', async (_event, options: { path: string, content: string, encoding?: BufferEncoding }) => {
+    ipcMain.handle('fs:writeFile', async (_event, options: { path: string, content: string, encoding?: BufferEncoding, expectedContent?: string | null }) => {
         try {
             const currentWorkspacePath = getCurrentWorkspacePath()
             if (!currentWorkspacePath) {
                 return { success: false, error: 'No workspace open' }
             }
             const safePath = validatePath(currentWorkspacePath, options.path)
-            await fs.promises.mkdir(path.dirname(safePath), { recursive: true })
-            await fs.promises.writeFile(safePath, options.content, options.encoding || 'utf-8')
-            return { success: true }
+            return await writeTextFile(safePath, options.content, options.encoding || 'utf-8', options.expectedContent)
         } catch (error) {
             return { success: false, error: String(error) }
         }

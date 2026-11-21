@@ -4,8 +4,10 @@
  * A small Markdown renderer for chat. It builds React elements directly —
  * no HTML strings — so model output can never inject markup.
  */
-import { useState, type ReactNode } from 'react'
-import { Check, Copy, FileText } from 'lucide-react'
+import { useMemo, useState, type ReactNode } from 'react'
+import { Check, Copy, CornerDownLeft, FileText } from 'lucide-react'
+import { useNotificationStore } from '../../../stores/notificationStore'
+import { highlightCode } from './syntaxHighlight'
 
 export const TAG_CLICK_EVENT = 'kalynt-tag-click'
 
@@ -114,26 +116,74 @@ function withBreaks(text: string, key: string): ReactNode[] {
     })
 }
 
+async function insertAtActiveCursor(text: string, lang: string): Promise<boolean> {
+    const ev = new CustomEvent('kalynt-insert-at-cursor', {
+        detail: { code: text, text, language: lang },
+        cancelable: true
+    })
+    window.dispatchEvent(ev)
+    if (ev.defaultPrevented) return true
+    try {
+        const { monaco } = await import('../../ide/editor/monacoSetup')
+        const editors = monaco.editor.getEditors()
+        const target = editors.find(ed => ed.hasTextFocus() && !ed.getOption(monaco.editor.EditorOption.readOnly))
+            ?? editors.find(ed => ed.getModel() && !ed.getOption(monaco.editor.EditorOption.readOnly))
+        if (!target) return false
+        const selection = target.getSelection()
+        if (!selection) return false
+        target.executeEdits('agent-insert', [{ range: selection, text, forceMoveMarkers: true }])
+        target.pushUndoStop()
+        target.focus()
+        return true
+    } catch {
+        return false
+    }
+}
+
 function CodeBlock({ lang, text }: { lang: string; text: string }) {
     const [copied, setCopied] = useState(false)
+    const [inserted, setInserted] = useState(false)
+    const highlighted = useMemo(() => highlightCode(text, lang), [text, lang])
+
+    const handleInsert = async () => {
+        const ok = await insertAtActiveCursor(text, lang)
+        if (ok) {
+            setInserted(true)
+            setTimeout(() => setInserted(false), 1500)
+        } else {
+            useNotificationStore.getState().addNotification('Open an editable file in the editor to insert code at the cursor.', 'info')
+        }
+    }
+
     return (
         <figure className="md-pre">
             <figcaption className="md-pre__head">
                 <span>{lang || 'code'}</span>
-                <button
-                    type="button"
-                    className="md-pre__copy"
-                    onClick={() => {
-                        navigator.clipboard.writeText(text)
-                        setCopied(true)
-                        setTimeout(() => setCopied(false), 1500)
-                    }}
-                >
-                    {copied ? <Check size={12} aria-hidden /> : <Copy size={12} aria-hidden />}
-                    {copied ? 'Copied' : 'Copy'}
-                </button>
+                <div className="md-pre__actions">
+                    <button
+                        type="button"
+                        className="md-pre__copy"
+                        title="Insert code at the active editor cursor"
+                        onClick={() => void handleInsert()}
+                    >
+                        {inserted ? <Check size={12} aria-hidden /> : <CornerDownLeft size={12} aria-hidden />}
+                        {inserted ? 'Inserted' : 'Insert'}
+                    </button>
+                    <button
+                        type="button"
+                        className="md-pre__copy"
+                        onClick={() => {
+                            void navigator.clipboard.writeText(text)
+                            setCopied(true)
+                            setTimeout(() => setCopied(false), 1500)
+                        }}
+                    >
+                        {copied ? <Check size={12} aria-hidden /> : <Copy size={12} aria-hidden />}
+                        {copied ? 'Copied' : 'Copy'}
+                    </button>
+                </div>
             </figcaption>
-            <pre><code>{text}</code></pre>
+            <pre><code>{highlighted}</code></pre>
         </figure>
     )
 }

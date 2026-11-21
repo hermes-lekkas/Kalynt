@@ -19,25 +19,36 @@ import {
 const MAX_SPACES_PERSISTED = 20
 const MAX_MEMBERS_PER_SPACE = 100
 
+function hasLocalStorage(): boolean {
+    return typeof localStorage !== 'undefined'
+}
+
 // Generate a stable user ID for this device
 function getOrCreateUserId(): string {
-    const stored = localStorage.getItem('kalynt-user-id')
-    if (stored) return stored
+    if (hasLocalStorage()) {
+        const stored = localStorage.getItem('kalynt-user-id')
+        if (stored) return stored
 
-    const newId = crypto.randomUUID()
-    localStorage.setItem('kalynt-user-id', newId)
-    return newId
+        const newId = crypto.randomUUID()
+        localStorage.setItem('kalynt-user-id', newId)
+        return newId
+    }
+    return crypto.randomUUID()
 }
 
 // Get display name
 function getDisplayName(): string {
-    return localStorage.getItem('kalynt-display-name') || 'Anonymous User'
+    if (hasLocalStorage()) {
+        return localStorage.getItem('kalynt-display-name') || 'Anonymous User'
+    }
+    return 'Anonymous User'
 }
 
 export interface SpaceMemberInfo {
     ownerId: string               // User who created the space
-    members: WorkspaceMember[]    // All members
+    members: WorkspaceMember[]    // Active members
     bannedUsers: string[]         // Banned user IDs
+    bannedMembers: WorkspaceMember[] // Durable banned member records for moderation / Lift ban
     pendingActions: ModerationAction[]  // Actions to broadcast
 }
 
@@ -82,7 +93,9 @@ export const useMemberStore = create<MemberState>()(
             spaceMembers: {},
 
             setDisplayName: (name) => {
-                localStorage.setItem('kalynt-display-name', name)
+                if (hasLocalStorage()) {
+                    localStorage.setItem('kalynt-display-name', name)
+                }
                 const { spaceMembers, userId } = get()
 
                 // Update display name in all existing memberships
@@ -123,6 +136,7 @@ export const useMemberStore = create<MemberState>()(
                                 ownerId: userId,
                                 members: [ownerMember],
                                 bannedUsers: [],
+                                bannedMembers: [],
                                 pendingActions: []
                             }
                         }
@@ -287,14 +301,35 @@ export const useMemberStore = create<MemberState>()(
                     return false
                 }
 
+                const now = Date.now()
+
                 // Add ban action to pending
                 const banAction: ModerationAction = {
                     type: 'ban',
                     targetUserId,
                     initiatorId: userId,
                     reason,
-                    timestamp: Date.now()
+                    timestamp: now
                 }
+
+                const bannedEntry: WorkspaceMember = {
+                    userId: targetUserId,
+                    displayName: target?.displayName || targetUserId,
+                    role: target?.role || 'member',
+                    permissions: target?.permissions || { ...DEFAULT_PERMISSIONS.viewer },
+                    joinedAt: target?.joinedAt || now,
+                    isOnline: false,
+                    isBanned: true,
+                    bannedAt: now,
+                    bannedBy: userId,
+                    banReason: reason
+                }
+
+                const existingBanned = space.bannedMembers ?? []
+                const nextBannedMembers = [
+                    bannedEntry,
+                    ...existingBanned.filter(m => m.userId !== targetUserId)
+                ]
 
                 set({
                     spaceMembers: {
@@ -302,7 +337,8 @@ export const useMemberStore = create<MemberState>()(
                         [spaceId]: {
                             ...space,
                             members: space.members.filter(m => m.userId !== targetUserId),
-                            bannedUsers: [...space.bannedUsers, targetUserId],
+                            bannedUsers: Array.from(new Set([...space.bannedUsers, targetUserId])),
+                            bannedMembers: nextBannedMembers,
                             pendingActions: [...space.pendingActions, banAction]
                         }
                     }
@@ -334,6 +370,7 @@ export const useMemberStore = create<MemberState>()(
                         [spaceId]: {
                             ...space,
                             bannedUsers: space.bannedUsers.filter(id => id !== targetUserId),
+                            bannedMembers: (space.bannedMembers ?? []).filter(m => m.userId !== targetUserId),
                             pendingActions: [...space.pendingActions, unbanAction]
                         }
                     }
@@ -447,6 +484,7 @@ export const useMemberStore = create<MemberState>()(
                     clampedSpaceMembers[spaceId] = {
                         ...spaceInfo,
                         members: spaceInfo.members.slice(0, MAX_MEMBERS_PER_SPACE),
+                        bannedMembers: (spaceInfo.bannedMembers ?? []).slice(0, MAX_MEMBERS_PER_SPACE),
                         pendingActions: [] // Don't persist pending actions
                     }
                 }

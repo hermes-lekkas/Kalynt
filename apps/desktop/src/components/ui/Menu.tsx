@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
  */
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import { Check } from 'lucide-react'
 import { Popover, type Anchor, type Placement } from './Popover'
 
@@ -34,17 +34,26 @@ function isItem(entry: MenuEntry): entry is MenuItem {
 
 export function Menu({ open, onClose, anchor, items, placement = 'bottom-start', width = 220, ariaLabel }: MenuProps) {
     const listRef = useRef<HTMLDivElement>(null)
+    const viaKeyboardRef = useRef(false)
+    const menuId = useId()
     const [activeIndex, setActiveIndex] = useState(-1)
     const actionable = items.map((e, i) => (isItem(e) && !e.disabled ? i : -1)).filter(i => i !== -1)
 
     useEffect(() => {
         if (!open) {
             setActiveIndex(-1)
+            viaKeyboardRef.current = false
             return
         }
         // Focus the list so arrow keys work immediately.
-        requestAnimationFrame(() => listRef.current?.focus({ preventScroll: true }))
+        const frame = requestAnimationFrame(() => listRef.current?.focus({ preventScroll: true }))
+        return () => cancelAnimationFrame(frame)
     }, [open])
+
+    useEffect(() => {
+        if (!open || activeIndex < 0 || !viaKeyboardRef.current) return
+        listRef.current?.querySelector<HTMLElement>(`[data-menu-index="${activeIndex}"]`)?.scrollIntoView({ block: 'nearest' })
+    }, [open, activeIndex])
 
     const select = useCallback((item: MenuItem) => {
         if (item.disabled) return
@@ -54,6 +63,7 @@ export function Menu({ open, onClose, anchor, items, placement = 'bottom-start',
 
     const move = (delta: number) => {
         if (actionable.length === 0) return
+        viaKeyboardRef.current = true
         const current = actionable.indexOf(activeIndex)
         const next = current === -1
             ? (delta > 0 ? 0 : actionable.length - 1)
@@ -64,8 +74,8 @@ export function Menu({ open, onClose, anchor, items, placement = 'bottom-start',
     const onKeyDown = (e: KeyboardEvent) => {
         if (e.key === 'ArrowDown') { e.preventDefault(); move(1) }
         else if (e.key === 'ArrowUp') { e.preventDefault(); move(-1) }
-        else if (e.key === 'Home') { e.preventDefault(); setActiveIndex(actionable[0] ?? -1) }
-        else if (e.key === 'End') { e.preventDefault(); setActiveIndex(actionable[actionable.length - 1] ?? -1) }
+        else if (e.key === 'Home') { e.preventDefault(); viaKeyboardRef.current = true; setActiveIndex(actionable[0] ?? -1) }
+        else if (e.key === 'End') { e.preventDefault(); viaKeyboardRef.current = true; setActiveIndex(actionable[actionable.length - 1] ?? -1) }
         else if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault()
             const entry = items[activeIndex]
@@ -85,7 +95,7 @@ export function Menu({ open, onClose, anchor, items, placement = 'bottom-start',
                 aria-label={ariaLabel}
                 tabIndex={-1}
                 onKeyDown={onKeyDown}
-                aria-activedescendant={activeIndex >= 0 ? `k-menu-item-${activeIndex}` : undefined}
+                aria-activedescendant={activeIndex >= 0 ? `${menuId}-item-${activeIndex}` : undefined}
             >
                 {items.map((entry, index) => {
                     if (entry === 'separator') return <div key={`sep-${index}`} className="k-menu__sep" role="separator" />
@@ -94,12 +104,18 @@ export function Menu({ open, onClose, anchor, items, placement = 'bottom-start',
                     return (
                         <div
                             key={`${entry.label}-${index}`}
-                            id={`k-menu-item-${index}`}
+                            id={`${menuId}-item-${index}`}
+                            data-menu-index={index}
                             role={entry.checked === undefined ? 'menuitem' : 'menuitemcheckbox'}
                             aria-checked={entry.checked}
                             aria-disabled={entry.disabled || undefined}
                             className={classes}
-                            onMouseEnter={() => !entry.disabled && setActiveIndex(index)}
+                            onMouseEnter={() => {
+                                if (!entry.disabled) {
+                                    viaKeyboardRef.current = false
+                                    setActiveIndex(index)
+                                }
+                            }}
                             onMouseLeave={() => setActiveIndex(-1)}
                             onClick={() => select(entry)}
                         >

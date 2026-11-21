@@ -10,6 +10,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { useAppStore } from '../../../stores/appStore'
 import { TERMINAL_DARK, TERMINAL_FONT, TERMINAL_LIGHT } from './xtermThemes'
+import { createFileLinkProvider } from './fileLinkProvider'
 import '@xterm/xterm/css/xterm.css'
 
 interface OutputViewProps {
@@ -47,6 +48,7 @@ export function OutputView({ content, running, visible, emptyText, onInput }: Ou
         const fit = new FitAddon()
         term.loadAddon(fit)
         term.loadAddon(new WebLinksAddon((_e, uri) => window.electronAPI?.shell?.openExternal?.(uri)))
+        const linkDisposable = term.registerLinkProvider(createFileLinkProvider(term, () => null))
         term.open(host)
         term.onData(data => {
             const { running: isRunning, onInput: send } = live.current
@@ -64,6 +66,7 @@ export function OutputView({ content, running, visible, emptyText, onInput }: Ou
         observer.observe(host)
         return () => {
             observer.disconnect()
+            linkDisposable.dispose()
             term.dispose()
             termRef.current = null
             written.current = ''

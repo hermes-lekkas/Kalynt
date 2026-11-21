@@ -8,6 +8,11 @@ import { subscribe } from './subscribe'
 import type { TerminalAPI, RuntimeAPI, TasksAPI, SessionsAPI } from './types'
 
 export const workspaceApi = {
+    editorState: {
+        load: (spaceId: string, folder: string) => ipcRenderer.invoke('editor:load-state', spaceId, folder),
+        save: (state: unknown) => ipcRenderer.invoke('editor:save-state', state),
+        flush: (state: unknown) => ipcRenderer.sendSync('editor:flush-state', state)
+    },
 
     // ==========================================
     // Enhanced Terminal API
@@ -69,6 +74,8 @@ export const workspaceApi = {
         stopLSP: (sessionId: string) => ipcRenderer.invoke('runtime:stopLSP', sessionId),
         sendLSPRequest: (sessionId: string, method: string, params: any) =>
             ipcRenderer.invoke('runtime:sendLSPRequest', { sessionId, method, params }),
+        sendLSPNotification: (sessionId: string, method: string, params?: any) =>
+            ipcRenderer.invoke('runtime:sendLSPNotification', { sessionId, method, params }),
         getLanguageServers: () => ipcRenderer.invoke('runtime:getLanguageServers'),
         startDebug: (sessionId: string, languageId: string, program: string, options?: any) =>
             ipcRenderer.invoke('runtime:startDebug', { sessionId, languageId, program, options }),
@@ -83,6 +90,12 @@ export const workspaceApi = {
         onLanguageServerStopped: (callback: (data: { sessionId: string; exitCode: number }) => void) => {
             return subscribe('runtime:languageServerStopped', callback)
         },
+        onLanguageServerError: (callback: (data: { sessionId: string; languageId?: string; error: string; actionableHint?: string }) => void) => {
+            return subscribe('runtime:languageServerError', callback)
+        },
+        onLSPNotification: (callback: (data: { sessionId: string; languageId?: string; method: string; params: any }) => void) => {
+            return subscribe('runtime:lspNotification', callback)
+        },
         onDebugSessionStarted: (callback: (data: { sessionId: string; languageId: string; port: number; configuration: any }) => void) => {
             return subscribe('runtime:debugSessionStarted', callback)
         },
@@ -95,6 +108,8 @@ export const workspaceApi = {
         removeListeners: () => {
             ipcRenderer.removeAllListeners('runtime:languageServerStarted')
             ipcRenderer.removeAllListeners('runtime:languageServerStopped')
+            ipcRenderer.removeAllListeners('runtime:languageServerError')
+            ipcRenderer.removeAllListeners('runtime:lspNotification')
             ipcRenderer.removeAllListeners('runtime:debugSessionStarted')
             ipcRenderer.removeAllListeners('runtime:debugSessionStopped')
             ipcRenderer.removeAllListeners('runtime:debugSessionError')
@@ -172,7 +187,7 @@ export const workspaceApi = {
     // ==========================================
     fs: {
         openFolder: () => ipcRenderer.invoke('fs:openFolder'),
-        setWorkspace: (workspacePath: string) => ipcRenderer.invoke('fs:setWorkspace', workspacePath),
+        setWorkspace: (workspacePath: string | null) => ipcRenderer.invoke('fs:setWorkspace', workspacePath),
         readDir: (dirPath: string) => ipcRenderer.invoke('fs:readDir', dirPath),
         stat: (filePath: string) => ipcRenderer.invoke('fs:stat', filePath),
         readFile: (filePath: string) => ipcRenderer.invoke('fs:readFile', filePath),
@@ -205,6 +220,7 @@ export const workspaceApi = {
     code: {
         execute: (options: any) => ipcRenderer.invoke('code:execute', options),
         kill: (id: string) => ipcRenderer.invoke('code:kill', id),
+        writeInput: (id: string, data: string) => ipcRenderer.invoke('code:write-input', id, data),
         runCommand: (cwd: string, command: string, id?: string) => ipcRenderer.invoke('code:runCommand', cwd, command, id),
         onOutput: (callback: (data: any) => void) => {
             return subscribe('code:output', callback)
@@ -216,6 +232,7 @@ export const workspaceApi = {
             ipcRenderer.removeAllListeners('code:output')
             ipcRenderer.removeAllListeners('code:exit')
         },
+        clearBinaryCache: () => ipcRenderer.invoke('code:clearBinaryCache'),
         clearCache: () => ipcRenderer.invoke('code:clearCache')
     },
 
@@ -255,15 +272,23 @@ export const workspaceApi = {
         diff: (options: any) => ipcRenderer.invoke('git:diff', options),
         add: (options: any) => ipcRenderer.invoke('git:add', options),
         commit: (options: any) => ipcRenderer.invoke('git:commit', options),
+        amend: (options: { repoPath: string; message?: string }) => ipcRenderer.invoke('git:amend', options),
         branch: (repoPath: string) => ipcRenderer.invoke('git:branch', repoPath),
         checkout: (options: any) => ipcRenderer.invoke('git:checkout', options),
         reset: (options: any) => ipcRenderer.invoke('git:reset', options),
         push: (repoPath: string) => ipcRenderer.invoke('git:push', repoPath),
+        publish: (options: string | { repoPath: string; remote?: string; branch?: string }) => ipcRenderer.invoke('git:publish', options),
         pull: (repoPath: string) => ipcRenderer.invoke('git:pull', repoPath),
         init: (repoPath: string) => ipcRenderer.invoke('git:init', repoPath),
         discard: (options: any) => ipcRenderer.invoke('git:discard', options),
         createBranch: (options: any) => ipcRenderer.invoke('git:createBranch', options),
         fetch: (repoPath: string) => ipcRenderer.invoke('git:fetch', repoPath),
-        remote: (repoPath: string) => ipcRenderer.invoke('git:remote', repoPath)
+        remote: (repoPath: string) => ipcRenderer.invoke('git:remote', repoPath),
+        clone: (options: { url: string; targetPath: string }) => ipcRenderer.invoke('git:clone', options),
+        stash: (options: string | { repoPath: string; message?: string }) => ipcRenderer.invoke('git:stash', options),
+        stashPop: (repoPath: string) => ipcRenderer.invoke('git:stashPop', repoPath),
+        stashList: (repoPath: string) => ipcRenderer.invoke('git:stashList', repoPath),
+        commitFiles: (options: { repoPath: string; hash: string }) => ipcRenderer.invoke('git:commitFiles', options),
+        commitDiff: (options: { repoPath: string; hash: string; file?: string }) => ipcRenderer.invoke('git:commitDiff', options)
     }
 }

@@ -58,7 +58,7 @@ export const Transcript = memo(function Transcript({ session, workspace, outputs
     const archived = session.archive?.length ?? 0
     const notesAt = new Map<number, Array<{ text: string; tone?: 'info' | 'error' }>>()
     for (const note of session.notes ?? []) {
-        const at = archived + note.at
+        const at = Math.max(0, Math.min(all.length, archived + note.at))
         notesAt.set(at, [...(notesAt.get(at) ?? []), note])
     }
 

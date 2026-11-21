@@ -71,7 +71,6 @@ export function useRuntimes() {
         ]
         return () => {
             offs.forEach(off => { if (typeof off === 'function') off() })
-            mgmt()?.removeListeners?.()
         }
     }, [check])
 

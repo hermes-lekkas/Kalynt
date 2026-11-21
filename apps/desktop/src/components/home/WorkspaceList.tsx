@@ -7,7 +7,7 @@ import { useAppStore, type Space } from '../../stores/appStore'
 import { useWorkspaceFolderStore } from '../../stores/workspaceFolderStore'
 import { useNotificationStore } from '../../stores/notificationStore'
 import { EmptyState, IconButton, Menu, confirmAction, promptText, type Anchor } from '../ui'
-import { openWorkspace, pickFolder, relativeTime } from './workspaceActions'
+import { isBrowserMode, openWorkspace, pickFolder, relativeTime } from './workspaceActions'
 
 interface WorkspaceListProps {
     spaces: Space[]
@@ -61,6 +61,7 @@ function WorkspaceMenu({ space, anchor, onClose }: { space: Space; anchor: Ancho
     const { records, setFolder, forget } = useWorkspaceFolderStore()
     const addNotification = useNotificationStore(s => s.addNotification)
     const folder = records[space.id]?.folder ?? null
+    const browserMode = isBrowserMode()
 
     return (
         <Menu
@@ -77,12 +78,25 @@ function WorkspaceMenu({ space, anchor, onClose }: { space: Space; anchor: Ancho
                     }
                 },
                 {
-                    label: folder ? 'Change folder…' : 'Choose folder…', icon: <FolderInput size={14} />, onSelect: async () => {
+                    label: folder ? 'Change folder…' : 'Choose folder…',
+                    icon: <FolderInput size={14} />,
+                    disabled: browserMode,
+                    onSelect: async () => {
                         const picked = await pickFolder()
                         if (picked) setFolder(space.id, picked)
                     }
                 },
-                ...(folder ? [{ label: 'Show folder in file manager', onSelect: () => window.electronAPI?.shell?.showItemInFolder?.(folder) }] : []),
+                ...(folder ? [{
+                    label: 'Show folder in file manager',
+                    disabled: browserMode,
+                    onSelect: () => {
+                        if (browserMode) {
+                            addNotification('Showing local folders requires the desktop app.', 'info')
+                            return
+                        }
+                        window.electronAPI?.shell?.showItemInFolder?.(folder)
+                    }
+                }] : []),
                 'separator',
                 {
                     label: 'Remove from Kalynt…', icon: <Trash2 size={14} />, danger: true, onSelect: async () => {

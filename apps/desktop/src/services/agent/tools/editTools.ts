@@ -28,13 +28,21 @@ async function readIfExists(path: string): Promise<string | null> {
 
 async function write(path: string, content: string, before: string | null, ctx: ToolContext, summary: string): Promise<ToolOutcome> {
     await ctx.checkpoint(path)
-    const result = await fsApi().writeFile({ path, content })
-    if (!result?.success) return fail(cleanError(result?.error ?? 'Could not write the file.'))
+    const result = await fsApi().writeFile({ path, content, expectedContent: before })
+    if (!result?.success) {
+        if (result?.conflict) {
+            return fail(`${relativePath(ctx.workspace, path)} changed on disk since it was read. Read the file again before retrying the edit.`)
+        }
+        return fail(cleanError(result?.error ?? 'Could not write the file.'))
+    }
     ctx.knownFiles.add(path)
+    if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('kalynt-file-changed', { detail: { path, content, source: 'agent' } }))
+    }
     const display = diffDisplay(ctx, path, before, content)
     const message = `${summary} ${display.path} (+${display.added} −${display.removed}).`
     // A syntax error is cheapest to fix right after the edit that caused it.
-    const check = await quickCheck(path)
+    const check = await quickCheck(path, ctx.signal)
     if (check && !check.ok) {
         const problems = check.output.split(path).join(display.path)
         return { content: `${message}\n\nThe file now fails ${check.checker}:\n${problems}\nFix this before moving on.`, display: { ...display, problems } }
@@ -164,10 +172,17 @@ export const deletePathTool: AgentTool = {
         if (ctx.workspace && path.replace(/[\\/]+$/, '') === ctx.workspace.replace(/[\\/]+$/, '')) return fail('Refusing to delete the whole workspace.')
         const stat = await fsApi().stat(path)
         if (!stat?.success) return fail(`${relativePath(ctx.workspace, path)} doesn't exist.`)
-        if (!stat.isDirectory) await ctx.checkpoint(path)
+        await ctx.checkpoint(path)
         const result = await fsApi().delete(path)
         if (!result?.success) return fail(cleanError(result?.error ?? 'Could not delete it.'))
-        ctx.knownFiles.delete(path)
+        if (stat.isDirectory) {
+            const prefix = `${path.replace(/[\\/]+$/, '')}/`
+            for (const known of [...ctx.knownFiles]) {
+                if (known === path || known.replace(/\\/g, '/').startsWith(prefix.replace(/\\/g, '/'))) ctx.knownFiles.delete(known)
+            }
+        } else {
+            ctx.knownFiles.delete(path)
+        }
         const rel = relativePath(ctx.workspace, path)
         return { content: `Deleted ${rel}.`, display: { type: 'deleted', path: rel } }
     }
@@ -191,13 +206,23 @@ export const movePathTool: AgentTool = {
         const to = resolvePath(ctx.workspace, args.to)
         const stat = await fsApi().stat(from)
         if (!stat?.success) return fail(`${relativePath(ctx.workspace, from)} doesn't exist.`)
-        if (!stat.isDirectory) {
-            await ctx.checkpoint(from)
-            await ctx.checkpoint(to)
-        }
+        await ctx.checkpoint(from)
+        await ctx.checkpoint(to)
         const result = await fsApi().rename({ oldPath: from, newPath: to })
         if (!result?.success) return fail(cleanError(result?.error ?? 'Could not move it.'))
-        if (ctx.knownFiles.delete(from)) ctx.knownFiles.add(to)
+        if (stat.isDirectory) {
+            const normFrom = from.replace(/\\/g, '/').replace(/\/+$/, '')
+            const normTo = to.replace(/\\/g, '/').replace(/\/+$/, '')
+            for (const known of [...ctx.knownFiles]) {
+                const normKnown = known.replace(/\\/g, '/')
+                if (normKnown === normFrom || normKnown.startsWith(`${normFrom}/`)) {
+                    ctx.knownFiles.delete(known)
+                    ctx.knownFiles.add(normTo + normKnown.slice(normFrom.length))
+                }
+            }
+        } else if (ctx.knownFiles.delete(from)) {
+            ctx.knownFiles.add(to)
+        }
         const display = { type: 'moved' as const, from: relativePath(ctx.workspace, from), to: relativePath(ctx.workspace, to) }
         return { content: `Moved ${display.from} to ${display.to}.`, display }
     }

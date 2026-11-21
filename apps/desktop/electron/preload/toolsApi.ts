@@ -4,7 +4,6 @@
  * Build tasks and the debugger.
  */
 import { ipcRenderer, type IpcRendererEvent } from 'electron'
-import { subscribe } from './subscribe'
 
 export const toolsApi = {
 
@@ -57,6 +56,7 @@ export const toolsApi = {
         stepOut: (sessionId: string, threadId?: number) => ipcRenderer.invoke('debug:stepOut', sessionId, threadId),
         pause: (sessionId: string, threadId?: number) => ipcRenderer.invoke('debug:pause', sessionId, threadId),
         getCallStack: (sessionId: string, threadId?: number) => ipcRenderer.invoke('debug:getCallStack', sessionId, threadId),
+        getScopes: (sessionId: string, frameId: number) => ipcRenderer.invoke('debug:getScopes', sessionId, frameId),
         getVariables: (sessionId: string, variablesReference: number) => ipcRenderer.invoke('debug:getVariables', sessionId, variablesReference),
         evaluate: (sessionId: string, expression: string, frameId?: number) => ipcRenderer.invoke('debug:evaluate', sessionId, expression, frameId),
         addWatch: (sessionId: string, expression: string) => ipcRenderer.invoke('debug:addWatch', sessionId, expression),
