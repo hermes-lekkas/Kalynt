@@ -74,6 +74,8 @@ export const workspaceApi = {
         stopLSP: (sessionId: string) => ipcRenderer.invoke('runtime:stopLSP', sessionId),
         sendLSPRequest: (sessionId: string, method: string, params: any) =>
             ipcRenderer.invoke('runtime:sendLSPRequest', { sessionId, method, params }),
+        sendLSPNotification: (sessionId: string, method: string, params?: any) =>
+            ipcRenderer.invoke('runtime:sendLSPNotification', { sessionId, method, params }),
         getLanguageServers: () => ipcRenderer.invoke('runtime:getLanguageServers'),
         startDebug: (sessionId: string, languageId: string, program: string, options?: any) =>
             ipcRenderer.invoke('runtime:startDebug', { sessionId, languageId, program, options }),
@@ -88,6 +90,12 @@ export const workspaceApi = {
         onLanguageServerStopped: (callback: (data: { sessionId: string; exitCode: number }) => void) => {
             return subscribe('runtime:languageServerStopped', callback)
         },
+        onLanguageServerError: (callback: (data: { sessionId: string; languageId?: string; error: string; actionableHint?: string }) => void) => {
+            return subscribe('runtime:languageServerError', callback)
+        },
+        onLSPNotification: (callback: (data: { sessionId: string; languageId?: string; method: string; params: any }) => void) => {
+            return subscribe('runtime:lspNotification', callback)
+        },
         onDebugSessionStarted: (callback: (data: { sessionId: string; languageId: string; port: number; configuration: any }) => void) => {
             return subscribe('runtime:debugSessionStarted', callback)
         },
@@ -100,6 +108,8 @@ export const workspaceApi = {
         removeListeners: () => {
             ipcRenderer.removeAllListeners('runtime:languageServerStarted')
             ipcRenderer.removeAllListeners('runtime:languageServerStopped')
+            ipcRenderer.removeAllListeners('runtime:languageServerError')
+            ipcRenderer.removeAllListeners('runtime:lspNotification')
             ipcRenderer.removeAllListeners('runtime:debugSessionStarted')
             ipcRenderer.removeAllListeners('runtime:debugSessionStopped')
             ipcRenderer.removeAllListeners('runtime:debugSessionError')

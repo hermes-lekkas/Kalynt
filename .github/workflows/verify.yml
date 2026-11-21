@@ -59,7 +59,7 @@ jobs:
         working-directory: apps/desktop
         env:
           CXXFLAGS: -std=c++20
-        run: npx @electron/rebuild
+        run: npm run rebuild:native
       - name: Exercise production Electron IPC with disposable data
         env:
           KALYNT_SMOKE_PYTHON: python

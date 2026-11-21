@@ -75,9 +75,10 @@ export interface TerminalAPI {
 }
 
 export interface RuntimeAPI {
-  startLSP: (sessionId: string, languageId: string, workspacePath: string, options?: any) => Promise<{ success: boolean; error?: string }>
+  startLSP: (sessionId: string, languageId: string, workspacePath: string, options?: any) => Promise<{ success: boolean; sessionId?: string; error?: string; actionableHint?: string }>
   stopLSP: (sessionId: string) => Promise<{ success: boolean; error?: string }>
   sendLSPRequest: (sessionId: string, method: string, params: any) => Promise<{ success: boolean; result?: any; error?: string }>
+  sendLSPNotification: (sessionId: string, method: string, params?: any) => Promise<{ success: boolean; error?: string }>
   getLanguageServers: () => Promise<{ success: boolean; servers?: any[]; error?: string }>
   startDebug: (sessionId: string, languageId: string, program: string, options?: any) => Promise<{ success: boolean; port?: number; error?: string }>
   stopDebug: (sessionId: string) => Promise<{ success: boolean; error?: string }>
@@ -91,6 +92,8 @@ export interface RuntimeAPI {
   onLog: (callback: (data: { runtimeId: string; version?: string; level: string; message: string }) => void) => () => void
   onLanguageServerStarted: (callback: (data: { sessionId: string; languageId: string; capabilities: any }) => void) => void
   onLanguageServerStopped: (callback: (data: { sessionId: string; exitCode: number }) => void) => void
+  onLanguageServerError?: (callback: (data: { sessionId: string; languageId?: string; error: string; actionableHint?: string }) => void) => () => void
+  onLSPNotification: (callback: (data: { sessionId: string; languageId?: string; method: string; params: any }) => void) => () => void
   onDebugSessionStarted: (callback: (data: { sessionId: string; languageId: string; port: number; configuration: any }) => void) => void
   onDebugSessionStopped: (callback: (data: { sessionId: string; exitCode: number }) => void) => void
   onDebugSessionError: (callback: (data: { sessionId: string; error: string }) => void) => void
@@ -286,6 +289,7 @@ export interface ElectronAPI {
   initDB?: (dbPath: string) => Promise<void>
   dbQuery?: (sql: string, params: unknown[]) => Promise<unknown[]>
   dbRun?: (sql: string, params: unknown[]) => Promise<void>
+  consumePendingDeepLinks?: () => Promise<string[]>
   on: (channel: string, callback: (...args: any[]) => void) => (() => void)
 
   // Extension System APIs
@@ -298,6 +302,8 @@ export interface ElectronAPI {
     list: () => Promise<any[]>
     active: () => Promise<any[]>
     contributions: () => Promise<any>
+    executeCommand: (command: string, ...args: unknown[]) => Promise<unknown>
+    loadTheme: (extensionId: string, themeId: string) => Promise<any>
     startHost: () => Promise<void>
     stopHost: () => Promise<void>
     download: (url: string, targetPath: string) => Promise<void>
@@ -305,6 +311,7 @@ export interface ElectronAPI {
     onDeactivated: (callback: (data: { id: string }) => void) => () => void
     onExtensionActivated: (callback: (data: { id: string }) => void) => () => void
     onExtensionDeactivated: (callback: (data: { id: string }) => void) => () => void
+    onContributionsChanged: (callback: () => void) => () => void
     onShowMessage: (callback: (data: { type: string; message: string }) => void) => () => void
     removeListeners: () => void
   }
@@ -323,9 +330,17 @@ export interface ElectronAPI {
   ai: {
     chat: (requestId: string, request: import('./types/aiProtocol').ChatRequest) => Promise<
       | { ok: true; result: import('./types/aiProtocol').ChatResult }
-      | { ok: false; error: string; status?: number; aborted?: boolean }>
+      | { ok: false; error: string; status?: number; aborted?: boolean; incomplete?: boolean; stopReason?: 'truncated'; partial?: import('./types/aiProtocol').ChatResult }>
     cancel: (requestId: string) => Promise<{ ok: boolean }>
-    models: (provider: string, refresh?: boolean) => Promise<{ models: import('./types/aiProtocol').ModelInfo[]; live: boolean; error?: string }>
+    models: (provider: string, refresh?: boolean) => Promise<{
+      models: import('./types/aiProtocol').ModelInfo[]
+      live: boolean
+      source?: 'live' | 'fallback' | 'error'
+      fallback?: boolean
+      status?: number
+      rawCount?: number
+      error?: string
+    }>
     verify: (provider: string, key: string) => Promise<{ ok: boolean; error?: string; status?: number }>
     keyStatus: () => Promise<Partial<Record<import('./types/aiProtocol').ProviderId, boolean>>>
     localServerStatus: () => Promise<import('./types/aiProtocol').LocalServerStatus>

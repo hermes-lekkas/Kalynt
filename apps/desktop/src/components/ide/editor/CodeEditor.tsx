@@ -14,6 +14,7 @@ import { useEditorStatusStore, type LineEnding } from '../../../stores/editorSta
 import type { OpenFile } from '../../../types/ide'
 import { Spinner } from '../../ui'
 import { monaco, EDITOR_THEMES } from './monacoSetup'
+import { isCancellationError } from './monacoReliability'
 import type { RevealRequest } from '../hooks/useOpenFiles'
 import { samePath } from '../languages'
 
@@ -44,9 +45,31 @@ export function modelUri(path: string): string {
     return monaco.Uri.file(path).toString()
 }
 
-/** Frees the Monaco model of a closed file. */
+function isModelAttachedToAnyEditor(model: MonacoEditor.ITextModel): boolean {
+    const editors = monaco.editor.getEditors?.() ?? []
+    return editors.some(ed => ed.getModel() === model)
+}
+
+/**
+ * Frees the Monaco model of a closed file once no live editor pane references it.
+ * Deferring disposal across the current tick avoids disposing a model out from
+ * under a split pane or unmounting editor during tab-close / workspace-switch.
+ */
 export function disposeModel(path: string) {
-    monaco.editor.getModel(monaco.Uri.file(path))?.dispose()
+    const uri = monaco.Uri.file(path)
+    const model = monaco.editor.getModel(uri)
+    if (!model || model.isDisposed()) return
+    if (!isModelAttachedToAnyEditor(model)) {
+        model.dispose()
+        return
+    }
+    setTimeout(() => {
+        const current = monaco.editor.getModel(uri)
+        if (!current || current.isDisposed()) return
+        if (!isModelAttachedToAnyEditor(current)) {
+            current.dispose()
+        }
+    }, 0)
 }
 
 function useMonacoOptions(readOnly: boolean): MonacoEditor.IStandaloneEditorConstructionOptions {
@@ -256,6 +279,7 @@ export default function CodeEditor({
         const ed = editorRef.current
         if (!editorReady || !ed || !reveal || !samePath(reveal.path, file.path)) return
         const frame = requestAnimationFrame(() => {
+            if (editorRef.current !== ed || !ed.getModel()) return
             const col = Math.max(1, reveal.column ?? 1)
             ed.revealLineInCenter(reveal.line)
             ed.setPosition({ lineNumber: reveal.line, column: col })
@@ -274,6 +298,7 @@ export default function CodeEditor({
             if (!ed || !detail || typeof detail.line !== 'number' || detail.line < 1) return
             const col = Math.max(1, detail.column ?? 1)
             requestAnimationFrame(() => {
+                if (editorRef.current !== ed || !ed.getModel()) return
                 ed.revealLineInCenter(detail.line!)
                 ed.setPosition({ lineNumber: detail.line!, column: col })
                 ed.focus()
@@ -287,6 +312,7 @@ export default function CodeEditor({
             if (detail && typeof detail.line === 'number' && detail.line > 0) {
                 const col = Math.max(1, detail.column ?? 1)
                 requestAnimationFrame(() => {
+                    if (editorRef.current !== ed || !ed.getModel()) return
                     ed.revealLineInCenter(detail.line!)
                     ed.setPosition({ lineNumber: detail.line!, column: col })
                     ed.focus()
@@ -294,8 +320,16 @@ export default function CodeEditor({
                 return
             }
             requestAnimationFrame(() => {
+                if (editorRef.current !== ed || !ed.getModel()) return
                 ed.focus()
-                void ed.getAction('editor.action.quickOutline')?.run()
+                const action = ed.getAction('editor.action.quickOutline')
+                if (action) {
+                    void Promise.resolve(action.run()).catch(error => {
+                        if (!isCancellationError(error)) {
+                            console.warn('[CodeEditor] Quick outline failed:', error)
+                        }
+                    })
+                }
             })
         }
         const onInsertAtCursor = (e: Event) => {

@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import { FolderOpen } from 'lucide-react'
 import { Button, Dialog, Field, TextInput } from '../ui'
 import { folderName } from '../../stores/workspaceFolderStore'
-import { createWorkspace, pickFolder } from './workspaceActions'
+import { createWorkspace, isBrowserMode, pickFolder } from './workspaceActions'
 
 interface Props {
     open: boolean
@@ -17,6 +17,7 @@ export function NewWorkspaceDialog({ open, onClose }: Props) {
     const [folder, setFolder] = useState<string | null>(null)
     const [error, setError] = useState<string | null>(null)
     const nameRef = useRef<HTMLInputElement>(null)
+    const browserMode = isBrowserMode()
 
     useEffect(() => {
         if (!open) return
@@ -70,11 +71,18 @@ export function NewWorkspaceDialog({ open, onClose }: Props) {
                     />
                 )}
             </Field>
-            <Field label="Folder" hint={folder ? undefined : 'Optional. Kalynt opens files, runs code and indexes for the agent inside this folder.'}>
+            <Field label="Folder" hint={folder ? undefined : browserMode ? 'Requires the desktop app. You can still create a workspace without a local folder.' : 'Optional. Kalynt opens files, runs code and indexes for the agent inside this folder.'}>
                 {id => (
                     <div className="home-folder-pick">
-                        <TextInput id={id} readOnly mono value={folder ?? ''} placeholder="No folder chosen" />
-                        <Button icon={<FolderOpen size={15} />} onClick={choose}>{folder ? 'Change' : 'Choose…'}</Button>
+                        <TextInput id={id} readOnly mono value={folder ?? ''} placeholder={browserMode ? 'Requires the desktop app' : 'No folder chosen'} />
+                        <Button
+                            icon={<FolderOpen size={15} />}
+                            disabled={browserMode}
+                            title={browserMode ? 'Requires the desktop app' : undefined}
+                            onClick={choose}
+                        >
+                            {folder ? 'Change' : 'Choose…'}
+                        </Button>
                     </div>
                 )}
             </Field>

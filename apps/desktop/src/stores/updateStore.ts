@@ -78,7 +78,7 @@ export const useUpdateStore = create<UpdateState>()(
         (set, get) => ({
             // Initial state
             status: 'idle',
-            currentVersion: '2.0.0',
+            currentVersion: '2.1.0',
             updateInfo: null,
             downloadProgress: null,
             error: null,

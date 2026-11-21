@@ -4,13 +4,20 @@
  * Starting the right debug adapter for a launch configuration.
  */
 import * as fs from 'fs'
+import * as os from 'os'
 import * as path from 'path'
 import { spawn, execFile } from 'child_process'
 import type { DebugConfiguration } from '../../../src/types/debug'
 import { binaryManager } from '../../services/binary-manager'
+import { getRuntimesDir } from '../../services/runtimes/manifest'
 import { validatePath } from '../../utils/pathValidator'
-import { findBinary, safeEnv } from '../code-exec/binaries'
+import { findBinary, resolvePythonExecutable, safeEnv } from '../code-exec/binaries'
 import { DapConnection, connectWithRetry, freePort } from './transport'
+
+export const JS_DEBUG_DAP_RELEASE_VERSION = 'v1.140.1'
+export const JS_DEBUG_DAP_ARCHIVE_NAME = `js-debug-dap-${JS_DEBUG_DAP_RELEASE_VERSION}.tar.gz`
+export const JS_DEBUG_DAP_RELEASE_URL = `https://github.com/microsoft/vscode-js-debug/releases/tag/${JS_DEBUG_DAP_RELEASE_VERSION}`
+export const JS_DEBUG_DAP_DOWNLOAD_URL = `https://github.com/microsoft/vscode-js-debug/releases/download/${JS_DEBUG_DAP_RELEASE_VERSION}/${JS_DEBUG_DAP_ARCHIVE_NAME}`
 
 export class AdapterMissingError extends Error {
     constructor(readonly type: string, readonly requiredBinary: string, readonly installInstructions: string) {
@@ -61,14 +68,19 @@ async function socketAdapter(command: string, args: string[], port: number, cwd:
     let spawnError: Error | null = null
     proc.on('error', err => { spawnError = err })
     proc.stderr?.on('data', d => { early += d.toString() })
-    const socket = await connectWithRetry(port, 12, 500, () => proc.exitCode === null && !spawnError).catch(err => {
+    proc.stdout?.on('data', d => {
+        if (early.length < 2048) early += d.toString()
+    })
+    const socket = await connectWithRetry(port, 16, 400, () => proc.exitCode === null && !spawnError).catch(err => {
         try { proc.kill() } catch { /* already gone */ }
         const message = spawnError
             ? `Failed to start debug adapter '${path.basename(command)}': ${spawnError.message}`
-            : `${err.message}${early ? `\n${early.trim()}` : ''}`
+            : `${err.message}${early.trim() ? `\n${early.trim()}` : ''}`
         throw new Error(message)
     })
     const conn = new DapConnection()
+    conn.serverHost = '127.0.0.1'
+    conn.serverPort = port
     conn.attach(proc, socket)
     return conn
 }
@@ -80,21 +92,117 @@ function stdioAdapter(command: string, args: string[], cwd: string, env: NodeJS.
     return conn
 }
 
-async function launchNode(config: DebugConfiguration, cwd: string, env: NodeJS.ProcessEnv) {
-    const relative = ['@vscode', 'js-debug-dap', 'out', 'src', 'dapDebugServer.js']
+function resolveJsDebugEntryFromBase(basePath: string | null | undefined): string | null {
+    if (!basePath) return null
+    try {
+        const stat = fs.statSync(basePath)
+        if (stat.isFile()) return basePath
+        if (stat.isDirectory()) {
+            const nested = [
+                path.join(basePath, 'js-debug', 'src', 'dapDebugServer.js'),
+                path.join(basePath, 'src', 'dapDebugServer.js'),
+                path.join(basePath, 'out', 'src', 'dapDebugServer.js'),
+                path.join(basePath, 'dapDebugServer.js')
+            ]
+            return nested.find(exists) ?? null
+        }
+    } catch {
+        return null
+    }
+    return null
+}
+
+/**
+ * Discovers Microsoft's standalone js-debug-dap server (`js-debug/src/dapDebugServer.js`)
+ * across env override, Kalynt managed/user adapter directories, VS Code extensions,
+ * and legacy layouts.
+ */
+export function findJsDebugDapServer(options?: {
+    envPath?: string | null
+    homeDir?: string
+    runtimesDir?: string
+    bundledPath?: string | null
+    extraRoots?: string[]
+}): string | null {
+    const envOverride = options?.envPath !== undefined ? options.envPath : process.env.KALYNT_JS_DEBUG_DAP
+    const fromEnv = resolveJsDebugEntryFromBase(envOverride)
+    if (fromEnv) return fromEnv
+
+    const bundled = options?.bundledPath !== undefined ? options.bundledPath : binaryManager.getBinaryPath('js-debug-dap')
+    const fromBundled = resolveJsDebugEntryFromBase(bundled)
+    if (fromBundled) return fromBundled
+
+    const home = options?.homeDir ?? (process.env.HOME || process.env.USERPROFILE || os.homedir())
+    const runtimesDir = options?.runtimesDir ?? getRuntimesDir()
+
+    const candidateBases: string[] = [
+        ...(runtimesDir ? [
+            path.join(runtimesDir, 'js-debug-dap'),
+            path.join(runtimesDir, 'js-debug'),
+            path.join(runtimesDir, 'debug-adapters')
+        ] : []),
+        path.join(home, '.kalynt', 'debug-adapters'),
+        path.join(home, '.kalynt', 'debug-adapters', 'js-debug-dap'),
+        path.join(home, '.local', 'share', 'kalynt', 'debug-adapters'),
+        ...(process.platform === 'win32' && process.env.LOCALAPPDATA
+            ? [path.join(process.env.LOCALAPPDATA, 'kalynt', 'debug-adapters')]
+            : []),
+        ...(options?.extraRoots ?? [])
+    ]
+
+    for (const base of candidateBases) {
+        const hit = resolveJsDebugEntryFromBase(base)
+        if (hit) return hit
+    }
+
+    // Check VS Code installed js-debug extension if present
+    const fromVscode =
+        findInExtensions('ms-vscode.js-debug-', ['src', 'dapDebugServer.js']) ||
+        findInExtensions('ms-vscode.js-debug-', ['out', 'src', 'dapDebugServer.js'])
+    if (fromVscode) return fromVscode
+
+    // Legacy manual placements under global node_modules
+    const legacyRelatives = [
+        ['js-debug', 'src', 'dapDebugServer.js'],
+        ['@vscode', 'js-debug-dap', 'out', 'src', 'dapDebugServer.js']
+    ]
     const globalRoots = [
         process.platform === 'win32' ? path.join(process.env.APPDATA || '', 'npm', 'node_modules') : '/usr/local/lib/node_modules',
-        path.join(process.env.HOME || '', '.npm-global', 'lib', 'node_modules')
+        path.join(home, '.npm-global', 'lib', 'node_modules')
     ]
-    let server = binaryManager.getBinaryPath('js-debug-dap') || globalRoots.map(r => path.join(r, ...relative)).find(exists) || null
+    for (const root of globalRoots) {
+        for (const rel of legacyRelatives) {
+            const candidate = path.join(root, ...rel)
+            if (exists(candidate)) return candidate
+        }
+    }
+
+    return null
+}
+
+export function jsDebugInstallInstructions(): string {
+    const adapterDir = path.join(process.env.HOME || process.env.USERPROFILE || '~', '.kalynt', 'debug-adapters')
+    return [
+        `Download Microsoft's standalone js-debug-dap ${JS_DEBUG_DAP_RELEASE_VERSION} archive (${JS_DEBUG_DAP_ARCHIVE_NAME}) from ${JS_DEBUG_DAP_RELEASE_URL}`,
+        `Extract it into ${adapterDir} so ${path.join(adapterDir, 'js-debug', 'src', 'dapDebugServer.js')} exists (or set KALYNT_JS_DEBUG_DAP to that file).`
+    ].join('\n')
+}
+
+async function launchNode(config: DebugConfiguration, cwd: string, env: NodeJS.ProcessEnv) {
+    let server = findJsDebugDapServer()
     if (!server) {
         const npm = await findBinary('npm')
         const root = npm ? (await run(npm, ['root', '-g'])).out.trim() : ''
-        const candidate = root ? path.join(root, ...relative) : null
-        if (exists(candidate)) server = candidate
+        if (root) {
+            const legacy = [
+                path.join(root, 'js-debug', 'src', 'dapDebugServer.js'),
+                path.join(root, '@vscode', 'js-debug-dap', 'out', 'src', 'dapDebugServer.js')
+            ].find(exists)
+            if (legacy) server = legacy
+        }
     }
     if (!server) {
-        throw new AdapterMissingError(config.type, '@vscode/js-debug-dap', 'Install the Node.js debugger with: npm install -g @vscode/js-debug-dap')
+        throw new AdapterMissingError(config.type, `js-debug-dap (${JS_DEBUG_DAP_RELEASE_VERSION})`, jsDebugInstallInstructions())
     }
     const port = await freePort()
     const node = (await findBinary('node')) || 'node'
@@ -102,9 +210,9 @@ async function launchNode(config: DebugConfiguration, cwd: string, env: NodeJS.P
 }
 
 async function launchPython(config: DebugConfiguration, cwd: string, env: NodeJS.ProcessEnv) {
-    // The configuration's interpreter wins, then the one on PATH (a virtualenv's, when active).
+    // Share Python interpreter discovery with LSP and code execution (configured -> .venv/venv -> managed -> PATH).
     const configured = (config.python ?? config.pythonPath) as string | undefined
-    const python = configured || (await findBinary(process.platform === 'win32' ? 'python' : 'python3')) || (await findBinary('python'))
+    const python = await resolvePythonExecutable(cwd, configured)
     if (!python) throw new AdapterMissingError(config.type, 'python', 'Install Python 3 from https://www.python.org/downloads/')
     const check = await run(python, ['-c', 'import debugpy'])
     if (!check.ok) {

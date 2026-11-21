@@ -7,7 +7,7 @@ import { useWorkspaceFolderStore } from '../../stores/workspaceFolderStore'
 import { useLayoutStore } from '../../stores/layoutStore'
 import { useUiStore } from '../../stores/uiStore'
 import { Button, IconButton } from '../ui'
-import { openFolderAsWorkspace, openWorkspace } from './workspaceActions'
+import { isBrowserMode, openFolderAsWorkspace, openWorkspace } from './workspaceActions'
 
 const STARTER = "Explain how this project starts. Point me to the entry file and the command to run it. Don't change any files."
 const DISMISSED_KEY = 'kalynt-quick-start-dismissed'
@@ -27,6 +27,7 @@ export function QuickStart() {
     const records = useWorkspaceFolderStore(s => s.records)
     const loaded = useModelStore(s => s.loadedModelId)
     const [dismissed, setDismissed] = useState(readDismissed)
+    const browserMode = isBrowserMode()
 
     const workspace = spaces.find(s => !!records[s.id]?.folder)
     const configured = !!loaded || Object.values(keys).some(Boolean)
@@ -76,10 +77,16 @@ export function QuickStart() {
                     </span>
                     <div>
                         <h3>Open a project folder</h3>
-                        <p>Your existing files and Git repository work as they are.</p>
+                        <p>{browserMode ? 'Requires the desktop app. Use New workspace to try tasks and collaboration in the browser.' : 'Your existing files and Git repository work as they are.'}</p>
                     </div>
                     {!workspace && (
-                        <Button size="sm" icon={<FolderOpen size={13} />} onClick={() => void openFolderAsWorkspace()}>
+                        <Button
+                            size="sm"
+                            icon={<FolderOpen size={13} />}
+                            disabled={browserMode}
+                            title={browserMode ? 'Requires the desktop app' : undefined}
+                            onClick={() => void openFolderAsWorkspace()}
+                        >
                             Open folder
                         </Button>
                     )}

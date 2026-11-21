@@ -2,27 +2,52 @@
 
 All notable changes to this project will be documented in this file.
 
-## In development
+## [v2.1.0] - 2026-11-21
 
-- Keep unsaved editor buffers across workspace switches and normal application restarts; atomically store recovery files with owner-only permissions and block a normal close when recovery fails.
-- Detect disk changes before saving, offer explicit reload/overwrite choices, preserve edits made during an in-flight save, and retain tabs when newer edits have not been saved.
-- Save text atomically while preserving UTF-8 BOM, line endings, executable permissions and symlinks.
-- Search and replace operate on open editor buffers without silently overwriting their disk versions. Added recursive include globs, brace alternatives, literal whitespace queries, and correct regex lookaround/capture replacements.
-- Keep failed conversation saves available for retry after switching chats and synchronously acknowledge saving conversations during normal window closing.
-- Normalize Windows drive/UNC paths and distinguish actual workspace boundaries and case-sensitive POSIX paths.
-- Added direct React hook regressions and a dev-only Monaco interaction fixture; verified a real Python debug session including breakpoint, stack, evaluation and continue.
-- Fixed nested workspace-search globs, invalid/missing folder recovery, watcher preservation when reopening the same folder, and serialized rapid workspace switches.
-- Validate resumed model-download ranges before publishing a completed file; handle invalid redirects without an uncaught main-process exception.
-- Keep partially failed agent undo operations retryable, preserve subsequent user edits, and accurately report partial undo to the model.
-- Fixed an agent-panel crash in browser preview mode and report failed conversation saves instead of treating them as successful.
-- Respect GGUF training contexts smaller than 512 tokens when allocating inference contexts.
-- Added executable lint configuration, repository-wide checks, regression tests, and an isolated production Electron smoke suite with optional real GGUF inference; run checks on pull requests through CI.
-- Redesigned the website around real IDE screenshots, clear setup steps, current GitHub downloads, and accurate privacy and hardware guidance.
-- Added a first-session guide and direct routes to local models, local inference servers, and cloud keys.
-- Added loopback OpenAI-compatible server connections for Ollama and LM Studio, with model discovery, optional encrypted tokens, and cancellation.
-- Distinguished API authentication failures from rate limits, provider outages, and connection failures; bounded model discovery with timeouts.
-- Refresh model lists after connection changes and show local-server failures without inventing fallback models.
-- Suggest a local model based on detected system memory and distinguish code chat from agent tasks.
+### Upgrading from 2.0.0
+
+- **Save open files before updating from 2.0.0.** Kalynt 2.0.0 predates the editor draft recovery service, so unsaved buffers open in 2.0.0 will not appear after upgrading. From 2.1.0 onward, unsaved buffers survive workspace switches and normal restarts.
+- **Preserved across in-place upgrades (same user-data profile):** workspace folders and list, saved agent sessions, pinned/open files, theme and layout preferences, installed extensions, downloaded local models and model selections, room passwords, and API keys stored in OS keychain (`safeStorage`).
+
+### Collaboration & encryption (protocol v2 — breaking change for mixed rooms)
+
+- **Deterministic room salt + PBKDF2→HKDF (protocol v2):** Encrypted rooms now use deterministic room-scoped key derivation and explicit protocol-version and password negotiation at join time, distinguishing wrong passwords from incompatible protocol versions.
+- **Mixed 2.0.0 / 2.1.0 encrypted rooms are unsupported:** All members of an encrypted room must upgrade together to 2.1.0.
+- **Legacy encrypted chat history:** Team chat history encrypted under 2.0.0 cannot be decrypted with protocol v2 keys; start a fresh encrypted room or archive legacy encrypted chat after all peers upgrade to 2.1.0 (local workspace files and local AI agent conversations are preserved).
+
+### Packaging, updates & platform notes
+
+- **Workspace-aware packaging & native rebuilds:** Set `build.npmRebuild: false`, added direct `@electron/rebuild` (`^4.0.3`) and `npm run rebuild:native`, updated local packaging scripts to rebuild `node-pty` and pass `--publish never`, aligned Node.js engine requirement to `>=22.12.0`, and refreshed `package-lock.json` (removing obsolete `better-sqlite3` and native Tree-sitter entries).
+- **macOS update path:** macOS builds now generate both `.dmg` and `.zip` (plus `latest-mac.yml`) for `electron-updater` compatibility. In-app macOS auto-updates require a signed release `.zip` alongside the `.dmg`; unsigned or manual macOS users should update by downloading the `.dmg` directly from GitHub Releases.
+- **Installer size vs installed footprint:** On Linux x64, measured pre-release 2.1 builds are ~312 MB compressed for `.deb` (~502 MB AppImage) and ~1.12 GB extracted on disk (compared to 2.0.0's 328 MB `.deb`, 542 MB AppImage, and 1.38 GB extracted footprint; `app.asar` dropped from 201 MB to 29.5 MB). Final sizes for all platforms are measured from the published 2.1.0 release artifacts.
+- **External tool prerequisites & platform scope:** Linux x86-64 builds were verified end to end on Ubuntu; Windows and macOS installers are built by CI and covered by cross-platform unit/lint/type checks. Debuggers (`debugpy`, `gdb`, `dlv`, standalone Microsoft `vscode-js-debug` DAP archive) and language servers (`pylsp`, `gopls`, `clangd`, `rust-analyzer`) require separate installation; C# uses `dotnet run --file` on .NET SDK 10+ and requires `dotnet-script` on older SDKs or `.csx` files. Arbitrary VS Code extension compatibility varies because Kalynt implements a subset of the VS Code API.
+
+### Reliability & feature changes
+
+#### Collaboration & P2P (QA-07..10, QA-31, QA-33)
+- **Shared Files reliability:** Attached Shared Files to the single canonical live password-aware Yjs document (`useYDoc`), seeded peer presence immediately, switched to WebRTC-friendly 64 KiB chunking with SHA-256 checksum verification on download, and surfaced explicit local-only, sending, receiving, incomplete, and ready states.
+- **Cold & warm invite links:** Queued validated startup `process.argv` and macOS `open-url` `kalynt://` deep links until the renderer consumes them once (`deep-link:consume`), with `#lock=1` invites opening directly on the password prompt.
+- **Presence & room authentication:** Rebound awareness listeners and `memberSyncService.updateAwareness` across provider reconnects (fixing stale "Only you" counts after setting a room password), added Join-time password probing (`waitForRoomAuth`), inline password retry in Team Chat, and explicit distinction between key-configured, authenticated, wrong-password, password-required, and incompatible Kalynt 2.0 protocol states.
+- **Durable moderation & Lift ban:** Added ECDSA-signed `bannedRecords` with live and rejoin disconnect enforcement and a persistent Banned section in Members so owners and admins can always locate banned users and lift bans.
+
+#### Editor, Git & Workspace Search (QA-05, QA-11, QA-17..19)
+- **Monaco diff & transition reliability:** Isolated diff models under `kalynt-diff://` with strict detach-before-dispose ordering (never disposing main-editor models), and suppressed benign Monaco/Abort `Canceled` errors during split, tab-close, and workspace-switch transitions without hiding unexpected errors.
+- **TS/JS workspace discovery:** Applied ignore rules strictly to workspace-relative path segments (fixing false `TS2307` errors inside workspaces under ignored parent names such as `.cache`, `build`, or `out`) and aligned discovery across `.ts/.tsx/.d.ts/.mts/.cts/.js/.jsx/.mjs/.cjs`.
+- **Format on Save & Auto-save clarity:** Standardized manual-save-only formatting (`afterDelay` and `onFocusChange` auto-saves skip formatting to avoid cursor/undo disruption), aligned General Settings copy, and added formatter-error fallback with warning notifications.
+- **Safe multi-remote Git checkouts:** Selecting a remote branch now creates or reuses an explicit local tracking branch (`<short>` or `<remote>-<short>`) instead of detaching HEAD when multiple remotes share a branch name, and pushes renamed tracking branches cleanly.
+- **Editor recovery, atomic saves & buffer-aware search:** Unsaved editor buffers survive workspace switches and normal restarts with atomic owner-only persistence and synchronous close flush; saves detect disk conflicts and preserve UTF-8 BOM, line endings, permissions, and symlinks; workspace search/replace operates on open buffers with recursive globs, brace alternatives, and regex lookaround/capture fidelity.
+
+#### Language Servers, Debugging, Runtimes & Process Cleanup (QA-06, QA-20..23, QA-26, QA-27, QA-32)
+- **LSP notifications & Python discovery:** Routed document lifecycle messages (`initialized`, `didOpen`, `didChange`, `didSave`, `didClose`) as true JSON-RPC notifications (fixing `clangd` and `rust-analyzer`), forwarded pushed `textDocument/publishDiagnostics` to Problems and Monaco markers, shared Python interpreter discovery (`venv`/managed/`python3`/`python`), and eliminated unhandled `ERR_STREAM_DESTROYED` rejections when a language server is missing or exits early.
+- **DAP Scopes & Node debugging:** Implemented `debug.getScopes(sessionId, frameId)` end-to-end with stale root cleanup on step/frame switch/stop; replaced the nonexistent `@vscode/js-debug-dap` npm recommendation with standalone Microsoft `vscode-js-debug` (`js-debug-dap`) archive discovery, `startDebugging` child-session TCP handshake, and lifecycle error diagnostics.
+- **Runtimes, Runner & Shutdown:** Preserved `rustup-init` / `rustup-init.exe` basename in the built-in Rust installer; added .NET 10+ `dotnet run --file` support for standalone `.cs` files alongside `.csproj`/`.csx`/`dotnet-script` detection and F# `fsi`; sanitized unsaved Nim temp module names with awaited cleanup; wired active `TaskRunnerService` process trees into `stopEverythingWithDetails()` and "Stop all processes"; and ensured Linux `libffmpeg.so` `LD_LIBRARY_PATH` setup for `node-llama-cpp` probes.
+
+#### AI, Workspace Review, Extensions & Browser Mode (QA-12, QA-24, QA-25, QA-28..30, QA-34)
+- **Local servers & honest cloud adapters:** Added loopback Ollama/LM Studio support; separated live 200 model catalogs (including empty/filtered responses) from explicit offline fallbacks and auth/rate-limit errors; tracked terminal stream finish signals across DeepSeek, Kimi, GLM, and Gemini so truncated streams preserve partial output and surface an incomplete/truncated state instead of reporting completion.
+- **Workspace Review scope & cancellation:** Added `sampled` vs. `full` coverage with pre-review limit disclosure, discovered/analyzed/omitted/clipped counts by reason, reviewed line ranges, and explicit `completed`, `partial`, `canceled`, and `failed` outcomes.
+- **VS Code extensions & color themes:** Registered extension-contributed commands in the Command Palette with on-demand activation, `showInformationMessage` notifications, and removal on disable/uninstall; added contributed JSONC VS Code color themes in Settings and the Command Palette (`Preferences: Color Theme`) with CSS/Monaco token mapping, persistence, and automatic uninstall fallback.
+- **Browser preview mode (`dev:web`):** Disabled or explicitly explained desktop-only actions such as Open folder instead of failing as a silent no-op, and fixed browser-mode agent session responses.
+- **Testing & CI:** Expanded desktop regression suite to 150+ tests across `electron/` and `src/`, updated `smoke.cjs` PTY contract assertions and packaged `app.asar` version/bundle checks, and added ESLint + fixture type-checking to CI.
 
 ## [v2.0.0] - 2026-10-19
 

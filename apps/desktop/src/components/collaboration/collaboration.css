@@ -160,12 +160,32 @@
     padding: var(--sp-5);
 }
 
+.member-list__scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+}
+
 .member-list__items {
     list-style: none;
     margin: 0;
-    padding: 0 var(--sp-3) var(--sp-5);
-    overflow-y: auto;
-    flex: 1;
+    padding: 0 var(--sp-3) var(--sp-4);
+}
+
+.member-list__section {
+    border-top: 1px solid var(--line);
+    padding-top: var(--sp-3);
+}
+
+.member-list__heading {
+    padding: var(--sp-2) var(--sp-5);
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semibold);
+    color: var(--text-3);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
 }
 
 .member-list__empty {

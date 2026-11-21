@@ -75,6 +75,7 @@ export function setupDebugHandlers(
     }
 
     handle('debug:getCallStack', async (sessionId: string, threadId?: number) => ({ callStack: await sessions.getCallStack(sessionId, threadId) }))
+    handle('debug:getScopes', async (sessionId: string, frameId: number) => ({ scopes: await sessions.getScopes(sessionId, frameId) }))
     handle('debug:getVariables', async (sessionId: string, ref: number) => ({ variables: await sessions.getVariables(sessionId, ref) }))
     handle('debug:evaluate', async (sessionId: string, expression: string, frameId?: number) => ({ result: await sessions.evaluate(sessionId, expression, frameId) }))
 

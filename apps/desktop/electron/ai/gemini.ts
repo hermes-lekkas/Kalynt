@@ -6,7 +6,7 @@
  * (attached to function-call and text parts) stay with their turn.
  */
 import type { AssistantItem, ChatRequest, ChatResult, ConversationItem, Effort, StreamEvent } from '../../src/types/aiProtocol'
-import { postJson, ProviderError, readSse } from './http'
+import { postJson, ProviderError, readSse, TruncatedStreamError } from './http'
 
 interface Part {
     text?: string
@@ -112,62 +112,106 @@ export async function streamGemini(request: ChatRequest, options: GeminiOptions)
     const parts: Part[] = []
     let finish = null as string | null
     let blocked = null as string | null
+    let emittedAny = false
     let usage = null as { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number; cachedContentTokenCount?: number } | null
     let model = request.model
 
-    await readSse(response, ({ data }) => {
-        let chunk: any
-        try { chunk = JSON.parse(data) } catch { return }
-        if (chunk.error) throw new ProviderError(chunk.error.message ?? 'Gemini reported an error.', chunk.error.code)
-        if (chunk.modelVersion) model = chunk.modelVersion
-        if (chunk.usageMetadata) usage = chunk.usageMetadata
-        if (chunk.promptFeedback?.blockReason) blocked = chunk.promptFeedback.blockReason
-        const candidate = chunk.candidates?.[0]
-        if (!candidate) return
-        for (const part of (candidate.content?.parts ?? []) as Part[]) {
+    const emit = (event: StreamEvent) => {
+        emittedAny = true
+        options.emit(event)
+    }
+
+    const buildResult = (stopReason: ChatResult['stopReason']): ChatResult => {
+        let text = ''
+        let reasoning = ''
+        const toolCalls: AssistantItem['toolCalls'] = []
+        let callIndex = 0
+        for (const part of parts) {
             if (part.functionCall) {
-                const id = part.functionCall.id || `gemini-call-${parts.filter(p => p.functionCall).length + 1}`
-                options.emit({ type: 'tool-call-start', id, name: part.functionCall.name })
-                options.emit({ type: 'tool-call-delta', id, delta: JSON.stringify(part.functionCall.args ?? {}) })
-            } else if (typeof part.text === 'string' && part.text) {
-                options.emit({ type: part.thought ? 'reasoning' : 'text', delta: part.text })
+                callIndex++
+                toolCalls.push({ id: part.functionCall.id || `gemini-call-${callIndex}`, name: part.functionCall.name, arguments: part.functionCall.args ?? {} })
+            } else if (part.text) {
+                if (part.thought) reasoning += part.text
+                else text += part.text
             }
-            // Keep empty parts that carry a signature; drop truly empty ones.
-            if (part.functionCall || part.text || part.thoughtSignature) parts.push(part)
         }
-        if (candidate.finishReason) finish = candidate.finishReason
-    })
-
-    if (blocked) throw new ProviderError(`Gemini blocked this request (${String(blocked).toLowerCase().replace(/_/g, ' ')}).`)
-
-    let text = ''
-    let reasoning = ''
-    const toolCalls: AssistantItem['toolCalls'] = []
-    let callIndex = 0
-    for (const part of parts) {
-        if (part.functionCall) {
-            callIndex++
-            toolCalls.push({ id: part.functionCall.id || `gemini-call-${callIndex}`, name: part.functionCall.name, arguments: part.functionCall.args ?? {} })
-        } else if (part.text) {
-            if (part.thought) reasoning += part.text
-            else text += part.text
+        const u = usage
+        return {
+            assistant: {
+                role: 'assistant', text, toolCalls,
+                reasoning: reasoning.trim() || undefined,
+                provider: 'google', model, raw: parts
+            },
+            stopReason,
+            usage: u ? {
+                inputTokens: u.promptTokenCount ?? 0,
+                outputTokens: (u.candidatesTokenCount ?? 0) + (u.thoughtsTokenCount ?? 0),
+                cacheReadTokens: u.cachedContentTokenCount
+            } : undefined
         }
     }
 
-    const u = usage
+    try {
+        await readSse(response, ({ data }) => {
+            let chunk: any
+            try { chunk = JSON.parse(data) } catch { return }
+            if (chunk.error) throw new ProviderError(chunk.error.message ?? 'Gemini reported an error.', chunk.error.code)
+            if (chunk.modelVersion) model = chunk.modelVersion
+            if (chunk.usageMetadata) usage = chunk.usageMetadata
+            if (chunk.promptFeedback?.blockReason) blocked = chunk.promptFeedback.blockReason
+            const candidate = chunk.candidates?.[0]
+            if (!candidate) return
+            for (const part of (candidate.content?.parts ?? []) as Part[]) {
+                if (part.functionCall) {
+                    const id = part.functionCall.id || `gemini-call-${parts.filter(p => p.functionCall).length + 1}`
+                    emit({ type: 'tool-call-start', id, name: part.functionCall.name })
+                    emit({ type: 'tool-call-delta', id, delta: JSON.stringify(part.functionCall.args ?? {}) })
+                } else if (typeof part.text === 'string' && part.text) {
+                    emit({ type: part.thought ? 'reasoning' : 'text', delta: part.text })
+                }
+                // Keep empty parts that carry a signature; drop truly empty ones.
+                if (part.functionCall || part.text || part.thoughtSignature) parts.push(part)
+            }
+            if (typeof candidate.finishReason === 'string' && candidate.finishReason && candidate.finishReason !== 'FINISH_REASON_UNSPECIFIED') {
+                finish = candidate.finishReason
+            }
+        })
+    } catch (error) {
+        if (options.signal.aborted || error instanceof ProviderError) throw error
+        if (!emittedAny) {
+            throw new ProviderError('Gemini connection was interrupted before any output arrived. Try again.', undefined, true)
+        }
+        throw new TruncatedStreamError(
+            'Gemini stream was interrupted before finishing. Partial output was preserved — try again or ask to continue.',
+            buildResult('end'),
+            false
+        )
+    }
+
+    if (blocked) throw new ProviderError(`Gemini blocked this request (${String(blocked).toLowerCase().replace(/_/g, ' ')}).`)
+
+    const preliminary = buildResult('end')
+    if (!finish) {
+        if (!emittedAny) {
+            throw new TruncatedStreamError(
+                'Gemini ended the stream before sending any output. Try again.',
+                preliminary,
+                true
+            )
+        }
+        throw new TruncatedStreamError(
+            'Gemini ended the response early before finishing. Partial output was preserved — try again or ask to continue.',
+            preliminary,
+            false
+        )
+    }
+
+    const stopReason: ChatResult['stopReason'] = REFUSALS.has(finish) ? 'refusal'
+        : finish === 'MAX_TOKENS' ? 'max_tokens'
+            : preliminary.assistant.toolCalls.length ? 'tool_use' : 'end'
+
     return {
-        assistant: {
-            role: 'assistant', text, toolCalls,
-            reasoning: reasoning.trim() || undefined,
-            provider: 'google', model, raw: parts
-        },
-        stopReason: finish && REFUSALS.has(finish) ? 'refusal'
-            : finish === 'MAX_TOKENS' ? 'max_tokens'
-                : toolCalls.length ? 'tool_use' : 'end',
-        usage: u ? {
-            inputTokens: u.promptTokenCount ?? 0,
-            outputTokens: (u.candidatesTokenCount ?? 0) + (u.thoughtsTokenCount ?? 0),
-            cacheReadTokens: u.cachedContentTokenCount
-        } : undefined
+        ...preliminary,
+        stopReason
     }
 }

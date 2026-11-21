@@ -84,6 +84,7 @@ export default function CollaborationDialog() {
                             <div className="collab-members">
                                 <MemberList
                                     members={collab.filteredMembers}
+                                    bannedMembers={collab.filteredBannedMembers}
                                     selectedMemberId={collab.selectedMemberId}
                                     currentUserId={collab.currentUserId}
                                     searchQuery={collab.searchQuery}

@@ -1,204 +1,175 @@
 # Kalynt Architecture
 
-This document describes how Kalynt 2.0 is put together: the two Electron processes, how they talk, and where each feature lives in the code.
+This document describes the architecture of **Kalynt 2.1**: its two Electron processes, security boundaries, service modules, collaboration protocol, build pipeline, and automated verification strategy.
+
+---
 
 ## 1. Overview
 
-Kalynt is a local-first desktop IDE with an AI agent and peer-to-peer collaboration. It is an Electron app in an npm-workspaces monorepo:
+Kalynt is a local-first desktop IDE with an integrated AI agent and serverless peer-to-peer collaboration. It is organized as an npm-workspaces monorepo:
 
-| Package | Purpose |
-|---|---|
-| `apps/desktop` | The Electron app: main process (`electron/`) and React renderer (`src/`) |
+| Package | Responsibility |
+| --- | --- |
+| `apps/desktop` | Electron desktop application: main process (`electron/`), sandboxed React renderer (`src/`), and build/smoke scripts (`scripts/`) |
 | `packages/crdt` | Shared Yjs CRDT helpers |
-| `packages/networking` | WebRTC connection helpers |
-| `packages/shared` | Common types and utilities |
-| `packages/native-macos` | Swift helper process for macOS (FSEvents, CoreML, memory trimming) |
+| `packages/networking` | WebRTC networking helpers |
+| `packages/shared` | Shared types and utilities |
+| `packages/native-macos` | Optional Swift helper process for macOS (FSEvents, CoreML, memory trimming) |
 
 ```mermaid
 graph TD
-    subgraph Renderer["Renderer (sandboxed, React)"]
-        Shell[App shell: titlebar, home, dialogs]
-        IDE[Code view: explorer, editor, terminal, git, search]
-        Agent[Agent panel + agent loop]
+    subgraph Renderer["Renderer (sandboxed React + Monaco)"]
+        Shell[App shell: titlebar, home, dialogs, deep-link bootstrap]
+        IDE[Code view: explorer, Monaco editor/diff, terminal, Git, search]
+        Agent[Agent panel: chat, review, encrypted team chat]
         Views[Tasks, History, Shared files]
         Stores[Zustand stores]
-        Yjs[Yjs docs + y-webrtc]
+        Yjs[Canonical Yjs space docs + y-webrtc]
     end
 
-    Preload[Preload: window.electronAPI]
+    Preload["Preload bridge (window.electronAPI)"]
 
     subgraph Main["Main process (Node.js)"]
-        Handlers[IPC handlers]
-        Term[Terminal + task runner]
-        Exec[Run / build / debug]
-        LLM[Local AI engine + MemoryGuard]
-        AI[AI gateway + agent services]
-        Ext[Extension host manager]
-        Sig[Signaling server 127.0.0.1:4444]
+        Handlers[IPC handlers & path validation]
+        Term[PTY terminal + TaskRunnerService + LSP gateway]
+        Exec[Run / Build / DAP Debug]
+        LLM[Local GGUF engine + MemoryGuard]
+        AI[Cloud & local-server AI gateway + Agent tools]
+        Ext[Extension host manager + theme/command registry]
+        Sig["Local signaling server (127.0.0.1:4444)"]
         Upd[Auto-updater]
     end
 
     Shell --> Preload
     IDE --> Preload
     Agent --> Preload
-    Preload -->|ipcRenderer.invoke / on| Handlers
+    Preload -->|"ipcRenderer.invoke / subscribe"| Handlers
     Handlers --> Term
     Handlers --> Exec
     Handlers --> LLM
     Handlers --> Ext
     Handlers --> AI
-    AI -->|HTTPS, user's API key| Cloud[Anthropic / OpenAI / Google / DeepSeek / Kimi / GLM]
-    Yjs -->|WebRTC| Peers[Other Kalynt users]
+    AI -->|"HTTPS / loopback"| Providers[Cloud APIs & Ollama / LM Studio]
+    Yjs -->|WebRTC| Peers[Collaborator peers]
     Yjs --> Sig
-    Ext --> ExtProc[Extension host child process]
+    Ext --> ExtProc[Isolated Extension Host child process]
 ```
-
-## 2. Process model and security boundary
-
-- **Renderer.** Runs with `contextIsolation: true`, `sandbox: true` and `nodeIntegration: false`. It has no Node.js access; everything that touches the disk, spawns a process or loads a model goes through `window.electronAPI`.
-- **Preload** (`electron/preload.ts`, assembled from `electron/preload/*`). Exposes a typed API over `ipcRenderer`. Every `on*` subscription returns its own unsubscribe function, so components clean up their listeners without removing anyone else's.
-- **Main process** (`electron/main.ts`). Registers the IPC handlers, creates the window (`appWindow.ts`, which also applies the Content Security Policy to every response), starts the signaling server and the extension host, and initialises the updater. On quit, it stops every process Kalynt started before exiting (at most three seconds).
-
-Guards applied in the main process:
-
-| Concern | Where | What it does |
-|---|---|---|
-| File access | `utils/pathValidator.ts` | Every path is resolved against the workspace folder and checked again through `realpath`, so `..` and symlinks can't escape it |
-| Process spawning | `handlers/code-exec/`, `terminal/dependencyManager.ts` | Commands are argument lists (`shell: false`), parsed with a shell-style tokenizer; there is no shell interpolation |
-| Agent commands | `agent/exec.ts`, `src/services/agent/approvals.ts` | The agent's `run_command` goes through the user's shell, because it has to run pipelines and scripts. Commands ask first unless the user chose *Full auto*, and commands that look destructive or need elevated rights (`sudo`, `rm -rf`, force push, `git reset --hard`, piping a download into a shell, …) always ask. Stop kills the whole process tree |
-| Agent web access | `agent/web.ts`, `agent/netGuard.ts` | Fetches are public-internet only: the host is resolved and every redirect hop is checked, and a local or private address is refused unless the user approved that URL |
-| Secrets | `handlers/safeStorage.ts`, `ai/index.ts` | API keys and the GitHub token are encrypted with Electron `safeStorage` and written atomically, owner-only. Provider keys are read only by the main-process AI gateway; the renderer learns only which providers have one |
-| Git credentials | `handlers/git.ts` | Tokens are passed per command and never written to `.git/config`; clone rejects option-like and `file://` URLs |
-| Extensions | `extensions/` | Downloads only from Open VSX; VSIX entries can't write outside their folder; the host runs as a separate process with a restricted environment |
-| Deep links | `main.ts` | `kalynt://` links are validated before reaching the renderer |
-| Network listeners | `signalingServer.ts` | The signaling server binds to `127.0.0.1` |
-
-## 3. Main process (`apps/desktop/electron`)
-
-### 3.1 IPC handlers (`handlers/`)
-
-| Handler | Responsibility |
-|---|---|
-| `file-system.ts`, `fs-search.ts`, `fs-backup.ts` | Workspace folder, read/write/rename/delete, folder watching, search (ripgrep with a JavaScript fallback), folder backup |
-| `git.ts` | Status, diff, stage, commit, branches, fetch/pull/push, log, clone (simple-git) |
-| `terminal.ts` | PTY terminals; killing a terminal kills its whole process tree and reports the exit |
-| `code-execution.ts`, `code-exec/` | **Run**: 25 languages, run from the real file, process tracking, stdin |
-| `build.ts`, `build-tasks.ts` | **Build**: tasks from `tasks.json` (JSONC), npm scripts and other providers |
-| `debug.ts`, `debug/` | **Debug**: Debug Adapter Protocol transport, adapters (debugpy, js-debug, GDB, Delve), launch configurations, sessions |
-| `dependency.ts` | Package manager commands (npm, pip, cargo, …) |
-| `runtime.ts` | Language runtime detection, install and uninstall (`services/runtime-manager.ts`, `services/runtimes/`) |
-| `llm-inference.ts`, `llm/engine.ts` | Local models via node-llama-cpp: load, stream, cancel, JSON-schema output, draft-model speculative decoding |
-| `model-download.ts` | Model downloads with pause/resume, Range fallback and partial-file cleanup |
-| `safeStorage.ts` | Encrypted secret storage |
-| `nuke-handler.ts` | "Stop all processes" (calls `services/shutdown.ts`) |
-| `update-handler.ts` | electron-updater against GitHub releases; downloads only with consent, never downgrades |
-| `app-info.ts` | Version, paths, hardware information |
-
-### 3.2 AI gateway and agent services (`ai/`, `agent/`)
-
-Every cloud model request goes through the main process, so keys are used only there (the renderer keeps no copy) and there are no CORS limits. `ai/index.ts` registers `ai:chat` (streamed as `ai:event`), `ai:cancel`, `ai:models`, `ai:verify` and `ai:key-status`, and retries rate limits and overloads before anything has streamed. Each provider has its own adapter, all producing one conversation format (`src/types/aiProtocol.ts`) with native tool calling and streamed reasoning:
-
-| Adapter | Providers | Notes |
-|---|---|---|
-| `ai/anthropic.ts` | Claude | Official SDK; adaptive thinking with summarized display, effort, prompt caching, server-side fallbacks for Opus, Fable and Sonnet; thinking blocks are kept and replayed |
-| `ai/openaiResponses.ts` | OpenAI | Responses API, stateless (`store: false`) with encrypted reasoning items passed back each turn |
-| `ai/openaiChat.ts` | DeepSeek, Kimi (Moonshot), GLM (Z.ai) | OpenAI-compatible Chat Completions; each provider's thinking and token parameters; `reasoning_content` is passed back as these APIs require |
-| `ai/gemini.ts` | Gemini | `streamGenerateContent` over SSE; thought signatures replayed; tool schemas converted to Gemini's subset |
-
-`ai/models.ts` asks each provider which models the key can use and merges that with the curated list in `src/types/aiProviders.ts`, leaving out retired and non-chat models.
-
-`agent/` holds what the agent's tools need from Node: `exec.ts` (commands with a non-interactive environment, background processes, output capped at 2 MB), `files.ts` (glob and grep over git-tracked and untracked files), `web.ts` (search through DuckDuckGo with Bing as a fallback, and page reading converted to text by `htmlToText.ts`) and `sessions.ts` (conversations saved to `<userData>/agent-sessions/`, owner-only).
-
-### 3.3 Services (`services/`)
-
-- **`shutdown.ts`**: `stopEverything()` stops terminals, running programs, builds, debug sessions, package commands, agent commands and AI requests. It's shared by "Stop all" and app quit, and touches only processes Kalynt started.
-- **`memoryGuard.ts`**: AIME's MemoryGuard. While a local model is loaded it reads available memory every five seconds, unloads the model before the system would start swapping, and can unload it after a period of inactivity. The renderer is told through `llm:unloaded`.
-- **`Performance_Acceleration/`**: power modes (balanced, high performance, power saver), GC scheduling, process priority, and the inference tuning (threads, batch size, speculative decoding) that each mode implies.
-- **`hardware-service.ts`**: CPU, memory, GPU and disk information plus live usage.
-- **`native-helper-service.ts`**: JSON-RPC over stdin/stdout to the Swift helper on macOS.
-- **`binary-manager.ts`**, **`runtime-manager.ts`**, **`runtimes/`**: finding and installing toolchains.
-
-### 3.4 Terminal and tasks (`terminal/`)
-
-`terminalService.ts` and `terminalManager.ts` own the PTYs; `terminalEnv.ts` builds a clean environment; `shellIntegration.ts` tracks commands; `taskRunner.ts`, `taskProviders.ts` and `taskTypes.ts` implement build tasks; `languageGateway.ts`, `languageConfigs.ts` and `debugGateway.ts` map languages to runners and debuggers; `packageManagers.ts` holds the package-manager tables.
-
-### 3.5 Extensions (`extensions/`)
-
-`extensionHostManager.ts` forks `extensionHostProcess.ts`, which runs VS Code extensions against `vscodeApiShim.ts` (a subset of the VS Code API). `extensionInstaller.ts` downloads and unpacks VSIX files and `extensionRegistry.ts` tracks what is installed.
-
-### 3.6 Collaboration
-
-- **`signalingServer.ts`**: a y-webrtc-compatible signaling server on `127.0.0.1:4444`. Peers on other machines meet through the public y-webrtc signaling fallback, which only relays connection offers; document data flows directly between peers.
-
-## 4. Renderer (`apps/desktop/src`)
-
-### 4.1 Application shell
-
-`App.tsx` shows the splash screen until `useAppBootstrap` finishes, then the titlebar and either the **home screen** or the **workspace view**. Settings, collaboration, extensions and the command palette are lazy-loaded dialogs. Each region is wrapped in a `RegionBoundary`, so a crash in one panel shows an error in that panel instead of blanking the window.
-
-| Folder (`src/components/`) | Contents |
-|---|---|
-| `shell/` | Titlebar, workspace switcher, peers and update indicators, toasts, update dialog, global shortcuts |
-| `home/` | Home screen, workspace list, new-workspace and clone dialogs |
-| `workspace/` | `WorkspaceView`: keeps the code view mounted and lazy-loads Tasks, History and Shared files |
-| `ide/` | Code view: `IDEWorkspace` composes the activity bar, side panel, editor area, bottom panel, agent aside and status bar. Subfolders: `editor/` (Monaco setup, tabs, split view, inline completions), `explorer/`, `search/`, `git/`, `terminal/`, `hooks/` (open files, runner, folder watching, shortcuts) |
-| `agent/` | Agent panel: `chat/` (conversation, model picker, tool approvals), `review/` (workspace review and fixes), `team/` (encrypted team chat) |
-| `settings/` | Settings dialog and its pages, including AIME memory settings |
-| `collaboration/` | Members, invite, join and activity |
-| `extensions/` | Language runtimes (34-entry catalogue) and VS Code extensions |
-| `palette/` | Command palette (files, `>` commands, `#` workspaces) |
-| `tasks/`, `history/`, `files/` | Task board, git history, shared files |
-| `system/` | Resource meters |
-| `ui/` | Design-system primitives: buttons, form controls, popover, menu, dialog, confirm/prompt service, tabs, badges, virtual list, resizer, layer stack |
-
-**Design system.** Colours, type, spacing, radii and motion are CSS variables in `styles/tokens.css`, defined for `:root[data-theme="dark"]` and `"light"`. `styles/base.css` holds the reset, focus styles and reduced-motion handling. Fonts (Instrument Sans, JetBrains Mono) are bundled. A shared layer stack (`ui/layers.ts`) gives every overlay consistent Escape and outside-click behaviour.
-
-### 4.2 State (`src/stores/`)
-
-| Store | Holds |
-|---|---|
-| `appStore` | Workspaces, current workspace, user name, theme; API keys are mirrored from `safeStorage`, never persisted to localStorage |
-| `workspaceFolderStore` | Per-workspace folder, open tabs, active file, last opened |
-| `layoutStore` | Panel sizes and visibility, editor preferences |
-| `uiStore`, `commandStore`, `editorStatusStore`, `agentStatusStore` | Dialog state, command registry, cursor/language, agent activity |
-| `agentSessionStore`, `modelStore`, `memberStore`, `notificationStore`, `updateStore` | Agent conversations (saved by the main process), local models, members, toasts, update state |
-
-Workspace data that collaborators share (tasks, team chat, members) lives in Yjs documents (`hooks/useYjs.ts`), persisted to IndexedDB and synced over WebRTC.
-
-Unsaved editor buffers are captured per workspace by `editorRecovery.ts` and stored atomically in `<userData>/editor-state/` through `handlers/editor-state.ts`. The renderer debounces recovery writes and uses an acknowledged synchronous flush only during normal window closing/reload. A failed flush prevents the close. Saved text uses compare-and-write conflict detection and atomic replacement through `handlers/file-write.ts`; open editors retain edits made while a save is pending. Workspace search reads and replaces open buffers in memory, leaving them unsaved for normal editor review/save.
-
-### 4.3 The agent
-
-The agent lives in `src/services/agent/`; the chat UI is `components/agent/chat/`.
-
-- **`runner.ts`** runs the loop: send the conversation and tool definitions, stream text, reasoning and tool calls into the live view, ask for approval where needed, run the tools, and return every result before the next turn. Consecutive read-only calls run in parallel. A run stops after 60 steps with a *Continue* button, and Stop aborts the request and any running command while keeping what was already written.
-- **Tools** (`tools/`): read, list, find and search files; edit (exact string replacement, read-before-edit enforced) and write, delete and move; run commands, in the foreground or in the background with `command_output` and `stop_command`; web search and fetch; a plan the UI shows as a checklist; semantic search over AIME's index; diagnostics; git status and diff. Edits to Python, JavaScript, JSON and shell files are syntax-checked right away (`diagnostics.ts`), and `get_diagnostics` runs the project's own TypeScript compiler, `go vet` or `cargo check`.
-- **Approvals** (`approvals.ts`): three modes. *Ask before changes* approves each edit and command, *Auto-edit* applies edits directly, and *Full auto* runs everything except risky commands, which always ask. "Always allow" remembers a command prefix (never inline code or shell operators), a tool, or a local host for the rest of the conversation.
-- **Undo** (`checkpoints.ts`): every file is snapshotted before its first change in a run, so *Undo* restores the run's edits, creations and deletions.
-- **Context** (`systemPrompt.ts`, `messageContext.ts`, `compaction.ts`): the system prompt is fixed for a conversation so provider prompt caches stay valid; `@file` mentions and the open editor are attached to messages; long conversations are summarized when they near the model's context window.
-- **Local models** (`localModel.ts`): a reduced tool set described in the prompt, with tool calls parsed from ```` ```tool ```` blocks (and the `<tool_call>` and JSON forms local models tend to use).
-- **Other AI features** (code review, task steps, inline completions) use `services/aiService.ts`, a small wrapper over the same gateway.
-- **Models:** `src/types/aiProviders.ts` is the curated list of cloud models per provider. The live list from each provider adds new models and drops retired ones automatically; check the curated list before each release anyway. `services/offlineLLMService.ts` talks to the local engine in the main process.
-- **AIME:** `services/aimeService.ts` indexes the workspace in a Web Worker (`workers/aimeWorker.ts`) for retrieval, and `types/aime.ts` defines the local-model memory configuration that MemoryGuard and the engine use.
-
-### 4.4 Collaboration
-
-`p2pService.ts` and `collabEngine.ts` manage Yjs documents over y-webrtc. When a workspace has a room password, `encryptionService.ts` derives a key with PBKDF2 and `encryptedProvider.ts` encrypts every update with AES-256-GCM before it leaves the machine; without a password, anyone with the invite link can join and read. `memberSyncService.ts` and `peerAuthService.ts` handle members and roles, and `fileTransferService.ts` sends shared files (up to 200 MB) directly between peers.
-
-## 5. Build and packaging
-
-- **Vite** builds three bundles: the renderer (`dist/`), the main process (`dist-electron/main.js`, one self-contained file) and the preload and extension-host scripts. Production builds use Terser with `passes: 1` (a second pass breaks Monaco) and keep `console.error`/`console.warn`.
-- **electron-builder** produces NSIS (Windows), DMG (macOS) and AppImage/deb (Linux) packages. `node-llama-cpp` and its native binaries ship outside `app.asar` (`extraResources`). The **`scripts/after-pack.cjs`** hook copies node-llama-cpp's runtime dependencies next to it; without them the packaged app can't load the engine.
-- **Releases** come from CI (`.github/workflows/build.yml`): every push to `main` builds all three platforms and publishes them to the GitHub release named after `apps/desktop/package.json`'s version. The updater reads that release.
-
-## 6. Testing
-
-Run `npm test` for the desktop Node test suite and shared-package type checks, and `npm run lint` for TypeScript/TSX lint and React hook rules. The tests exercise local-server discovery and streaming, model selection, context sizing, download resume/cancel, nested search, conversation storage, agent undo, command escaping, and encrypted Yjs document exchange.
-
-Build the desktop bundles with `npm run build:vite --workspace=apps/desktop`, then run `xvfb-run -a npm run test:smoke --workspace=apps/desktop -- --no-sandbox --disable-gpu` on Linux. The smoke harness launches the real main process and production renderer/preload with a temporary user profile and workspace. It exercises filesystem operations/watchers, Git, PTYs, commands, npm build tasks, agent sessions, and local-server AI against a loopback fixture. It does not change the user's protocol registration or access personal API keys. Set `KALYNT_SMOKE_MODEL` to an existing GGUF path to additionally test native model loading, non-streamed and streamed generation, and unloading. The small reference model used in the reliability pass verifies runtime behavior, not coding quality.
-
-`.github/workflows/verify.yml` runs lint, tests, both desktop type checks, a production build, native-module rebuild, Linux packaging and the Electron smoke suite on pull requests and pushes to main; Windows/macOS jobs run unit/type/lint checks. Set `KALYNT_SMOKE_PYTHON` to an interpreter with debugpy installed to exercise breakpoint/stack/evaluate/continue against a real Python adapter (enabled in Linux CI). Other debug adapters, arbitrary marketplace-extension compatibility, live paid provider APIs and cross-machine WebRTC require separate integration validation.
 
 ---
 
-*Testing section updated: November 10, 2026; runtime overview describes v2.0.0 with development-branch additions.*
+## 2. Process Model & Security Boundary
+
+- **Renderer:** Runs with `contextIsolation: true`, `sandbox: true`, and `nodeIntegration: false`. It has zero direct Node.js access; every disk, process, keychain, and model operation passes through `window.electronAPI`. In browser preview mode (`npm run dev:web`), `src/electronShim.ts` supplies an explicit web shim that surfaces desktop-only limitations cleanly rather than failing silently.
+- **Preload** (`electron/preload.ts`, composed from `electron/preload/{platformApi,workspaceApi,toolsApi,types}.ts`): Exposes a typed IPC API. Every `on*` listener returns an individual unsubscribe callback so components clean up safely without detaching sibling subscribers.
+- **Main process** (`electron/main.ts`): Registers IPC handlers, creates the window (`appWindow.ts`, enforcing CSP headers on every response), queues cold-start `process.argv` and macOS `open-url` deep links until the renderer drains them (`deep-link:consume`), starts the loopback signaling server and extension host, and initializes `electron-updater`. On quit, `shutdownApp()` stops every Kalynt-owned process before exiting (bounded to 3 seconds).
+
+### Main-Process Security Controls
+
+| Concern | Implementation | Enforcement |
+| --- | --- | --- |
+| **Filesystem access** | `electron/utils/pathValidator.ts` | Resolves every path against the active workspace root via `fs.realpath`, preventing `..` and symlink escapes (including parent-symlink resolution for new files and Windows drive/UNC normalization). |
+| **Process spawning** | `handlers/code-exec/`, `terminal/dependencyManager.ts` | Uses argument lists (`shell: false`) with shell-style argument parsing; no shell interpolation for Run or package managers. |
+| **Agent commands** | `electron/agent/exec.ts`, `src/services/agent/approvals.ts` | Runs through the user's shell in a non-interactive environment behind three approval modes (*Ask before changes*, *Auto-edit*, *Full auto*). Destructive/elevated commands (`sudo`, `rm -rf`, force push, `git reset --hard`, pipe-to-shell, etc.) always prompt. Stop kills the entire process tree. |
+| **Agent web fetches** | `electron/agent/web.ts`, `netGuard.ts` | Resolves DNS and validates every redirect hop against private/loopback IP ranges; local/private targets require explicit user approval. |
+| **Secrets & keys** | `handlers/safeStorage.ts`, `electron/ai/index.ts` | Encrypts provider API keys, TURN credentials, room passwords, and GitHub tokens via OS keychain (`safeStorage`) with atomic, owner-only writes. Provider keys never return to the renderer. |
+| **Git credentials** | `handlers/git.ts` | Passes tokens per invocation without writing to `.git/config`; clone rejects option-like and `file://` URLs. |
+| **Extensions & themes** | `electron/extensions/` | Open VSX downloads only; VSIX extraction and JSONC theme `include` resolution guard against path traversal; extension host runs in a separate process with filtered environment variables. |
+| **Deep links** | `electron/main.ts` | Validates `kalynt://join/<roomId>` protocol, host, segment syntax, raw `..` traversal, and query/hash payloads before queuing or forwarding to the renderer. |
+| **Signaling server** | `electron/signalingServer.ts` | Binds strictly to `127.0.0.1:4444`. |
+
+---
+
+## 3. Main Process (`apps/desktop/electron`)
+
+### 3.1 Core IPC Handlers (`handlers/`)
+
+| Module | Responsibility |
+| --- | --- |
+| `file-system.ts`, `file-write.ts`, `fs-search.ts`, `fs-backup.ts` | Workspace lifecycle, atomic writes with compare-and-write conflict detection (preserving BOM, line endings, permissions, symlinks), watchers, ripgrep/JS search, and workspace backup. |
+| `editor-state.ts` | Atomic, owner-only persistence of unsaved editor draft snapshots in `<userData>/editor-state/`, supporting debounced async writes and synchronous close/reload flushes. |
+| `git.ts` | Status, diff, stage/unstage, commit, multi-remote non-detaching tracking branch checkout (`checkoutBranch`) & renamed-branch push (`pushBranch`), stash, fetch/pull, log, and clone via `simple-git`. |
+| `terminal.ts` | PTY sessions (`terminalService.ts`), `TaskRunnerService` IPC, and LSP request/notification/diagnostic routing (`languageGateway.ts`). |
+| `code-execution.ts`, `code-exec/` | Single-file execution across 25+ languages, sanitized Nim temporary module naming with awaited `finally` cleanup, and .NET 10+ `dotnet run --file` (with `.csproj`/`.csx`/`dotnet-script` and F# `fsi` support). |
+| `build.ts`, `build-tasks.ts` | Build task detection and execution from `tasks.json` (JSONC), npm scripts, and project providers. |
+| `debug.ts`, `debug/` | Debug Adapter Protocol (DAP) transport, launch configs, session manager with `getScopes(sessionId, frameId)`, Python (`debugpy`), C/C++ (`gdb`), Go (`dlv`), and standalone Microsoft `vscode-js-debug` (`js-debug-dap` TCP child-session `startDebugging` handshake). |
+| `runtime.ts`, `services/runtime-manager.ts`, `services/runtimes/` | Detection, installation, and removal of 34 language runtimes (including `rustup-init` / `rustup-init.exe` basename preservation and managed Rust verification). |
+| `llm-inference.ts`, `llm/engine.ts` | Local GGUF inference via `node-llama-cpp`: serialized queue, dynamic context sizing to available RAM, streaming, cancellation, JSON-schema grammar, speculative draft models, and Linux `LD_LIBRARY_PATH` resolution for `libffmpeg.so`. |
+| `model-download.ts` | Curated GGUF downloads with pause/resume, HTTP 206/416 range verification, redirect protocol validation, and partial-file cleanup. |
+| `nuke-handler.ts`, `services/shutdown.ts` | Shared `stopEverythingWithDetails()` / `shutdownApp()` stopping PTY terminals, active `TaskRunnerService` process trees, direct runs, build tasks, debug sessions, dependency installs, agent commands, and in-flight AI requests — reporting `complete`, `partial`, or `failed` cleanup status without touching unrelated OS processes. |
+| `update-handler.ts` | Consent-gated GitHub Releases updates via `electron-updater`, downgrade protection, and platform-specific macOS `.zip`/`.dmg` guidance. |
+| `safeStorage.ts`, `dependency.ts`, `app-info.ts` | Keychain secrets, package manager operations, and system/version metadata. |
+
+### 3.2 AI Gateway & Agent Services (`ai/`, `agent/`)
+
+All cloud and loopback local-server requests execute in the main process (`ai/index.ts`), exposing `ai:chat` (`ai:event` stream), `ai:cancel`, `ai:models`, `ai:verify`, `ai:key-status`, and local-server lifecycle handlers:
+
+| Adapter | Providers | Protocol Details |
+| --- | --- | --- |
+| `ai/anthropic.ts` | Anthropic Claude | Official SDK; adaptive thinking, effort levels, prompt caching, thinking block replay. |
+| `ai/openaiResponses.ts` | OpenAI | Stateless Responses API (`store: false`) with encrypted reasoning replay. |
+| `ai/openaiChat.ts` | DeepSeek, Kimi (Moonshot), GLM (Z.ai), Ollama / LM Studio | OpenAI-compatible Chat Completions with provider-specific reasoning parameters, malformed tool-argument guards, and terminal finish-signal verification (`TruncatedStreamError` on premature EOF). |
+| `ai/gemini.ts` | Google Gemini | SSE `streamGenerateContent`, thought-signature replay, schema adaptation, and explicit `finishReason` verification (`TruncatedStreamError` on premature EOF). |
+
+`ai/models.ts` separates live catalog responses (`source: 'live'`, keeping empty/filtered 200 responses honest instead of inventing fallback models), auth errors (`source: 'error'`), and explicit offline fallbacks (`source: 'fallback'`, `live: false`).
+
+`electron/agent/` provides sandboxed-workspace file discovery (`files.ts`), non-interactive command execution (`exec.ts`, 2 MB output cap), SSRF-checked web search/fetch (`web.ts`, `netGuard.ts`), and atomic per-workspace conversation storage (`sessions.ts` in `<userData>/agent-sessions/`).
+
+### 3.3 Language Servers & Extensions (`terminal/`, `extensions/`)
+
+- **LSP Gateway (`terminal/languageGateway.ts`, `languageConfigs.ts`):** Shares Python executable discovery (workspace `.venv`/`venv`, `VIRTUAL_ENV`, managed Python, `python3`/`python`) with the debugger/runner. Awaits OS spawn before JSON-RPC initialization, catches stream/early-exit errors cleanly without unhandled `ERR_STREAM_DESTROYED` rejections, routes document lifecycle calls (`initialized`, `didOpen`, `didChange`, `didSave`, `didClose`) over true JSON-RPC notifications (no `id`), and forwards server-pushed `textDocument/publishDiagnostics` to both the Problems panel and Monaco markers.
+- **Extension Host (`extensions/`):** `extensionHostManager.ts` manages an isolated `extensionHostProcess.ts` implementing a subset of the VS Code API (`vscodeApiShim.ts`). Supports cold-start lazy scanning, on-demand activation, contributed Command Palette execution (`extensions:execute-command`), persisted disable/uninstall state, and JSONC color theme loading with traversal guards.
+
+---
+
+## 4. Renderer (`apps/desktop/src`)
+
+### 4.1 Shell, UI & Design System
+
+`App.tsx` waits for `useAppBootstrap` (store hydration, theme/extension theme application, update wiring, recovery flush guards, and draining queued deep links), then renders the shell and either `HomeScreen` or `WorkspaceView`. Each major panel is wrapped in a `RegionBoundary` for fault isolation.
+
+- **Design system (`src/styles/tokens.css`, `src/components/ui/`):** Semantic CSS variables for dark/light themes, bundled Instrument Sans and JetBrains Mono fonts, accessible overlays managed by `ui/layers.ts`, and dynamic override support for contributed VS Code color themes (`services/extensions/themeService.ts` + `monacoThemeBridge.ts`).
+- **Editor reliability (`components/ide/editor/`, `components/ide/git/`):**
+  - `monacoDiffLifecycle.ts` & `MonacoDiffView.tsx`: owns dedicated `kalynt-diff://` models and detaches both models (`setModel(null)`) before disposing the diff editor, never disposing shared main-editor models.
+  - `monacoReliability.ts` & `monacoSetup.ts`: filters ignore rules strictly on workspace-relative segments across `.ts/.tsx/.d.ts/.mts/.cts/.js/.jsx/.mjs/.cjs`, resolves `tsconfig`/`jsconfig` `paths`, and installs an idempotent cancellation handler suppressing normal Monaco/Abort cancellations without hiding real errors.
+  - `useOpenFiles.ts`: enforces manual-save-only Format on Save (Auto-save modes skip formatting to protect cursor/undo state), falls back cleanly with a warning if a formatter fails, and handles disk-change conflicts atomically.
+
+### 4.2 State & Workspace Review
+
+- **Zustand stores (`src/stores/`):** `appStore`, `workspaceFolderStore`, `layoutStore`, `uiStore`, `commandStore`, `editorStatusStore`, `agentStatusStore`, `diagnosticsStore`, `agentSessionStore`, `modelStore`, `memberStore`, `notificationStore`, and `updateStore`.
+- **Workspace Review (`services/workspaceScanService.ts`, `components/agent/review/`):** Discloses scan limits up front, supports both `sampled` and `full` coverage (with long-file chunking), reports discovered/analyzed/omitted/clipped counts by reason, and tracks explicit `completed`, `partial`, `canceled`, and `failed` outcomes while preserving already-returned findings.
+
+### 4.3 Peer-to-Peer Collaboration (Protocol v2)
+
+- **Canonical room document (`hooks/useYjs.ts`):** Ref-counted, normalized `roomId` document map shared across Team Chat, Tasks, Shared Files, Status Bar, and Peers Indicator. Automatically rebinds awareness listeners and `memberSyncService.updateAwareness()` whenever `p2pService.reconnect()` replaces a `WebrtcProvider` (such as after setting or clearing a room password).
+- **Encryption & authentication (`services/encryptionService.ts`, `encryptedProvider.ts`, `p2pService.ts`):**
+  - Protocol v2 derives a deterministic room salt (`SHA-256('kalynt:e2ee:v1:salt:' + roomId)`) followed by PBKDF2-SHA256 (100,000 iterations) and domain-separated HKDF-SHA256 keys: an AES-256-GCM encryption key, an HMAC-SHA256 integrity key, and a non-secret 16-byte `keyCheck` commitment.
+  - Peers exchange protocol metadata (`version: 2`, `encrypted`, `keyCheck`) via awareness and `encryptionVersion: 2` on encrypted chat messages. Signaling-level decryption probes (`waitForRoomAuth`) distinguish `unencrypted`, `key-configured` (waiting for offline peers), `authenticated`, `auth-failed` (wrong password, with inline retry), `password-required`, and `protocol-mismatch` (incompatible Kalynt 2.0 peer).
+- **Shared Files (`services/fileTransferService.ts`, `components/files/`):** Writes directly to the canonical room `Y.Doc` using 64 KiB chunks (`MAX_FILE_CHUNKS = 4096`), stores and verifies SHA-256 checksums on download, and tracks explicit local-only, sending, receiving, incomplete, and ready states.
+- **Identity & moderation (`services/memberSyncService.ts`, `peerAuthService.ts`):** Uses ECDSA P-256 peer identities, signed ownership proofs, encrypted moderation actions, and durable signed `bannedRecords` in Yjs so bans disconnect guests live and on rejoin while remaining permanently inspectable and liftable by owners/admins.
+
+---
+
+## 5. Build & Packaging
+
+- **Vite (`apps/desktop/vite.config.ts`):** Produces `dist/` (renderer), `dist-electron/main.js`, preload, and extension-host bundles. Terser uses `passes: 1` (required for Monaco compatibility) and retains `console.error`/`console.warn`.
+- **Native modules & `electron-builder`:** `build.npmRebuild` is set to `false` in `apps/desktop/package.json` so `electron-builder` never triggers a nested workspace-pruning `npm install --production`. Instead, `npm run rebuild:native` explicitly runs `electron-rebuild --module-dir ../.. --only node-pty` (via direct devDependency `@electron/rebuild` `^4.0.3`, requiring Node `>= 22.12.0`). All local packaging scripts invoke `rebuild:native` before `electron-builder --publish never`.
+- **Packaged AI runtime (`scripts/after-pack.cjs`):** Ships `node-llama-cpp` and `@node-llama-cpp/*` in `extraResources` outside `app.asar` and copies the hoisted runtime dependency closure into `resources/node_modules`.
+- **Targets & CI (`.github/workflows/build.yml`, `verify.yml`):**
+  - Linux: `AppImage` + `deb` + `latest-linux.yml`
+  - Windows: NSIS x64 `.exe` + `latest.yml`
+  - macOS: `dmg` + `zip` + `latest-mac.yml` (ZIP payload required by `electron-updater`'s `MacUpdater`)
+
+---
+
+## 6. Testing & Verification
+
+| Command | Coverage |
+| --- | --- |
+| `npm test` | Discovers and runs all `*.test.mjs` suites under `apps/desktop/{electron,src}` (150+ unit & loopback integration tests covering AI adapters, local servers, GGUF engine, downloads, editor recovery, atomic saves, search, Git multi-remote checkout, Monaco diff/reliability, LSP gateway, DAP scopes & Node adapter, Rust installer, Nim/C# execution, TaskRunner shutdown, extensions/themes, Workspace Review, browser mode, and E2EE/collaboration) plus strict `tsc --noEmit` across `packages/{crdt,networking,shared}`. |
+| `npm run lint` | ESLint across all TypeScript/TSX files including React Hooks and security rules. |
+| `npm run typecheck --workspace=apps/desktop` | Renderer (`tsconfig.json`) and Electron main/preload (`tsconfig.node.json`) type checks. |
+| `npm run typecheck:fixtures --workspace=apps/desktop` | Monaco editor interaction fixture type check. |
+| `npm run website:build` | Builds the static landing website into `dist/website`. |
+| `bash apps/desktop/scripts/smoke-linux-ci.sh` | Runs the isolated production Electron smoke suite (`scripts/smoke.cjs`) inside a disposable D-Bus + GNOME keyring + Xvfb session, testing preload isolation, FS, watchers, Git, real PTY spawn/resize/write/output/kill (plus missing-ID failure checks), tasks, agent tools/sessions, local-server streaming, optional Python `debugpy` (`KALYNT_SMOKE_PYTHON`), and optional GGUF inference (`KALYNT_SMOKE_MODEL`). With `KALYNT_SMOKE_RESOURCES`, also validates packaged `app.asar` version (`2.1.0`), bundle hashes, and packaged `node-llama-cpp` loading. |
+
+*Updated for Kalynt v2.1.0 — November 21, 2026.*

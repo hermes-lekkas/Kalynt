@@ -28,7 +28,7 @@ Use anonymous participant labels. Do not record private code, API keys, server t
 
 Record one real task in a small public repository. Show the repository commit, Kalynt version, OS, CPU/GPU, RAM, inference runtime, model ID/quantization, context setting, prompt, elapsed time, proposed diff, and test output. Keep pauses and failures visible. Use a task whose expected behavior can be independently verified. Publish the model's limitations alongside the successful run. A screenshot or staged transcript is not a measured agent benchmark.
 
-Do not advertise the source-only Ollama/LM Studio connection as available in the 2.0.0 installers. Release it after packaged desktop verification. The website currently describes the installed 2.0 workflow.
+Do not advertise features from unreleased branches as present in earlier published installers. Cut and verify the 2.1.0 release installers before promoting 2.1.0-only workflows (such as Ollama/LM Studio connections, editor draft recovery, and collaboration protocol v2).
 
 ## Measure without adding product telemetry
 

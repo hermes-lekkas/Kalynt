@@ -39,41 +39,65 @@ const MAX_NOISE = 64 * 1024
 export class DapConnection extends EventEmitter {
     process?: ChildProcess
     socket?: net.Socket
+    serverHost?: string
+    serverPort?: number
     private buffer = Buffer.alloc(0)
     private seq = 1
     private readonly pending = new Map<number, Pending>()
     private closed = false
+    private lastStderr = ''
+    private exitDetail = ''
 
     /** DAP over the process's stdio, or over `socket` with the process's output as console text. */
     attach(proc: ChildProcess | undefined, socket?: net.Socket) {
         this.process = proc
         this.socket = socket
         const feed = (chunk: Buffer) => this.receive(chunk)
-        const text = (stream: 'stdout' | 'stderr') => (chunk: Buffer) => this.emit('output', chunk.toString(), stream)
+        const text = (stream: 'stdout' | 'stderr') => (chunk: Buffer) => {
+            const str = chunk.toString()
+            if (stream === 'stderr') {
+                this.lastStderr = (this.lastStderr + str).slice(-2048)
+            }
+            this.emit('output', str, stream)
+        }
 
         if (socket) {
             socket.on('data', feed)
             socket.on('error', err => {
+                this.exitDetail = `socket error: ${err.message}`
                 this.emit('output', `Debugger connection error: ${err.message}\n`, 'stderr')
                 this.emit('adapter-error', `Debugger connection error: ${err.message}`)
             })
-            socket.on('close', () => this.shutdown())
+            socket.on('close', () => this.shutdown('socket closed'))
             proc?.stdout?.on('data', text('stdout'))
         } else {
             proc?.stdout?.on('data', feed)
             proc?.stdin?.on('error', () => undefined)
         }
         proc?.stderr?.on('data', text('stderr'))
-        proc?.on('exit', () => this.shutdown())
+        proc?.on('exit', (code, signal) => {
+            const info = code !== null ? `exited with code ${code}` : `terminated by signal ${signal ?? 'unknown'}`
+            this.exitDetail = info
+            this.shutdown(info)
+        })
         proc?.on('error', err => {
+            this.exitDetail = `spawn error: ${err.message}`
             this.emit('output', `Debugger failed to start: ${err.message}\n`, 'stderr')
             this.emit('adapter-error', `Debugger failed to start: ${err.message}`)
-            this.shutdown()
+            this.shutdown(`spawn error: ${err.message}`)
         })
     }
 
     get isClosed() {
         return this.closed
+    }
+
+    getCloseReason(): string {
+        const parts = ['The debugger stopped']
+        if (this.exitDetail) parts.push(`(${this.exitDetail})`)
+        const stderrLine = this.lastStderr.trim().split(/\r?\n/).filter(Boolean).slice(-3).join(' | ')
+        if (stderrLine) parts.push(`— ${stderrLine}`)
+        return parts.join(' ')
     }
 
     private receive(chunk: Buffer) {
@@ -172,25 +196,27 @@ export class DapConnection extends EventEmitter {
                 cleanup()
                 resolve(message)
             }
-            const onClose = () => { cleanup(); reject(new Error('The debugger stopped')) }
+            const onClose = () => { cleanup(); reject(new Error(this.getCloseReason())) }
             const timer = setTimeout(() => { cleanup(); reject(new Error(`No '${name}' event from the debugger`)) }, timeoutMs)
             const cleanup = () => {
                 clearTimeout(timer)
                 this.off('event', onEvent)
                 this.off('close', onClose)
             }
-            if (this.closed) { cleanup(); reject(new Error('The debugger stopped')); return }
+            if (this.closed) { cleanup(); reject(new Error(this.getCloseReason())); return }
             this.on('event', onEvent)
             this.on('close', onClose)
         })
     }
 
-    private shutdown() {
+    private shutdown(reason?: string) {
         if (this.closed) return
+        if (reason && !this.exitDetail) this.exitDetail = reason
         this.closed = true
+        const errMessage = this.getCloseReason()
         for (const [, pending] of this.pending) {
             clearTimeout(pending.timer)
-            pending.reject(new Error('The debugger stopped'))
+            pending.reject(new Error(errMessage))
         }
         this.pending.clear()
         this.emit('close')

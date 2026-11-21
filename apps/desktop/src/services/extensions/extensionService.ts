@@ -246,9 +246,14 @@ class ExtensionService {
   private installedListeners: Array<(extensions: ExtensionMetadata[]) => void> = []
   private activatedListeners: Array<(id: string) => void> = []
   private deactivatedListeners: Array<(id: string) => void> = []
+  private contributionsListeners: Array<() => void> = []
 
   constructor() {
     this.setupIPCListeners()
+  }
+
+  private emitContributionsChanged(): void {
+    this.contributionsListeners.forEach(listener => listener())
   }
 
   private setupIPCListeners(): void {
@@ -259,11 +264,17 @@ class ExtensionService {
     ext.onActivated?.((data: { id: string }) => {
       this.activeExtensions.add(data.id)
       this.activatedListeners.forEach(listener => listener(data.id))
+      this.emitContributionsChanged()
     })
 
     ext.onDeactivated?.((data: { id: string }) => {
       this.activeExtensions.delete(data.id)
       this.deactivatedListeners.forEach(listener => listener(data.id))
+      this.emitContributionsChanged()
+    })
+
+    ext.onContributionsChanged?.(() => {
+      this.emitContributionsChanged()
     })
 
     ext.onShowMessage?.((data: { type: string; message: string }) => {
@@ -384,20 +395,46 @@ class ExtensionService {
   }
 
   /**
-   * Deactivate an extension
+   * Deactivate (disable) an extension
    */
   async deactivateExtension(id: string): Promise<void> {
     const extension = this.extensions.get(id)
-    if (!extension || !this.activeExtensions.has(id)) {
+    if (!extension) {
       return
     }
 
     try {
       await window.electronAPI?.extensions?.deactivate(id)
       this.activeExtensions.delete(id)
+      this.emitContributionsChanged()
     } catch (error) {
       console.error(`[ExtensionService] Failed to deactivate extension ${id}:`, error)
       throw error
+    }
+  }
+
+  /**
+   * Execute a command contributed by an installed extension (activates it on demand).
+   */
+  async executeCommand(command: string, ...args: unknown[]): Promise<unknown> {
+    const api = window.electronAPI?.extensions
+    if (!api?.executeCommand) {
+      throw new Error('Extension commands require the desktop app.')
+    }
+    return api.executeCommand(command, ...args)
+  }
+
+  /**
+   * Load a contributed VS Code color theme JSON/JSONC definition from an installed extension.
+   */
+  async loadTheme(extensionId: string, themeId: string): Promise<import('./themeService').LoadedExtensionTheme | null> {
+    const api = window.electronAPI?.extensions
+    if (!api?.loadTheme) return null
+    try {
+      return (await api.loadTheme(extensionId, themeId)) ?? null
+    } catch (error) {
+      console.error(`[ExtensionService] Failed to load theme ${themeId} from ${extensionId}:`, error)
+      return null
     }
   }
 
@@ -409,6 +446,7 @@ class ExtensionService {
       const extension = await window.electronAPI?.extensions?.install(vsixPath) as ExtensionMetadata
       this.extensions.set(extension.id, extension)
       this.installedListeners.forEach(listener => listener(this.getExtensions()))
+      this.emitContributionsChanged()
       return extension
     } catch (error) {
       console.error('[ExtensionService] Failed to install extension:', error)
@@ -478,6 +516,7 @@ class ExtensionService {
       await window.electronAPI?.extensions?.uninstall(id)
       this.extensions.delete(id)
       this.installedListeners.forEach(listener => listener(this.getExtensions()))
+      this.emitContributionsChanged()
     } catch (error) {
       console.error(`[ExtensionService] Failed to uninstall extension ${id}:`, error)
       throw error
@@ -553,6 +592,16 @@ class ExtensionService {
       const index = this.deactivatedListeners.indexOf(listener)
       if (index > -1) {
         this.deactivatedListeners.splice(index, 1)
+      }
+    }
+  }
+
+  onContributionsChanged(listener: () => void): () => void {
+    this.contributionsListeners.push(listener)
+    return () => {
+      const index = this.contributionsListeners.indexOf(listener)
+      if (index > -1) {
+        this.contributionsListeners.splice(index, 1)
       }
     }
   }

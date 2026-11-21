@@ -11,7 +11,7 @@ import { execFile } from 'child_process'
 import { validatePath } from '../utils/pathValidator'
 import { downloadFile, type DownloadProgress } from './runtimes/http'
 import { installableRuntimes, resolveSource, type RuntimeSource } from './runtimes/sources'
-import { extractArchive, findBinDir, makeExecutable, runRustup, versionOf } from './runtimes/installer'
+import { extractArchive, findBinDir, makeExecutable, runRustup, rustupInstallerFilename, versionOf } from './runtimes/installer'
 import { forgetRuntime, readManifest, recordRuntime, setRuntimesDir } from './runtimes/manifest'
 
 type Log = (message: string) => void
@@ -65,7 +65,8 @@ export class RuntimeManager {
             onLog?.(`Downloading ${safeId} ${source.version}`)
             const downloads = this.getDownloadsDir()
             fs.mkdirSync(downloads, { recursive: true })
-            const dest = validatePath(downloads, `${safeId}.download`)
+            const downloadName = source.installer ? rustupInstallerFilename() : `${safeId}.download`
+            const dest = validatePath(downloads, downloadName)
             await downloadFile(source.url, dest, onProgress)
             return { success: true, path: dest }
         } catch (error) {
@@ -124,7 +125,17 @@ export class RuntimeManager {
             makeExecutable(path.join(binDir, exe))
             if (safeId === 'java') env = { JAVA_HOME: path.dirname(binDir) }
 
-            const version = (await versionOf(path.join(binDir, exe), safeId)) ?? source.version
+            let versionExe = path.join(binDir, exe)
+            if (safeId === 'rust') {
+                const rustcName = fs.readdirSync(binDir).find(f => f === 'rustc' || f === 'rustc.exe')
+                if (rustcName) {
+                    const rustcPath = path.join(binDir, rustcName)
+                    makeExecutable(rustcPath)
+                    versionExe = rustcPath
+                }
+            }
+
+            const version = (await versionOf(versionExe, safeId, env)) ?? source.version
             recordRuntime(safeId, { version, installPath, binDirs: [binDir], env })
             onLog?.(`Installed ${safeId} ${version}. Kalynt's terminals and Run use it now.`)
             return { success: true, installPath }

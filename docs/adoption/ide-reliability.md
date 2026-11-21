@@ -1,6 +1,23 @@
-# IDE reliability verification — 2026-11-10
+# IDE reliability verification
 
-This pass changes source on `codex/ide-reliability`. It does not replace the published 2.0.0 installers.
+## v2.1.0 release-candidate pass — 2026-11-21
+
+This pass brings Kalynt to **2.1.0** on `codex/ide-reliability` and closes QA-01 through QA-34:
+
+- **Packaging & smoke:** Set `build.npmRebuild: false`, pinned direct `@electron/rebuild` (`^4.0.3`), aligned root `engines.node` to `>=22.12.0`, wired `npm run rebuild:native && electron-builder --publish never` into local packaging scripts, added macOS `zip` alongside `dmg`, updated PTY smoke assertions (`{ success: true/false }`), and verified packaged `app.asar` version (`2.1.0`) and bundle hashes from a clean disposable `/var/tmp` checkout (`npm ci` with no pre-existing `apps/desktop/node_modules`).
+- **Collaboration (protocol v2):** Unified Shared Files onto the canonical live password-aware Yjs document with 64 KiB chunking + SHA-256 verification; added explicit Kalynt 2.0 vs. 2.1 protocol mismatch and Join-time password probing (`waitForRoomAuth`) + inline retry; queued cold-start `argv` and macOS `open-url` deep links (`deep-link:consume`); rebound awareness across provider reconnects; and added durable ECDSA-signed `bannedRecords` with live/rejoin disconnect and a persistent Lift ban control.
+- **Editor, Git, LSP, DAP, Runtimes & AI:** Fixed Monaco diff detach-before-dispose, workspace-relative TS/JS discovery, manual-save-only Format on Save clarity, benign cancellation handling, multi-remote non-detaching Git checkouts, JSON-RPC LSP notifications + pushed diagnostics + shared Python discovery, DAP `scopes(frameId)`, standalone `vscode-js-debug` TCP child-session support, `rustup-init` basename preservation, .NET 10+ `dotnet run --file`, Nim temp module naming, `TaskRunnerService` inclusion in Stop all processes, honest live vs. fallback AI catalogs, truncated-stream detection, Workspace Review scope/outcomes, extension commands & VS Code color themes, and browser-mode (`dev:web`) feedback.
+- **Verified locally (2026-11-21):**
+  - `npm run lint`: 0 errors
+  - `npm test`: **150 pass, 0 fail, 2 skipped** (Windows-only path test + host rustup missing `rust-analyzer` component) plus 3/3 shared-package strict TypeScript checks
+  - `npm run typecheck --workspace=apps/desktop`, `npm run typecheck:fixtures --workspace=apps/desktop`, `npm run website:build`: all exit 0
+  - Clean disposable `/var/tmp` build + Linux `AppImage` (476 MiB) / `.deb` (296 MiB) packaging + source and packaged `bash apps/desktop/scripts/smoke-linux-ci.sh`: **16/16 pass** on both runs
+
+---
+
+## Earlier reliability pass — 2026-11-10
+
+This pass changed source on `codex/ide-reliability` prior to cutting the 2.1.0 release artifacts.
 
 ## Continued editor and developer-workflow pass
 

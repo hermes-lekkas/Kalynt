@@ -1,11 +1,10 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
  */
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import { p2pService, normalizeRoomId } from '../../services/p2pService'
-import { initializeRoomEncryption } from '../../services/encryptedProvider'
-import { setRoomPassword } from '../../services/roomPasswordStore'
+import { useUiStore } from '../../stores/uiStore'
 import { Button, Field, TextInput } from '../ui'
 
 interface JoinSectionProps {
@@ -19,23 +18,62 @@ interface Parsed {
     roomId: string
     spaceName?: string
     password?: string
+    passwordProtected?: boolean
 }
 
 function parse(input: string): Parsed | string {
     const value = input.trim()
     if (!value) return 'Paste an invite link or type a room code.'
-    if (value.includes('://') && !value.startsWith('kalynt://')) return 'Only kalynt:// invite links work here.'
+    if (value.includes('://') && !value.startsWith('kalynt://') && !value.startsWith('collabforge://')) {
+        return 'Only kalynt:// invite links work here.'
+    }
     const link = p2pService.parseRoomLink(value)
-    if (link) return { roomId: normalizeRoomId(link.roomId), spaceName: link.spaceName, password: link.password }
-    if (value.length <= 50 && !/\s/.test(value)) return { roomId: normalizeRoomId(value) }
+    if (link) {
+        return {
+            roomId: normalizeRoomId(link.roomId),
+            spaceName: link.spaceName,
+            password: link.password,
+            passwordProtected: link.passwordProtected
+        }
+    }
+    if (value.length <= 50 && !/\s/.test(value) && !value.includes('://')) {
+        return { roomId: normalizeRoomId(value) }
+    }
     return 'That doesn’t look like an invite link or room code.'
 }
 
 export default function JoinSection({ onJoin, isJoining, error, onJoined }: JoinSectionProps) {
-    const [input, setInput] = useState('')
-    const [password, setPassword] = useState('')
-    const [parsed, setParsed] = useState<Parsed | null>(null)
+    const pendingJoinInvite = useUiStore(s => s.pendingJoinInvite)
+    const clearPendingJoinInvite = useUiStore(s => s.clearPendingJoinInvite)
+
+    const [input, setInput] = useState(() => pendingJoinInvite?.url ?? '')
+    const [password, setPassword] = useState(() => pendingJoinInvite?.password ?? '')
+    const [parsed, setParsed] = useState<Parsed | null>(() =>
+        pendingJoinInvite
+            ? {
+                roomId: normalizeRoomId(pendingJoinInvite.roomId),
+                spaceName: pendingJoinInvite.spaceName,
+                password: pendingJoinInvite.password,
+                passwordProtected: pendingJoinInvite.passwordProtected
+            }
+            : null
+    )
     const [localError, setLocalError] = useState<string | null>(null)
+    const passwordInputRef = useRef<HTMLInputElement | null>(null)
+
+    // Consume cold/warm deep links targeting password-protected rooms and land directly on the password prompt.
+    useEffect(() => {
+        if (!pendingJoinInvite) return
+        setInput(pendingJoinInvite.url)
+        setParsed({
+            roomId: normalizeRoomId(pendingJoinInvite.roomId),
+            spaceName: pendingJoinInvite.spaceName,
+            password: pendingJoinInvite.password,
+            passwordProtected: pendingJoinInvite.passwordProtected
+        })
+        setPassword(pendingJoinInvite.password ?? '')
+        setLocalError(null)
+    }, [pendingJoinInvite])
 
     const next = () => {
         const result = parse(input)
@@ -48,42 +86,67 @@ export default function JoinSection({ onJoin, isJoining, error, onJoined }: Join
     const join = async () => {
         if (!parsed) return
         setLocalError(null)
-        // Store the password and derive the unified deterministic room key before joining
-        // so both team chat and Yjs/moderation encryption are ready from the start.
-        if (password) {
-            try {
-                await setRoomPassword(parsed.roomId, password)
-                await initializeRoomEncryption(parsed.roomId, password)
-            } catch (e) {
-                setLocalError(e instanceof Error ? e.message : String(e))
-                return
-            }
+        if (parsed.passwordProtected && !password.trim()) {
+            setLocalError('This workspace requires a room password.')
+            passwordInputRef.current?.focus()
+            return
         }
         try {
-            await onJoin(input.trim(), password || undefined)
+            await onJoin(input.trim() || parsed.roomId, password || undefined)
+            clearPendingJoinInvite()
             onJoined()
-        } catch {
-            // The hook reports the error.
+        } catch (err) {
+            // Stay on the password step, clear the failed password, and allow immediate retry.
+            setPassword('')
+            setLocalError(err instanceof Error ? err.message : 'Failed to join workspace.')
+            passwordInputRef.current?.focus()
         }
     }
 
     if (parsed) {
+        const displayError = localError || error
         return (
             <div className="collab-pane">
-                <button type="button" className="collab-back" onClick={() => { setParsed(null); setPassword(''); setLocalError(null) }}>
+                <button
+                    type="button"
+                    className="collab-back"
+                    onClick={() => {
+                        setParsed(null)
+                        setPassword('')
+                        setLocalError(null)
+                        clearPendingJoinInvite()
+                    }}
+                >
                     <ArrowLeft size={14} aria-hidden /> Back
                 </button>
                 <header className="collab-pane__head">
                     <h3>Join {parsed.spaceName ? `“${parsed.spaceName}”` : 'this workspace'}</h3>
                     <p>Room <span className="mono">{parsed.roomId.slice(0, 18)}{parsed.roomId.length > 18 ? '…' : ''}</span>. You’ll connect directly to the people already in it.</p>
                 </header>
-                <Field label="Room password" hint="Only if the workspace has one. Ask the person who invited you.">
+                <Field
+                    label="Room password"
+                    hint={
+                        parsed.passwordProtected
+                            ? 'This workspace is password-protected. Enter the room password from the person who invited you.'
+                            : 'Only if the workspace has one. Ask the person who invited you.'
+                    }
+                >
                     {id => (
-                        <TextInput id={id} type="password" value={password} autoComplete="off" onChange={e => setPassword(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') join() }} />
+                        <TextInput
+                            ref={passwordInputRef}
+                            id={id}
+                            type="password"
+                            autoFocus
+                            value={password}
+                            invalid={!!displayError}
+                            autoComplete="off"
+                            onChange={e => { setPassword(e.target.value); setLocalError(null) }}
+                            onKeyDown={e => { if (e.key === 'Enter') void join() }}
+                        />
                     )}
                 </Field>
-                {(localError || error) && <p className="collab-error" role="alert">{localError || error}</p>}
-                <div><Button variant="primary" loading={isJoining} onClick={join}>Join workspace</Button></div>
+                {displayError && <p className="collab-error" role="alert">{displayError}</p>}
+                <div><Button variant="primary" loading={isJoining} onClick={() => void join()}>Join workspace</Button></div>
             </div>
         )
     }

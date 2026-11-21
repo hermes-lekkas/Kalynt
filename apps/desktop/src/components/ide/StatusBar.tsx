@@ -62,7 +62,7 @@ export function StatusBar({
     const setEditorPref = useLayoutStore(s => s.setEditorPref)
 
     const openCollaboration = useUiStore(s => s.openCollaboration)
-    const { peerCount, encrypted, synced } = useYDoc(spaceId)
+    const { peerCount, encrypted, synced, authInfo } = useYDoc(spaceId)
 
     const [diagnostics, setDiagnostics] = useState<DiagnosticsSummary>(() => {
         const { errors, warnings } = useDiagnosticsStore.getState().counts
@@ -116,12 +116,40 @@ export function StatusBar({
                 </button>
                 <button
                     type="button"
-                    className="statusbar__item statusbar__hide-md"
+                    className={`statusbar__item statusbar__hide-md ${authInfo.status === 'auth-failed' ? 'is-danger' : (authInfo.status === 'password-required' || authInfo.status === 'protocol-mismatch') ? 'is-warning' : ''}`}
                     onClick={() => openCollaboration(peerCount ? 'members' : 'invite')}
-                    title={encrypted ? 'Peer-to-peer sync, end-to-end encrypted' : 'Peer-to-peer sync'}
+                    title={
+                        authInfo.status === 'auth-failed'
+                            ? (authInfo.reason || 'Incorrect room password')
+                            : authInfo.status === 'password-required'
+                                ? (authInfo.reason || 'This workspace requires a room password')
+                                : authInfo.status === 'protocol-mismatch'
+                                    ? (authInfo.reason || 'Incompatible Kalynt version in room')
+                                    : authInfo.status === 'authenticated'
+                                        ? `End-to-end encrypted · ${peerCount} connected`
+                                        : authInfo.status === 'key-configured' || encrypted
+                                            ? 'Room key set · Waiting for peers'
+                                            : 'Peer-to-peer sync'
+                    }
                 >
-                    {encrypted ? <Lock size={11} aria-hidden /> : <Users size={12} aria-hidden />}
-                    <span>{peerCount > 0 ? `${peerCount} ${peerCount === 1 ? 'peer' : 'peers'}` : synced ? 'Only you' : 'Connecting'}</span>
+                    {authInfo.status === 'auth-failed' || authInfo.status === 'protocol-mismatch'
+                        ? <AlertTriangle size={11} aria-hidden />
+                        : (encrypted || authInfo.status === 'password-required' || authInfo.status === 'key-configured' || authInfo.status === 'authenticated')
+                            ? <Lock size={11} aria-hidden />
+                            : <Users size={12} aria-hidden />}
+                    <span>
+                        {authInfo.status === 'auth-failed'
+                            ? 'Password mismatch'
+                            : authInfo.status === 'password-required'
+                                ? 'Password required'
+                                : authInfo.status === 'protocol-mismatch'
+                                    ? 'Version mismatch'
+                                    : peerCount > 0
+                                        ? `${peerCount} ${peerCount === 1 ? 'peer' : 'peers'}`
+                                        : (authInfo.status === 'key-configured' || encrypted)
+                                            ? 'Key set · Waiting'
+                                            : synced ? 'Only you' : 'Connecting'}
+                    </span>
                 </button>
                 {runState && (
                     <button type="button" className="statusbar__item" onClick={() => showBottomTab(runState.tab)}>

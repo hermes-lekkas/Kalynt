@@ -7,12 +7,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '../../../stores/appStore'
 import { useNotificationStore } from '../../../stores/notificationStore'
-import { useYDoc, useYArray, useAwareness } from '../../../hooks/useYjs'
+import { useYDoc, useYArray, useAwareness, getSpaceDocument } from '../../../hooks/useYjs'
 import { usePermissions } from '../../../hooks/usePermissions'
-import { encryptionService, type EncryptedPayload } from '../../../services/encryptionService'
-import { initializeRoomEncryption } from '../../../services/encryptedProvider'
-import { normalizeRoomId } from '../../../services/p2pService'
-import { getRoomPassword } from '../../../services/roomPasswordStore'
+import {
+    encryptionService,
+    ROOM_ENCRYPTION_PROTOCOL_VERSION,
+    type EncryptedPayload
+} from '../../../services/encryptionService'
+import { disableRoomEncryption, initializeRoomEncryption } from '../../../services/encryptedProvider'
+import { normalizeRoomId, p2pService } from '../../../services/p2pService'
+import {
+    clearRoomPassword,
+    getRoomPassword,
+    setRoomPassword,
+    setVolatileRoomPassword
+} from '../../../services/roomPasswordStore'
 import type { ChatMessage } from '../../../types/chat'
 
 const USER_ID_KEY = 'unified-user-id'
@@ -31,10 +40,13 @@ interface DecryptedMessageData {
     replyToSender?: string
 }
 
+export type DecryptFailureReason = 'incompatible-version' | 'wrong-password'
+
 export interface TeamMessage extends ChatMessage {
     /** Readable text, or null while it is still being decrypted. */
     text: string | null
     decryptFailed?: boolean
+    decryptFailureReason?: DecryptFailureReason | null
     own: boolean
 }
 
@@ -43,11 +55,24 @@ interface AwarenessState {
     isTyping?: boolean
 }
 
+export function classifyDecryptFailure(
+    message: Pick<ChatMessage, 'encryptionVersion'>,
+    authStatus: string
+): DecryptFailureReason {
+    if (
+        authStatus === 'protocol-mismatch' ||
+        message.encryptionVersion !== ROOM_ENCRYPTION_PROTOCOL_VERSION
+    ) {
+        return 'incompatible-version'
+    }
+    return 'wrong-password'
+}
+
 export function useTeamChat(spaceId: string, visible: boolean) {
     const userName = useAppStore(s => s.userName)
     const addNotification = useNotificationStore(s => s.addNotification)
     const { canChat } = usePermissions()
-    const { doc, provider, synced, peerCount } = useYDoc(spaceId)
+    const { doc, provider, synced, peerCount, authInfo } = useYDoc(spaceId)
     const { items, push } = useYArray<ChatMessage>(doc, 'messages')
     const { users, setLocalState, localClientId } = useAwareness(provider)
     const [encrypted, setEncrypted] = useState(false)
@@ -73,7 +98,7 @@ export function useTeamChat(spaceId: string, visible: boolean) {
         setDecrypted(new Map())
         setFailed(new Set())
         setUnread(0)
-        setEncrypted(false)
+        setEncrypted(encryptionService.hasRoomKey(normalizedSpaceId))
 
         const unsubKeyChange = encryptionService.onKeyChange((changedRoomId, hasKey) => {
             if (!live || normalizeRoomId(changedRoomId) !== normalizedSpaceId) return
@@ -189,20 +214,25 @@ export function useTeamChat(spaceId: string, visible: boolean) {
                 ...m,
                 own: m.senderId === userId,
                 text: m.content,
-                decryptFailed: false
+                decryptFailed: false,
+                decryptFailureReason: null
             }
         }
 
         const dec = decrypted.get(m.id)
+        const didFail = failed.has(m.id) || (!encrypted && !dec)
+        const decryptFailureReason = didFail ? classifyDecryptFailure(m, authInfo.status) : null
+
         return {
             ...m,
             own: m.senderId === userId,
             text: dec ? dec.text : null,
             replyToContent: dec ? (dec.replyToContent ?? m.replyToContent) : undefined,
             replyToSender: dec ? (dec.replyToSender ?? m.replyToSender) : undefined,
-            decryptFailed: failed.has(m.id)
+            decryptFailed: didFail,
+            decryptFailureReason
         }
-    }), [items, decrypted, failed, userId])
+    }), [items, decrypted, failed, encrypted, authInfo.status, userId])
 
     // Notify about mentions and replies; count unread while the tab is hidden.
     useEffect(() => {
@@ -245,6 +275,42 @@ export function useTeamChat(spaceId: string, visible: boolean) {
 
     useEffect(() => () => { if (typingTimer.current) clearTimeout(typingTimer.current) }, [])
 
+    const retryPassword = useCallback(async (candidatePassword: string): Promise<{ ok: boolean; error?: string }> => {
+        const value = candidatePassword.trim()
+        if (!value) {
+            return { ok: false, error: 'Enter the room password to retry.' }
+        }
+        const normalizedId = normalizeRoomId(spaceId)
+        try {
+            await initializeRoomEncryption(normalizedId, value)
+            const targetDoc = doc ?? getSpaceDocument(normalizedId)
+            await p2pService.reconnect(normalizedId, value, targetDoc)
+            const settled = await p2pService.waitForRoomAuth(normalizedId, 1500)
+            if (settled.status === 'auth-failed' || settled.status === 'password-required') {
+                disableRoomEncryption(normalizedId)
+                await clearRoomPassword(normalizedId)
+                return {
+                    ok: false,
+                    error: settled.reason || 'Incorrect room password. Check the password and try again.'
+                }
+            }
+            try {
+                await setRoomPassword(normalizedId, value)
+            } catch {
+                setVolatileRoomPassword(normalizedId, value)
+            }
+            failedRef.current = new Set()
+            setFailed(new Set())
+            setEncrypted(true)
+            return { ok: true }
+        } catch (err) {
+            return {
+                ok: false,
+                error: err instanceof Error ? err.message : 'Failed to verify room password.'
+            }
+        }
+    }, [spaceId, doc])
+
     const send = useCallback(async (text: string, replyTo?: TeamMessage | null) => {
         const body = text.trim()
         if (!body || !canChat) return
@@ -277,7 +343,8 @@ export function useTeamChat(spaceId: string, visible: boolean) {
                 timestamp: Date.now(),
                 ...(reply ? { replyToId: reply.replyToId } : {}),
                 content: JSON.stringify(payload),
-                encrypted: true
+                encrypted: true,
+                encryptionVersion: ROOM_ENCRYPTION_PROTOCOL_VERSION
             })
         } else {
             push({
@@ -293,7 +360,11 @@ export function useTeamChat(spaceId: string, visible: boolean) {
         setLocalState('isTyping', false)
     }, [canChat, userName, userId, encrypted, spaceId, push, setLocalState])
 
-    return { messages, send, typing, typingPeople, people, encrypted, synced, peerCount, canChat, unread }
+    return {
+        messages, send, typing, typingPeople, people,
+        encrypted, synced, peerCount, authInfo, retryPassword,
+        canChat, unread
+    }
 }
 
 export type TeamChatApi = ReturnType<typeof useTeamChat>

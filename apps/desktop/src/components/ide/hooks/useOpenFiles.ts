@@ -13,6 +13,7 @@ import { useNotificationStore } from '../../../stores/notificationStore'
 import { useWorkspaceFolderStore } from '../../../stores/workspaceFolderStore'
 import { chooseAction } from '../../ui'
 import { baseName, languageFromFileName, samePath } from '../languages'
+import { isCancellationError } from '../editor/monacoReliability'
 import { useFolderChanges } from './folderWatcher'
 import { captureEditorState, readEditorState, flushEditorStates, onRecoveryError } from '../../../services/editorRecovery'
 
@@ -295,8 +296,13 @@ export function useOpenFiles({
         if (!opts?.skipFormat && useLayoutStore.getState().formatOnSave && onFormatBeforeSaveRef.current) {
             try {
                 await onFormatBeforeSaveRef.current(file.path)
-            } catch {
-                // Formatting is best-effort; never block saving.
+            } catch (error) {
+                if (savedIn !== generation.current) return false
+                if (!isCancellationError(error)) {
+                    const reason = error instanceof Error && error.message ? error.message : 'formatter error'
+                    logger.ide.warn('Format on save failed; saving unformatted', { path: file.path, error })
+                    addNotification(`Couldn't format ${file.name} (${reason}). Saving without formatting.`, 'warning')
+                }
             }
             if (savedIn !== generation.current) return false
             file = filesRef.current.find(f => f.path === target)
@@ -608,6 +614,7 @@ export function useOpenFiles({
     }, [setActivePath])
 
     // Auto-Save on focus change: save previous active tab when switching tabs or losing window focus.
+    // Auto-save intentionally skips Format on Save (matching afterDelay) so cursor/undo history aren't disrupted.
     const prevActiveRef = useRef<string | null>(null)
     useEffect(() => {
         const prev = prevActiveRef.current
@@ -616,7 +623,7 @@ export function useOpenFiles({
         if (prev && prev !== activePath) {
             const file = filesRef.current.find(f => f.path === prev)
             if (file && file.isDirty && file.diskContent !== undefined) {
-                void saveFileRef.current(prev, { skipDeletedPrompt: true })
+                void saveFileRef.current(prev, { skipFormat: true, skipDeletedPrompt: true })
             }
         }
     }, [activePath, autoSave])
@@ -627,7 +634,7 @@ export function useOpenFiles({
             if (!canEditRef.current) return
             const current = filesRef.current.find(f => f.path === activeRef.current)
             if (current && current.isDirty && current.diskContent !== undefined) {
-                void saveFileRef.current(current.path, { skipDeletedPrompt: true })
+                void saveFileRef.current(current.path, { skipFormat: true, skipDeletedPrompt: true })
             }
         }
         window.addEventListener('blur', onBlur)

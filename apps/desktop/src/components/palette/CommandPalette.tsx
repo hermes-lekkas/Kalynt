@@ -7,12 +7,15 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import Fuse, { type RangeTuple } from 'fuse.js'
-import { AtSign, Box, Braces, Code2, FolderGit2, Hash, Terminal } from 'lucide-react'
+import { AtSign, Box, Braces, Code2, FolderGit2, Hash, Palette, Terminal } from 'lucide-react'
 import { useUiStore, type PaletteMode } from '../../stores/uiStore'
 import { useAppStore } from '../../stores/appStore'
 import { allCommands, formatShortcut, useCommandStore } from '../../stores/commandStore'
 import { useEditorStatusStore } from '../../stores/editorStatusStore'
+import { useNotificationStore } from '../../stores/notificationStore'
 import { useWorkspaceFolderStore, folderName } from '../../stores/workspaceFolderStore'
+import { extensionService } from '../../services/extensions/extensionService'
+import { selectExtensionTheme, type ContributedThemeEntry } from '../../services/extensions/themeService'
 import { Kbd, focusableWithin, layerZIndex, useLayer } from '../ui'
 import { FileGlyph } from '../ide/explorer/fileIcons'
 import { baseName, dirName, relativePath } from '../ide/languages'
@@ -21,16 +24,25 @@ import { globalCommands } from './globalCommands'
 import { CommandIcon } from './commandIcon'
 import './palette.css'
 
-type EffectiveMode = PaletteMode | 'line' | 'symbol'
+type EffectiveMode = PaletteMode | 'line' | 'symbol' | 'themes'
+
+interface ExtensionCommandEntry {
+    command: string
+    title: string
+    category?: string
+    extensionId?: string
+    extensionName?: string
+}
 
 interface Item {
     id: string
-    kind: 'file' | 'command' | 'workspace' | 'line' | 'symbol'
+    kind: 'file' | 'command' | 'workspace' | 'line' | 'symbol' | 'theme'
     title: string
     detail?: string
     badge?: string
     shortcut?: string
     icon?: string | ReactNode
+    keepOpen?: boolean
     run: () => void
 }
 
@@ -145,6 +157,9 @@ export default function CommandPalette() {
     const { sources, files, workspaceRoot, openFile } = useCommandStore()
     const spaces = useAppStore(s => s.spaces)
     const currentSpace = useAppStore(s => s.currentSpace)
+    const theme = useAppStore(s => s.theme)
+    const extensionTheme = useAppStore(s => s.extensionTheme)
+    const setTheme = useAppStore(s => s.setTheme)
     const records = useWorkspaceFolderStore(s => s.records)
     const currentLine = useEditorStatusStore(s => s.line)
 
@@ -152,9 +167,12 @@ export default function CommandPalette() {
     const activeFilePath = currentSpace ? records[currentSpace.id]?.activeFile ?? null : null
 
     const [query, setQuery] = useState(() => prefixForMode(paletteMode, inWorkspace))
+    const [themePickerOpen, setThemePickerOpen] = useState(false)
     const [active, setActive] = useState(0)
     const [symbols, setSymbols] = useState<DocumentSymbol[]>([])
     const [loadingSymbols, setLoadingSymbols] = useState(false)
+    const [extCommands, setExtCommands] = useState<ExtensionCommandEntry[]>([])
+    const [extThemes, setExtThemes] = useState<ContributedThemeEntry[]>([])
 
     const paletteRef = useRef<HTMLDivElement>(null)
     const inputRef = useRef<HTMLInputElement>(null)
@@ -188,7 +206,36 @@ export default function CommandPalette() {
         })
     }, [paletteMode, inWorkspace])
 
-    const { mode: effectiveMode, text } = modeOf(query, inWorkspace)
+    // Load contributed commands & themes from installed extensions and refresh on changes.
+    useEffect(() => {
+        let cancelled = false
+        const loadContributions = () => {
+            void extensionService.getContributions().then(contribs => {
+                if (cancelled) return
+                const cmds = Array.isArray(contribs?.commands) ? (contribs.commands as ExtensionCommandEntry[]) : []
+                const themes = Array.isArray(contribs?.themes) ? (contribs.themes as ContributedThemeEntry[]) : []
+                setExtCommands(cmds.filter(c => typeof c?.command === 'string' && typeof c?.title === 'string'))
+                setExtThemes(themes.filter(t => typeof t?.id === 'string' && typeof t?.extensionId === 'string'))
+            }).catch(() => {
+                if (!cancelled) {
+                    setExtCommands([])
+                    setExtThemes([])
+                }
+            })
+        }
+        loadContributions()
+        const offContrib = extensionService.onContributionsChanged(loadContributions)
+        const offInstalled = extensionService.onInstalledChange(loadContributions)
+        return () => {
+            cancelled = true
+            offContrib()
+            offInstalled()
+        }
+    }, [])
+
+    const parsedMode = modeOf(query, inWorkspace)
+    const effectiveMode: EffectiveMode = themePickerOpen ? 'themes' : parsedMode.mode
+    const text = themePickerOpen ? query.trim() : parsedMode.text
 
     // Support `file:line` jump syntax inside Files mode.
     const fileSearch = useMemo(() => {
@@ -224,9 +271,83 @@ export default function CommandPalette() {
 
     const allRegisteredCommands = useMemo(() => [...allCommands(sources), ...globalCommands()], [sources])
 
-    const commandItems = useMemo<Item[]>(() => allRegisteredCommands.map(c => ({
-        id: c.id, kind: 'command', title: c.title, shortcut: formatShortcut(c.shortcut), icon: c.icon, run: () => { c.action() }
-    })), [allRegisteredCommands])
+    const commandItems = useMemo<Item[]>(() => {
+        const builtIn: Item[] = allRegisteredCommands.map(c => ({
+            id: c.id, kind: 'command', title: c.title, shortcut: formatShortcut(c.shortcut), icon: c.icon, run: () => { c.action() }
+        }))
+
+        const colorThemeCmd: Item = {
+            id: 'preferences.colorTheme',
+            kind: 'command',
+            title: 'Preferences: Color Theme',
+            detail: extensionTheme ? `Current: ${extensionTheme.label}` : `Current: ${theme}`,
+            icon: <Palette size={15} strokeWidth={1.6} />,
+            keepOpen: true,
+            run: () => {
+                setThemePickerOpen(true)
+                setQuery('')
+                requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }))
+            }
+        }
+
+        const contributed: Item[] = extCommands.map(c => ({
+            id: `ext:${c.extensionId ?? ''}:${c.command}`,
+            kind: 'command',
+            title: c.category ? `${c.category}: ${c.title}` : c.title,
+            detail: c.extensionName || c.extensionId,
+            icon: 'Puzzle',
+            run: () => {
+                void extensionService.executeCommand(c.command).catch(err => {
+                    const msg = err instanceof Error ? err.message : String(err)
+                    useNotificationStore.getState().addNotification(`Extension command failed: ${msg}`, 'error')
+                })
+            }
+        }))
+
+        return [...builtIn, colorThemeCmd, ...contributed]
+    }, [allRegisteredCommands, extCommands, extensionTheme, theme])
+
+    const themeItems = useMemo<Item[]>(() => {
+        const builtIn: Item[] = [
+            {
+                id: 'builtin:dark',
+                kind: 'theme',
+                title: 'Dark',
+                detail: 'Built-in Kalynt theme',
+                badge: !extensionTheme && theme === 'dark' ? 'Active' : undefined,
+                icon: <Palette size={15} strokeWidth={1.6} />,
+                run: () => setTheme('dark')
+            },
+            {
+                id: 'builtin:light',
+                kind: 'theme',
+                title: 'Light',
+                detail: 'Built-in Kalynt theme',
+                badge: !extensionTheme && theme === 'light' ? 'Active' : undefined,
+                icon: <Palette size={15} strokeWidth={1.6} />,
+                run: () => setTheme('light')
+            },
+            {
+                id: 'builtin:system',
+                kind: 'theme',
+                title: 'System',
+                detail: 'Follow operating system appearance',
+                badge: !extensionTheme && theme === 'system' ? 'Active' : undefined,
+                icon: <Palette size={15} strokeWidth={1.6} />,
+                run: () => setTheme('system')
+            }
+        ]
+        const contributed: Item[] = extThemes.map(t => ({
+            id: `ext-theme:${t.id}`,
+            kind: 'theme',
+            title: t.label,
+            detail: t.extensionName || t.extensionId,
+            badge: extensionTheme?.id === t.id ? 'Active' : (t.uiTheme === 'vs' || t.uiTheme === 'hc-light' ? 'Light' : 'Dark'),
+            icon: <Palette size={15} strokeWidth={1.6} />,
+            run: () => { void selectExtensionTheme(t) }
+        }))
+        return [...builtIn, ...contributed]
+    }, [extThemes, extensionTheme, theme, setTheme])
 
     const fileItems = useMemo<Item[]>(() => files.filter(f => f.type === 'file').map(f => ({
         id: f.path,
@@ -312,11 +433,12 @@ export default function CommandPalette() {
         return items
     }, [symbols, loadingSymbols, activeFilePath, text])
 
-    const source = effectiveMode === 'commands' ? commandItems
-        : effectiveMode === 'workspaces' ? workspaceItems
-            : effectiveMode === 'line' ? lineItems
-                : effectiveMode === 'symbol' ? symbolItems
-                    : fileItems
+    const source = effectiveMode === 'themes' ? themeItems
+        : effectiveMode === 'commands' ? commandItems
+            : effectiveMode === 'workspaces' ? workspaceItems
+                : effectiveMode === 'line' ? lineItems
+                    : effectiveMode === 'symbol' ? symbolItems
+                        : fileItems
 
     const searchQuery = effectiveMode === 'files' ? fileSearch.searchText
         : effectiveMode === 'line' ? ''
@@ -344,14 +466,19 @@ export default function CommandPalette() {
     }, [active])
 
     const switchMode = (nextMode: EffectiveMode) => {
+        setThemePickerOpen(false)
         const nextPrefix = prefixForMode(nextMode, inWorkspace)
-        const body = effectiveMode === 'line' ? '' : stripPrefix(query)
+        const body = effectiveMode === 'line' || effectiveMode === 'themes' ? '' : stripPrefix(query)
         setQuery(`${nextPrefix}${body}`)
         inputRef.current?.focus({ preventScroll: true })
     }
 
     const run = (hit: SearchHit | undefined) => {
         if (!hit) return
+        if (hit.item.keepOpen) {
+            hit.item.run()
+            return
+        }
         closePalette()
         // Let the palette unmount and restore focus before running, so dialogs or editor jumps claim focus cleanly.
         setTimeout(hit.item.run, 0)
@@ -380,11 +507,12 @@ export default function CommandPalette() {
         else if (e.key === 'PageUp') { e.preventDefault(); setActive(i => Math.max(0, i - 10)) }
     }
 
-    const placeholder = effectiveMode === 'commands' ? 'Run a command…'
-        : effectiveMode === 'workspaces' ? 'Switch to a workspace…'
-            : effectiveMode === 'line' ? 'Go to line (e.g. :42 or :42:10)…'
-                : effectiveMode === 'symbol' ? 'Go to symbol in active file…'
-                    : 'Go to file (:line, > commands, @ symbols, # workspaces)'
+    const placeholder = effectiveMode === 'themes' ? 'Select Color Theme…'
+        : effectiveMode === 'commands' ? 'Run a command…'
+            : effectiveMode === 'workspaces' ? 'Switch to a workspace…'
+                : effectiveMode === 'line' ? 'Go to line (e.g. :42 or :42:10)…'
+                    : effectiveMode === 'symbol' ? 'Go to symbol in active file…'
+                        : 'Go to file (:line, > commands, @ symbols, # workspaces)'
 
     const empty = effectiveMode === 'files' && files.length === 0
         ? 'Open a folder to search its files. Type > for commands.'

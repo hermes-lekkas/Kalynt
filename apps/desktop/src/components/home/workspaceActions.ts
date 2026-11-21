@@ -31,8 +31,18 @@ export function openWorkspace(space: Space) {
     enter(space)
 }
 
-/** Asks the user for a folder. Returns the chosen path, or null if cancelled. */
+export function isBrowserMode(): boolean {
+    return window.electronAPI?.platform === 'browser'
+}
+
+export const DESKTOP_ONLY_FOLDER_MESSAGE = 'Opening local folders requires the desktop app.'
+
+/** Asks the user for a folder. Returns the chosen path, or null if cancelled or unavailable. */
 export async function pickFolder(): Promise<string | null> {
+    if (isBrowserMode()) {
+        notify(DESKTOP_ONLY_FOLDER_MESSAGE, 'info')
+        return null
+    }
     const result = await window.electronAPI?.fs?.openFolder?.()
     if (result?.success && result.path) return result.path as string
     if (result && !result.canceled && result.error) notify(`Couldn't open the folder: ${result.error}`, 'error')

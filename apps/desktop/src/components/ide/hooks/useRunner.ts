@@ -109,6 +109,7 @@ export function useRunner({ folder, activeFile, saveFile }: Options) {
     selectedFrameIdRef.current = selectedFrameId
     const prevFolderRef = useRef<string | null>(folder)
     const loadGenRef = useRef(0)
+    const frameInspectGenRef = useRef(0)
 
     const clearRunListeners = useCallback(() => {
         runListeners.current.forEach(off => off())
@@ -121,6 +122,7 @@ export function useRunner({ folder, activeFile, saveFile }: Options) {
     }, [showBottomTab])
 
     const clearPausedState = useCallback(() => {
+        frameInspectGenRef.current += 1
         setIsPaused(false)
         setPausedReason(null)
         setCallStack([])
@@ -196,7 +198,10 @@ export function useRunner({ folder, activeFile, saveFile }: Options) {
     const loadFrameInspection = useCallback(async (session: string, frame: StackFrame) => {
         const d = api()?.debug
         if (!d) return
+        const inspectGen = ++frameInspectGenRef.current
         setSelectedFrameId(frame.id)
+        // Clear previous frame's scopes and expanded variable trees immediately to avoid stale roots.
+        setScopes([])
         setVariableChildren({})
 
         if (frame.source?.path) {
@@ -208,34 +213,28 @@ export function useRunner({ folder, activeFile, saveFile }: Options) {
         try {
             if (typeof d.getScopes === 'function') {
                 const scopesRes = await d.getScopes(session, frame.id)
+                if (debugSessionId.current !== session || frameInspectGenRef.current !== inspectGen) return
                 const rawScopes: Scope[] = scopesRes?.success && Array.isArray(scopesRes.scopes) ? scopesRes.scopes : []
                 for (const sc of rawScopes) {
-                    if (debugSessionId.current !== session) return
-                    const varsRes = sc.variablesReference > 0
-                        ? await d.getVariables(session, sc.variablesReference).catch(() => null)
+                    if (debugSessionId.current !== session || frameInspectGenRef.current !== inspectGen) return
+                    const ref = Number(sc.variablesReference) || 0
+                    const varsRes = ref > 0
+                        ? await d.getVariables(session, ref).catch(() => null)
                         : null
+                    if (debugSessionId.current !== session || frameInspectGenRef.current !== inspectGen) return
                     nextScopes.push({
                         name: sc.name,
-                        variablesReference: sc.variablesReference,
+                        variablesReference: ref,
                         expensive: sc.expensive,
                         variables: varsRes?.success && Array.isArray(varsRes.variables) ? varsRes.variables : []
                     })
                 }
-            } else if (typeof d.getVariables === 'function') {
-                const varsRes = await d.getVariables(session, frame.id).catch(() => null)
-                if (varsRes?.success && Array.isArray(varsRes.variables) && varsRes.variables.length > 0) {
-                    nextScopes.push({
-                        name: 'Locals',
-                        variablesReference: frame.id,
-                        variables: varsRes.variables
-                    })
-                }
             }
         } catch {
-            // Adapter may not expose variables for this frame
+            // Adapter may not expose scopes/variables for this frame
         }
 
-        if (debugSessionId.current === session) {
+        if (debugSessionId.current === session && frameInspectGenRef.current === inspectGen) {
             setScopes(nextScopes)
             void evaluateWatchList(session, frame.id)
         }
@@ -252,10 +251,11 @@ export function useRunner({ folder, activeFile, saveFile }: Options) {
     const expandVariable = useCallback(async (variablesReference: number) => {
         const session = debugSessionId.current
         if (!session || variablesReference <= 0) return [] as Variable[]
+        const inspectGen = frameInspectGenRef.current
         try {
             const res = await api()?.debug.getVariables(session, variablesReference)
             const children: Variable[] = res?.success && Array.isArray(res.variables) ? res.variables : []
-            if (debugSessionId.current === session) {
+            if (debugSessionId.current === session && frameInspectGenRef.current === inspectGen) {
                 setVariableChildren(prev => ({ ...prev, [variablesReference]: children }))
             }
             return children

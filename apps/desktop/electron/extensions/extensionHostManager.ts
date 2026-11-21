@@ -9,11 +9,18 @@ import * as path from 'node:path'
 import * as fs from 'node:fs'
 import { ipcMain, app, BrowserWindow } from 'electron'
 import { downloadVsix, unpackVsix } from './extensionInstaller'
-import { scanExtensionDir, mergeContributions } from './extensionRegistry'
-import type { ExtensionMetadata, ExtensionContribution } from './extensionRegistry'
+import { scanExtensionDir, mergeContributions, loadContributedTheme } from './extensionRegistry'
+import type { ExtensionMetadata, ExtensionContribution, LoadedExtensionTheme } from './extensionRegistry'
 import { sendToWindow } from '../utils/window'
 
-export type { ExtensionMetadata, ExtensionContribution } from './extensionRegistry'
+export type { ExtensionMetadata, ExtensionContribution, LoadedExtensionTheme } from './extensionRegistry'
+
+export interface ExtensionHostManagerOptions {
+  extensionsDir?: string
+  hostScriptPath?: string
+  registerIpc?: boolean
+  onNotify?: (channel: string, data: unknown) => void
+}
 
 interface ExtensionHostMessage {
   type: string
@@ -34,12 +41,17 @@ interface PendingCallback {
   timer: ReturnType<typeof setTimeout>
 }
 
-class ExtensionHostManager {
+export class ExtensionHostManager {
   private extensionHostProcess: ChildProcess | null = null
   private extensionsDir: string = ''
+  private hostScriptPathOverride?: string
+  private onNotify?: (channel: string, data: unknown) => void
   private extensions: Map<string, ExtensionMetadata> = new Map()
   private activeExtensions: Map<string, ActiveExtension> = new Map()
   private loadedExtensions: Set<string> = new Set()
+  private disabledExtensions: Set<string> = new Set()
+  private disabledLoaded = false
+  private hasScanned = false
   private registeredCommands: Map<string, { extensionId: string; callback: (...args: unknown[]) => unknown }> = new Map()
   private isReady = false
   private messageQueue: Array<{ type: string; payload?: unknown }> = []
@@ -48,27 +60,80 @@ class ExtensionHostManager {
   private pendingActivations: Map<string, PendingCallback[]> = new Map()
   private pendingLoads: Map<string, PendingCallback[]> = new Map()
 
-  constructor() {
-    this.setupIPCHandlers()
+  constructor(options: ExtensionHostManagerOptions = {}) {
+    if (options.extensionsDir) {
+      this.extensionsDir = options.extensionsDir
+    }
+    this.hostScriptPathOverride = options.hostScriptPath
+    this.onNotify = options.onNotify
+    if (options.registerIpc !== false && ipcMain && typeof ipcMain.handle === 'function') {
+      this.setupIPCHandlers()
+    }
   }
 
   private initExtensionsDir(): void {
     if (!this.extensionsDir) {
       this.extensionsDir = path.join(app.getPath('userData'), 'extensions')
-      if (!fs.existsSync(this.extensionsDir)) {
-        fs.mkdirSync(this.extensionsDir, { recursive: true })
+    }
+    if (!fs.existsSync(this.extensionsDir)) {
+      fs.mkdirSync(this.extensionsDir, { recursive: true })
+    }
+    this.loadDisabledState()
+  }
+
+  private disabledStatePath(): string {
+    return path.join(this.extensionsDir, '.kalynt-disabled.json')
+  }
+
+  private loadDisabledState(): void {
+    if (this.disabledLoaded || !this.extensionsDir) return
+    this.disabledLoaded = true
+    try {
+      const file = this.disabledStatePath()
+      if (fs.existsSync(file)) {
+        const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'))
+        if (Array.isArray(parsed)) {
+          this.disabledExtensions = new Set(parsed.filter((id): id is string => typeof id === 'string'))
+        }
       }
+    } catch {
+      // Ignore corrupt disabled-extensions cache
     }
   }
 
-  async start(): Promise<void> {
+  private saveDisabledState(): void {
+    if (!this.extensionsDir) return
+    try {
+      fs.mkdirSync(this.extensionsDir, { recursive: true })
+      fs.writeFileSync(this.disabledStatePath(), JSON.stringify(Array.from(this.disabledExtensions), null, 2), 'utf-8')
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  private ensureScannedSync(): void {
     this.initExtensionsDir()
+    if (this.hasScanned) return
+    const scanned = scanExtensionDir(this.extensionsDir)
+    for (const [id, meta] of scanned) {
+      const active = this.activeExtensions.get(id)
+      if (active) {
+        meta.isActive = true
+        active.metadata = meta
+      }
+    }
+    this.extensions = scanned
+    this.hasScanned = true
+  }
+
+  async start(): Promise<void> {
+    this.ensureScannedSync()
     if (this.extensionHostProcess) {
       return
     }
 
     return new Promise((resolve, reject) => {
-      const hostScriptPath = path.join(__dirname, 'extensionHostProcess.js')
+      const hostScriptPath = this.hostScriptPathOverride || path.join(__dirname, 'extensionHostProcess.js')
 
       if (!fs.existsSync(hostScriptPath)) {
         reject(new Error(`Extension host script not found: ${hostScriptPath}`))
@@ -188,7 +253,7 @@ class ExtensionHostManager {
 
     const activeIds = Array.from(this.activeExtensions.keys())
     for (const id of activeIds) {
-      await this.deactivateExtension(id)
+      await this.deactivateExtension(id, { disable: false })
     }
 
     const child = this.extensionHostProcess
@@ -460,9 +525,15 @@ class ExtensionHostManager {
   }
 
   private notifyRenderer(channel: string, data: unknown): void {
-    BrowserWindow.getAllWindows().forEach(win => {
-      sendToWindow(win, `extension:${channel}`, data)
-    })
+    if (this.onNotify) {
+      this.onNotify(channel, data)
+      return
+    }
+    if (BrowserWindow && typeof BrowserWindow.getAllWindows === 'function') {
+      BrowserWindow.getAllWindows().forEach(win => {
+        sendToWindow(win, `extension:${channel}`, data)
+      })
+    }
   }
 
   private sendMessage(message: { type: string; payload?: unknown }): void {
@@ -517,14 +588,30 @@ class ExtensionHostManager {
       }
     }
 
+    // Prune disabled entries for extensions that no longer exist on disk
+    let pruned = false
+    for (const disabledId of Array.from(this.disabledExtensions)) {
+      if (!scanned.has(disabledId)) {
+        this.disabledExtensions.delete(disabledId)
+        pruned = true
+      }
+    }
+    if (pruned) this.saveDisabledState()
+
     this.extensions = scanned
+    this.hasScanned = true
     return this.getExtensions()
   }
 
   async loadExtension(id: string): Promise<void> {
+    this.ensureScannedSync()
     const extension = this.extensions.get(id)
     if (!extension) {
       throw new Error(`Extension not found: ${id}`)
+    }
+
+    if (!this.extensionHostProcess) {
+      await this.start()
     }
 
     if (this.loadedExtensions.has(id)) {
@@ -557,13 +644,24 @@ class ExtensionHostManager {
   }
 
   async activateExtension(id: string): Promise<unknown> {
+    this.ensureScannedSync()
     const extension = this.extensions.get(id)
     if (!extension) {
       throw new Error(`Extension not found: ${id}`)
     }
 
+    const wasDisabled = this.disabledExtensions.delete(id)
+    if (wasDisabled) {
+      this.saveDisabledState()
+      this.notifyRenderer('contributions-changed', { id })
+    }
+
     if (extension.isActive) {
       return this.activeExtensions.get(id)?.exports
+    }
+
+    if (!this.extensionHostProcess) {
+      await this.start()
     }
 
     if (!this.loadedExtensions.has(id)) {
@@ -596,53 +694,112 @@ class ExtensionHostManager {
     })
   }
 
-  async deactivateExtension(id: string): Promise<void> {
+  async deactivateExtension(id: string, options: { disable?: boolean } = {}): Promise<void> {
+    this.ensureScannedSync()
     const extension = this.extensions.get(id)
-    if (!extension || !extension.isActive) {
+    if (!extension) {
       return
     }
 
-    this.sendMessage({
-      type: 'deactivate-extension',
-      payload: { id }
-    })
+    const shouldDisable = options.disable !== false
+    let contributionsChanged = false
+    if (shouldDisable && !this.disabledExtensions.has(id)) {
+      this.disabledExtensions.add(id)
+      this.saveDisabledState()
+      contributionsChanged = true
+    }
 
-    extension.isActive = false
-    this.activeExtensions.delete(id)
-    for (const [command, info] of Array.from(this.registeredCommands.entries())) {
-      if (info.extensionId === id) {
-        this.registeredCommands.delete(command)
+    const wasActive = extension.isActive || this.activeExtensions.has(id)
+    if (wasActive) {
+      if (this.extensionHostProcess?.connected) {
+        this.sendMessage({
+          type: 'deactivate-extension',
+          payload: { id }
+        })
       }
+
+      extension.isActive = false
+      this.activeExtensions.delete(id)
+      for (const [command, info] of Array.from(this.registeredCommands.entries())) {
+        if (info.extensionId === id) {
+          this.registeredCommands.delete(command)
+        }
+      }
+      this.notifyRenderer('deactivated', { id })
+    }
+
+    if (contributionsChanged) {
+      this.notifyRenderer('contributions-changed', { id })
     }
   }
 
+  private findExtensionForCommand(command: string): ExtensionMetadata | undefined {
+    for (const ext of this.extensions.values()) {
+      if (this.disabledExtensions.has(ext.id)) continue
+      const contributes = ext.contributes as ExtensionContribution | undefined
+      if (Array.isArray(contributes?.commands) && contributes.commands.some(c => c.command === command)) {
+        return ext
+      }
+      if (Array.isArray(ext.activationEvents) && (ext.activationEvents.includes(`onCommand:${command}`) || ext.activationEvents.includes('*'))) {
+        return ext
+      }
+    }
+    return undefined
+  }
+
   async executeCommand(command: string, ...args: unknown[]): Promise<unknown> {
-    const commandInfo = this.registeredCommands.get(command)
+    this.ensureScannedSync()
+    let commandInfo = this.registeredCommands.get(command)
+
+    if (!commandInfo) {
+      const owner = this.findExtensionForCommand(command)
+      if (owner) {
+        await this.activateExtension(owner.id)
+        commandInfo = this.registeredCommands.get(command)
+      }
+    }
+
     if (commandInfo) {
       return commandInfo.callback(...args)
     }
-    return this.executeMainCommand(command, args)
+    if (command === 'workbench.action.reloadWindow') {
+      return this.executeMainCommand(command, args)
+    }
+    throw new Error(`Command not found or its extension is disabled: ${command}`)
+  }
+
+  loadTheme(extensionId: string, themeId: string): LoadedExtensionTheme | null {
+    this.ensureScannedSync()
+    if (this.disabledExtensions.has(extensionId)) return null
+    const extension = this.extensions.get(extensionId)
+    if (!extension) return null
+    return loadContributedTheme(extension, themeId)
   }
 
   async installExtension(vsixPath: string): Promise<ExtensionMetadata> {
     this.initExtensionsDir()
     const extensionId = await unpackVsix(vsixPath, this.extensionsDir, async id => {
-      if (this.extensions.get(id)?.isActive) await this.deactivateExtension(id)
+      if (this.extensions.get(id)?.isActive) await this.deactivateExtension(id, { disable: false })
     })
+    if (this.disabledExtensions.delete(extensionId)) {
+      this.saveDisabledState()
+    }
     await this.scanExtensions()
     const extension = this.extensions.get(extensionId)
     if (!extension) throw new Error(`Failed to verify installation of extension ${extensionId}`)
+    this.notifyRenderer('contributions-changed', { id: extensionId })
     return extension
   }
 
   async uninstallExtension(id: string): Promise<void> {
+    this.ensureScannedSync()
     const extension = this.extensions.get(id)
     if (!extension) {
       throw new Error(`Extension not found: ${id}`)
     }
 
     if (extension.isActive) {
-      await this.deactivateExtension(id)
+      await this.deactivateExtension(id, { disable: false })
     }
 
     if (fs.existsSync(extension.extensionPath)) {
@@ -652,9 +809,14 @@ class ExtensionHostManager {
     this.extensions.delete(id)
     this.loadedExtensions.delete(id)
     this.activeExtensions.delete(id)
+    if (this.disabledExtensions.delete(id)) {
+      this.saveDisabledState()
+    }
+    this.notifyRenderer('contributions-changed', { id })
   }
 
   getExtensions(): ExtensionMetadata[] {
+    this.ensureScannedSync()
     return Array.from(this.extensions.values())
   }
 
@@ -663,11 +825,13 @@ class ExtensionHostManager {
   }
 
   getExtension(id: string): ExtensionMetadata | undefined {
+    this.ensureScannedSync()
     return this.extensions.get(id)
   }
 
   getContributions(): ExtensionContribution {
-    return mergeContributions(this.getExtensions())
+    this.ensureScannedSync()
+    return mergeContributions(this.getExtensions(), this.disabledExtensions)
   }
 
   async downloadFromUrl(url: string, targetPath: string): Promise<void> {
@@ -685,7 +849,7 @@ class ExtensionHostManager {
     })
 
     ipcMain.handle('extensions:deactivate', async (_, id: string) => {
-      await this.deactivateExtension(id)
+      await this.deactivateExtension(id, { disable: true })
     })
 
     ipcMain.handle('extensions:install', async (_, vsixPath: string) => {
@@ -706,6 +870,14 @@ class ExtensionHostManager {
 
     ipcMain.handle('extensions:contributions', async () => {
       return this.getContributions()
+    })
+
+    ipcMain.handle('extensions:execute-command', async (_, command: string, args?: unknown[]) => {
+      return this.executeCommand(command, ...(Array.isArray(args) ? args : []))
+    })
+
+    ipcMain.handle('extensions:load-theme', async (_, extensionId: string, themeId: string) => {
+      return this.loadTheme(extensionId, themeId)
     })
 
     ipcMain.handle('extensions:start-host', async () => {

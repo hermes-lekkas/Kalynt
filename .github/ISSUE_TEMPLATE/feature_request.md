@@ -1,23 +1,22 @@
 ---
 name: Feature request
-about: Suggest an idea for Kalynt
+about: Propose a new capability or workflow improvement for Kalynt
 title: '[FEATURE] '
 labels: enhancement
 assignees: ''
-
 ---
 
-**Is your feature request related to a problem? Please describe.**
-A clear and concise description of what the problem is. Ex. I'm always frustrated when [...]
+**Problem statement**
+Describe the workflow gap or frustration this feature addresses.
 
-**Describe the solution you'd like**
-A clear and concise description of what you want to happen.
+**Proposed solution**
+Describe the behavior or user experience you would like to see.
 
-**Describe alternatives you've considered**
-A clear and concise description of any alternative solutions or features you've considered.
+**Alternatives considered**
+Describe any workarounds or alternative approaches you considered.
 
-**Use Case**
-Describe the specific use case or workflow where this feature would be beneficial.
+**Use case**
+Explain who benefits and how this fits into a real development or collaboration workflow.
 
 **Additional context**
-Add any other context, mockups, or screenshots about the feature request here.
+Include mockups, references, or screenshots if helpful.

@@ -13,10 +13,58 @@ import type { TaskDefinition, TaskExecution, TaskProvider } from './taskTypes'
 
 export type { TaskDefinition, TaskExecution, TaskProvider } from './taskTypes'
 
-function killProcessTree(proc: import('node:child_process').ChildProcess): Promise<void> {
-    if (!proc || !proc.pid || proc.exitCode !== null) return Promise.resolve()
-    const pid = proc.pid
+function isPidAlive(pid: number): boolean {
+    try {
+        process.kill(pid, 0)
+    } catch (err) {
+        return (err as NodeJS.ErrnoException)?.code === 'EPERM'
+    }
+    if (process.platform === 'linux') {
+        try {
+            const status = fs.readFileSync(`/proc/${pid}/status`, 'utf8')
+            if (/^State:\s*[ZX]/m.test(status)) return false
+        } catch {
+            return false
+        }
+    }
+    return true
+}
+
+async function waitForExit(proc: import('node:child_process').ChildProcess, pid: number, timeoutMs = 1500): Promise<boolean> {
+    if (proc.exitCode !== null || !isPidAlive(pid)) return true
+    const deadline = Date.now() + timeoutMs
     return new Promise((resolve) => {
+        let settled = false
+        const finish = (exited: boolean) => {
+            if (settled) return
+            settled = true
+            clearInterval(poll)
+            proc.off('exit', onExit)
+            proc.off('close', onExit)
+            resolve(exited)
+        }
+        const onExit = () => finish(!isPidAlive(pid))
+        proc.once('exit', onExit)
+        proc.once('close', onExit)
+        const poll = setInterval(() => {
+            if (!isPidAlive(pid)) finish(true)
+            else if (Date.now() >= deadline) finish(false)
+        }, 50)
+    })
+}
+
+async function killProcessTree(proc: import('node:child_process').ChildProcess): Promise<{ stopped: boolean; error?: string }> {
+    if (!proc || !proc.pid || proc.exitCode !== null) return { stopped: true }
+    const pid = proc.pid
+    if (process.platform !== 'win32') {
+        // Signal the detached process group atomically first so grandchildren don't orphan before dying.
+        try {
+            process.kill(-pid, 'SIGKILL')
+        } catch {
+            // Fall through to tree-kill
+        }
+    }
+    await new Promise<void>((resolve) => {
         treeKill(pid, 'SIGKILL', (err) => {
             if (err) {
                 try {
@@ -32,10 +80,19 @@ function killProcessTree(proc: import('node:child_process').ChildProcess): Promi
                 } catch {
                     // Already exited
                 }
+            } else if (process.platform !== 'win32') {
+                // Ensure any detached process group children are also terminated
+                try {
+                    process.kill(-pid, 'SIGKILL')
+                } catch {
+                    // Group already gone
+                }
             }
             resolve()
         })
     })
+    const exited = await waitForExit(proc, pid)
+    return exited ? { stopped: true } : { stopped: false, error: `Process ${pid} did not exit after SIGKILL` }
 }
 
 export class TaskRunnerService extends EventEmitter {
@@ -229,14 +286,42 @@ export class TaskRunnerService extends EventEmitter {
         try {
             execution.status = 'cancelled'
             execution.endTime = Date.now()
-            await killProcessTree(execution.process)
+            const result = await killProcessTree(execution.process)
 
             this.emit('task_cancelled', { executionId })
-            return true
+            return result.stopped
         } catch (error) {
             console.error(`[TaskRunner] Error killing execution ${executionId}:`, error)
             return false
         }
+    }
+
+    async killAllTaskExecutions(): Promise<{ stopped: number; failed: number; errors: string[] }> {
+        const active = Array.from(this.executions.values()).filter(ex => ex.status === 'running')
+        let stopped = 0
+        let failed = 0
+        const errors: string[] = []
+
+        await Promise.all(active.map(async (execution) => {
+            try {
+                execution.status = 'cancelled'
+                execution.endTime = Date.now()
+                const result = await killProcessTree(execution.process)
+                this.emit('task_cancelled', { executionId: execution.id })
+                if (result.stopped) {
+                    stopped++
+                } else {
+                    failed++
+                    errors.push(`Task ${execution.id}: ${result.error || 'failed to terminate process'}`)
+                }
+            } catch (error) {
+                failed++
+                const message = error instanceof Error ? error.message : String(error)
+                errors.push(`Task ${execution.id}: ${message}`)
+            }
+        }))
+
+        return { stopped, failed, errors }
     }
 
     async getTaskExecutions(): Promise<TaskExecution[]> {

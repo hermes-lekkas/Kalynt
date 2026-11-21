@@ -15,6 +15,16 @@ import HtmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker'
 import TsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker'
 import { attachMonacoDiagnostics } from '../../../stores/diagnosticsStore'
 import { lspClient } from '../../../services/lspClient'
+import {
+    WORKSPACE_TYPE_FILE_RE,
+    discoverWorkspaceTypeFilesFromApi,
+    installMonacoCancellationHandler,
+    isCancellationError,
+    normalizeFsPath,
+    prioritizeWorkspaceTypeFiles,
+    resolveTsConfigBaseUrl,
+    stripJsonc
+} from './monacoReliability'
 
 self.MonacoEnvironment = {
     getWorker(_workerId: string, label: string) {
@@ -160,7 +170,8 @@ tsLang.javascriptDefaults.setDiagnosticsOptions({
 })
 applyCompilerOptions()
 
-// Wire live Monaco diagnostics feed + non-TS LSP providers once.
+// Wire live Monaco diagnostics feed + non-TS LSP providers + cancellation guard once.
+installMonacoCancellationHandler()
 attachMonacoDiagnostics(monaco)
 lspClient.registerProviders(monaco)
 
@@ -171,46 +182,11 @@ const MAX_EXTRA_LIB_FILES = 140
 const MAX_EXTRA_LIB_BYTES = 128 * 1024
 const MAX_TOTAL_EXTRA_LIB_BYTES = 4 * 1024 * 1024
 const EXTRA_LIB_DEBOUNCE_MS = 320
-const IGNORED_DIRS = new Set([
-    'node_modules', '.git', 'dist', 'dist-electron', 'build', 'out',
-    '.next', '.nuxt', '.svelte-kit', 'coverage', '.turbo', '.cache', 'release'
-])
 
 let syncGeneration = 0
 let syncDebounceTimer: ReturnType<typeof setTimeout> | null = null
 let activeExtraLibs: monaco.IDisposable[] = []
 const fileExtraLibs = new Map<string, monaco.IDisposable[]>()
-
-function stripJsonc(text: string): string {
-    let out = ''
-    let inString = false
-    for (let i = 0; i < text.length; i++) {
-        const ch = text[i]
-        const next = text[i + 1]
-        if (inString) {
-            out += ch
-            if (ch === '\\') {
-                out += next ?? ''
-                i++
-            } else if (ch === '"') {
-                inString = false
-            }
-        } else if (ch === '"') {
-            inString = true
-            out += ch
-        } else if (ch === '/' && next === '/') {
-            while (i < text.length && text[i] !== '\n') i++
-            out += '\n'
-        } else if (ch === '/' && next === '*') {
-            i += 2
-            while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i++
-            i++
-        } else {
-            out += ch
-        }
-    }
-    return out.replace(/,(\s*[}\]])/g, '$1')
-}
 
 function mapJsxEmit(value?: unknown): monaco.languages.typescript.JsxEmit | undefined {
     switch (String(value ?? '').toLowerCase()) {
@@ -280,13 +256,7 @@ function mapTsConfigOptions(
     if (Array.isArray(raw.lib)) {
         out.lib = raw.lib.filter((entry): entry is string => typeof entry === 'string')
     }
-    if (typeof raw.baseUrl === 'string') {
-        const normalizedFolder = folder.replace(/\\/g, '/').replace(/\/+$/, '')
-        const cleanBase = raw.baseUrl.replace(/^\.\//, '').replace(/\/+$/, '')
-        out.baseUrl = cleanBase === '.' || cleanBase === ''
-            ? monaco.Uri.file(normalizedFolder).toString()
-            : monaco.Uri.file(`${normalizedFolder}/${cleanBase}`).toString()
-    }
+    let hasPaths = false
     if (raw.paths && typeof raw.paths === 'object' && !Array.isArray(raw.paths)) {
         const paths: Record<string, string[]> = {}
         for (const [alias, targets] of Object.entries(raw.paths as Record<string, unknown>)) {
@@ -294,7 +264,19 @@ function mapTsConfigOptions(
                 paths[alias] = targets.filter((t): t is string => typeof t === 'string')
             }
         }
-        out.paths = paths
+        if (Object.keys(paths).length > 0) {
+            out.paths = paths
+            hasPaths = true
+        }
+    }
+    const resolvedBaseUrl = resolveTsConfigBaseUrl(
+        folder,
+        raw.baseUrl,
+        hasPaths,
+        fsPath => monaco.Uri.file(fsPath).toString()
+    )
+    if (resolvedBaseUrl) {
+        out.baseUrl = resolvedBaseUrl
     }
     return out
 }
@@ -308,58 +290,14 @@ function disposeWorkspaceExtraLibs(): void {
 
 async function discoverWorkspaceTypeFiles(folder: string): Promise<string[]> {
     const api = typeof window !== 'undefined' ? window.electronAPI : undefined
-    const normalizedRoot = folder.replace(/\\/g, '/').replace(/\/+$/, '')
-
-    // Fast path: main-process glob (respects ignore patterns).
-    if (api?.agent?.glob) {
-        try {
-            const res = await api.agent.glob({
-                pattern: '**/*.{d.ts,ts,tsx,mts,cts}',
-                path: folder,
-                limit: MAX_EXTRA_LIB_FILES * 2
-            })
-            if (res?.ok && Array.isArray(res.files)) {
-                return res.files
-                    .map(file => {
-                        const norm = file.replace(/\\/g, '/')
-                        if (norm.startsWith('/') || /^[A-Za-z]:\//.test(norm)) return norm
-                        return `${normalizedRoot}/${norm}`
-                    })
-                    .filter(p => !p.split('/').some(seg => IGNORED_DIRS.has(seg)))
-            }
-        } catch {
-            // Fall through to bounded directory scan.
-        }
-    }
-
-    // Fallback: bounded BFS using fs.readDir (max depth 5).
-    if (!api?.fs?.readDir) return []
-    const found: string[] = []
-    const queue: Array<{ dir: string; depth: number }> = [{ dir: normalizedRoot, depth: 0 }]
-
-    while (queue.length > 0 && found.length < MAX_EXTRA_LIB_FILES * 2) {
-        const current = queue.shift()!
-        const res = await api.fs.readDir(current.dir).catch(() => null)
-        if (!res?.success || !Array.isArray(res.items)) continue
-        for (const item of res.items as Array<{ name: string; path: string; isDirectory: boolean; isFile: boolean }>) {
-            if (item.isDirectory) {
-                if (current.depth < 5 && !IGNORED_DIRS.has(item.name) && !item.name.startsWith('.')) {
-                    queue.push({ dir: item.path, depth: current.depth + 1 })
-                }
-            } else if (item.isFile && /\.(?:d\.ts|tsx?|mts|cts)$/i.test(item.name)) {
-                found.push(item.path.replace(/\\/g, '/'))
-                if (found.length >= MAX_EXTRA_LIB_FILES * 2) break
-            }
-        }
-    }
-    return found
+    return discoverWorkspaceTypeFilesFromApi(folder, api, MAX_EXTRA_LIB_FILES * 2)
 }
 
 async function runWorkspaceTypeSync(folder: string, generation: number): Promise<void> {
     const api = typeof window !== 'undefined' ? window.electronAPI : undefined
     if (!api?.fs?.readFile) return
 
-    const normalizedRoot = folder.replace(/\\/g, '/').replace(/\/+$/, '')
+    const normalizedRoot = normalizeFsPath(folder)
 
     // 1. Read tsconfig.json (or jsconfig.json) compilerOptions if present.
     let overrides: Partial<monaco.languages.typescript.CompilerOptions> = {}
@@ -381,17 +319,12 @@ async function runWorkspaceTypeSync(folder: string, generation: number): Promise
     if (generation !== syncGeneration) return
     applyCompilerOptions(overrides)
 
-    // 2. Sync bounded workspace .d.ts / .ts / .tsx files via addExtraLib.
+    // 2. Sync bounded workspace TS/JS files via addExtraLib.
     const candidates = await discoverWorkspaceTypeFiles(normalizedRoot)
     if (generation !== syncGeneration) return
 
-    // Prioritize declaration files first so ambient types & module declarations resolve.
-    const prioritized = [...candidates].sort((a, b) => {
-        const aDts = a.endsWith('.d.ts') ? 0 : 1
-        const bDts = b.endsWith('.d.ts') ? 0 : 1
-        if (aDts !== bDts) return aDts - bDts
-        return a.length - b.length
-    }).slice(0, MAX_EXTRA_LIB_FILES)
+    // Prioritize declaration files first, then TS files, then JS files.
+    const prioritized = prioritizeWorkspaceTypeFiles(candidates, MAX_EXTRA_LIB_FILES)
 
     disposeWorkspaceExtraLibs()
     let totalBytes = 0
@@ -424,7 +357,7 @@ async function runWorkspaceTypeSync(folder: string, generation: number): Promise
 }
 
 /**
- * Syncs workspace `tsconfig.json` compilerOptions and `.ts/.tsx/.d.ts` files
+ * Syncs workspace `tsconfig.json`/`jsconfig.json` compilerOptions and TS/JS files
  * into Monaco's TypeScript/JavaScript language services (bounded & debounced).
  * Returns a cleanup function that cancels pending syncs and clears extraLibs.
  */
@@ -444,7 +377,11 @@ export function syncWorkspaceTypes(folder: string | null): () => void {
 
     syncDebounceTimer = setTimeout(() => {
         syncDebounceTimer = null
-        void runWorkspaceTypeSync(folder, gen)
+        void runWorkspaceTypeSync(folder, gen).catch(error => {
+            if (!isCancellationError(error)) {
+                console.warn('[Monaco] Workspace type sync failed:', error)
+            }
+        })
     }, EXTRA_LIB_DEBOUNCE_MS)
 
     return () => {
@@ -462,7 +399,7 @@ export function syncWorkspaceTypes(folder: string | null): () => void {
 
 /** Updates a single workspace file's extraLib entry when saved or edited externally. */
 export function updateWorkspaceExtraLib(filePath: string, content: string): void {
-    if (!/\.(?:d\.ts|tsx?|jsx?|mts|cts|mjs|cjs)$/i.test(filePath)) return
+    if (!WORKSPACE_TYPE_FILE_RE.test(filePath)) return
     if (content.length > MAX_EXTRA_LIB_BYTES) return
     const normalized = filePath.replace(/\\/g, '/')
     const existing = fileExtraLibs.get(normalized)

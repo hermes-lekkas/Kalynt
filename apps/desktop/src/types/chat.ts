@@ -12,6 +12,8 @@ export interface ChatMessage {
     timestamp: number
     channelId?: string
     encrypted?: boolean
+    /** Room E2EE protocol version used to encrypt this message (undefined = Kalynt 2.0, 2 = Kalynt 2.1+). */
+    encryptionVersion?: number
     /** Tool name for `role: 'tool'` messages. */
     name?: string
     /** Raw tool output for `role: 'tool'` messages. */

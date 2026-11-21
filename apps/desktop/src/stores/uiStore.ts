@@ -10,9 +10,18 @@ import type { CollaborationTab } from '../components/collaboration/types'
 export type ExtensionsTab = 'runtimes' | 'extensions'
 export type PaletteMode = 'commands' | 'files' | 'workspaces'
 
+export interface PendingJoinInvite {
+    url: string
+    roomId: string
+    spaceName?: string
+    password?: string
+    passwordProtected?: boolean
+}
+
 interface UiState {
     collaborationOpen: boolean
     collaborationTab: CollaborationTab
+    pendingJoinInvite: PendingJoinInvite | null
     extensionsOpen: boolean
     extensionsTab: ExtensionsTab
     paletteOpen: boolean
@@ -21,6 +30,8 @@ interface UiState {
     setAgentDraft: (draft: string | null) => void
 
     openCollaboration: (tab?: CollaborationTab) => void
+    openJoinInvite: (invite: PendingJoinInvite) => void
+    clearPendingJoinInvite: () => void
     closeCollaboration: () => void
     openExtensions: (tab?: ExtensionsTab) => void
     closeExtensions: () => void
@@ -31,6 +42,7 @@ interface UiState {
 export const useUiStore = create<UiState>(set => ({
     collaborationOpen: false,
     collaborationTab: 'members',
+    pendingJoinInvite: null,
     extensionsOpen: false,
     extensionsTab: 'runtimes',
     paletteOpen: false,
@@ -39,7 +51,9 @@ export const useUiStore = create<UiState>(set => ({
     setAgentDraft: agentDraft => set({ agentDraft }),
 
     openCollaboration: (tab = 'members') => set({ collaborationOpen: true, collaborationTab: tab }),
-    closeCollaboration: () => set({ collaborationOpen: false }),
+    openJoinInvite: (invite) => set({ collaborationOpen: true, collaborationTab: 'join', pendingJoinInvite: invite }),
+    clearPendingJoinInvite: () => set({ pendingJoinInvite: null }),
+    closeCollaboration: () => set({ collaborationOpen: false, pendingJoinInvite: null }),
     openExtensions: (tab = 'runtimes') => set({ extensionsOpen: true, extensionsTab: tab }),
     closeExtensions: () => set({ extensionsOpen: false }),
     openPalette: (mode = 'commands') => set({ paletteOpen: true, paletteMode: mode }),

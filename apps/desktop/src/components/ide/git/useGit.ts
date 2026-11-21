@@ -241,7 +241,11 @@ export function useGit(folder: string | null, visible: boolean) {
     })
 
     /** Runs a git action, reports failures in plain terms, and refreshes. */
-    const act = useCallback(async (label: string, fn: () => Promise<{ success: boolean; error?: string } | undefined>, success?: string) => {
+    const act = useCallback(async <T extends { success: boolean; error?: string }>(
+        label: string,
+        fn: () => Promise<T | undefined>,
+        success?: string | ((result: T) => string)
+    ) => {
         if (!folder) return false
         setBusy(label)
         setError(null)
@@ -253,7 +257,8 @@ export function useGit(folder: string | null, visible: boolean) {
                 else setError(explain(message))
                 return false
             }
-            if (success) addNotification(success, 'success')
+            const message = typeof success === 'function' ? success(result) : success
+            if (message) addNotification(message, 'success')
             return true
         } catch (e) {
             setError(e instanceof Error ? e.message : String(e))
@@ -336,7 +341,22 @@ export function useGit(folder: string | null, visible: boolean) {
         fetch: () => act('Fetch', () => git()?.fetch?.(repo), 'Fetched from remote'),
         stash: (message?: string) => act('Stash', () => git()?.stash?.(message ? { repoPath: repo, message } : repo), 'Changes stashed'),
         stashPop: () => act('Pop stash', () => git()?.stashPop?.(repo), 'Stash popped'),
-        checkout: (name: string) => act('Switch branch', () => git()?.checkout({ repoPath: repo, branch: name }), `Switched to ${name}`),
+        checkout: (name: string, options?: { remoteRef?: string }) =>
+            act(
+                'Switch branch',
+                () => git()?.checkout({
+                    repoPath: repo,
+                    branch: name,
+                    ...(options?.remoteRef ? { remoteRef: options.remoteRef } : {})
+                }),
+                result => {
+                    const resolved = (result as { branch?: string; tracking?: string })
+                    if (resolved.branch && resolved.tracking) {
+                        return `Switched to ${resolved.branch} (tracking ${resolved.tracking})`
+                    }
+                    return `Switched to ${resolved.branch || name}`
+                }
+            ),
         createBranch: (name: string) => act('Create branch', () => git()?.createBranch({ repoPath: repo, branchName: name, checkout: true }), `Created and switched to ${name}`),
         diff: async (path: string, staged: boolean): Promise<{ diff?: string; error?: string }> => {
             const result = await git()?.diff({ repoPath: repo, file: path, staged })

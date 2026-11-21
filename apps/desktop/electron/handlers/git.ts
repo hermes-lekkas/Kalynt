@@ -25,6 +25,151 @@ function isSafeRefName(value: unknown): value is string {
     return typeof value === 'string' && value.length > 0 && value.trim() === value && !value.startsWith('-') && !/[\s\0]/.test(value)
 }
 
+function stripRemotePrefix(ref: string): string {
+    return ref.replace(/^refs\/remotes\//, '').replace(/^remotes\//, '')
+}
+
+async function refExists(git: SimpleGit, fullRef: string): Promise<boolean> {
+    try {
+        const out = await git.raw(['rev-parse', '--verify', '--quiet', fullRef])
+        return out.trim().length > 0
+    } catch {
+        return false
+    }
+}
+
+async function splitRemoteRef(git: SimpleGit, remoteRef: string): Promise<{ remote: string; shortName: string }> {
+    const remotes = await git.getRemotes(false).catch(() => [])
+    const sorted = [...remotes].sort((a, b) => b.name.length - a.name.length)
+    for (const r of sorted) {
+        if (remoteRef.startsWith(`${r.name}/`)) {
+            return { remote: r.name, shortName: remoteRef.slice(r.name.length + 1) }
+        }
+    }
+    const slash = remoteRef.indexOf('/')
+    if (slash < 0) return { remote: '', shortName: remoteRef }
+    return { remote: remoteRef.slice(0, slash), shortName: remoteRef.slice(slash + 1) }
+}
+
+async function listLocalBranchUpstreams(git: SimpleGit): Promise<Array<{ name: string; upstream: string }>> {
+    const raw = await git.raw(['for-each-ref', '--format=%(refname:short)\t%(upstream:short)', 'refs/heads']).catch(() => '')
+    return raw
+        .split(/\r?\n/)
+        .map(line => line.trimEnd())
+        .filter(Boolean)
+        .map(line => {
+            const tab = line.indexOf('\t')
+            if (tab < 0) return { name: line, upstream: '' }
+            return { name: line.slice(0, tab), upstream: line.slice(tab + 1) }
+        })
+}
+
+/**
+ * Checks out a local or remote-tracking branch without detaching HEAD.
+ * When checking out a remote ref (e.g. `origin/shared-name` or `second/shared-name`),
+ * reuses an existing local branch that already tracks that exact remote ref, or
+ * creates a non-colliding local branch (`<shortName>` if free, otherwise `<remote>-<shortName>`)
+ * configured to track `refs/remotes/<remoteRef>`.
+ */
+export async function checkoutBranch(
+    git: SimpleGit,
+    options: { branch?: string; remoteRef?: string }
+): Promise<Result> {
+    const rawBranch = options?.branch
+    const rawRemoteRef = options?.remoteRef
+
+    if (rawRemoteRef !== undefined && !isSafeRefName(rawRemoteRef)) {
+        return { success: false, error: 'Invalid remote branch name' }
+    }
+    if (rawBranch !== undefined && !isSafeRefName(rawBranch)) {
+        return { success: false, error: 'Invalid branch name' }
+    }
+    if (!rawBranch && !rawRemoteRef) {
+        return { success: false, error: 'Invalid branch name' }
+    }
+
+    let remoteRef: string | null = null
+    if (rawRemoteRef) {
+        const candidate = stripRemotePrefix(rawRemoteRef)
+        if (!(await refExists(git, `refs/remotes/${candidate}`))) {
+            return { success: false, error: `Remote branch '${candidate}' was not found` }
+        }
+        remoteRef = candidate
+    } else if (rawBranch) {
+        if (await refExists(git, `refs/heads/${rawBranch}`)) {
+            await git.checkout([rawBranch])
+            return { success: true, branch: rawBranch }
+        }
+        const candidate = stripRemotePrefix(rawBranch)
+        if (await refExists(git, `refs/remotes/${candidate}`)) {
+            remoteRef = candidate
+        }
+    }
+
+    if (!remoteRef) {
+        await git.checkout([rawBranch!])
+        const current = (await git.raw(['branch', '--show-current']).catch(() => '')).trim()
+        return { success: true, branch: current || rawBranch }
+    }
+
+    const { remote, shortName } = await splitRemoteRef(git, remoteRef)
+    const locals = await listLocalBranchUpstreams(git)
+    const localNames = new Set(locals.map(b => b.name))
+
+    // Reuse an existing local branch that already tracks this exact remote ref.
+    const exactTracking = locals.filter(b => b.upstream === remoteRef)
+    if (exactTracking.length > 0) {
+        const preferred = exactTracking.find(b => b.name === shortName)
+            ?? exactTracking.find(b => b.name === `${remote}-${shortName}`)
+            ?? exactTracking[0]
+        await git.checkout([preferred.name])
+        return { success: true, branch: preferred.name, tracking: remoteRef, created: false }
+    }
+
+    // Pick a clear, non-colliding local branch name tracking this exact remote ref.
+    let localName = shortName
+    if (!localName || localNames.has(localName)) {
+        const base = remote ? `${remote}-${shortName || 'branch'}` : `remote-${shortName || 'branch'}`
+        localName = base
+        let suffix = 2
+        while (localNames.has(localName)) {
+            localName = `${base}-${suffix++}`
+        }
+    }
+
+    await git.raw(['checkout', '-b', localName, '--track', `refs/remotes/${remoteRef}`])
+    return { success: true, branch: localName, tracking: remoteRef, created: true }
+}
+
+/**
+ * Pushes the active branch, handling renamed tracking branches (e.g. local
+ * `second-shared-name` tracking `second/shared-name`) cleanly under `push.default=simple`.
+ */
+export async function pushBranch(git: SimpleGit): Promise<Result> {
+    const status = await git.status()
+    if (status.tracking) {
+        if (status.current) {
+            const upstreamRemote = (await git.raw(['config', '--get', `branch.${status.current}.remote`]).catch(() => '')).trim()
+            const upstreamMerge = (await git.raw(['config', '--get', `branch.${status.current}.merge`]).catch(() => '')).trim()
+            if (upstreamRemote && upstreamMerge) {
+                const remoteBranch = upstreamMerge.replace(/^refs\/heads\//, '')
+                if (remoteBranch !== status.current) {
+                    await git.push([upstreamRemote, `HEAD:${upstreamMerge}`])
+                    return { success: true }
+                }
+            }
+        }
+        await git.push()
+        return { success: true }
+    }
+    const remotes = await git.getRemotes()
+    const remote = remotes.find(r => r.name === 'origin') ?? remotes[0]
+    if (!remote) return { success: false, error: 'This repository has no remote to push to' }
+    if (!status.current) return { success: false, error: 'Check out a branch before pushing' }
+    await git.push(['--set-upstream', remote.name, status.current])
+    return { success: true }
+}
+
 function isSafeCommitHash(value: unknown): value is string {
     return typeof value === 'string' && /^[0-9a-fA-F]{4,40}$/.test(value)
 }
@@ -168,11 +313,9 @@ export function registerGitHandlers(ipcMain: Electron.IpcMain, getCurrentWorkspa
 
     withRepo('git:branch', async repo => ({ success: true, branches: plain(await gitFor(repo).branch()) }))
 
-    withRepo('git:checkout', async (repo, options: { branch: string }) => {
-        if (!isSafeRefName(options?.branch)) return { success: false, error: 'Invalid branch name' }
-        await gitFor(repo).checkout([options.branch])
-        return { success: true }
-    })
+    withRepo('git:checkout', async (repo, options: { branch?: string; remoteRef?: string }) =>
+        checkoutBranch(gitFor(repo), options ?? {})
+    )
 
     // Unstage. Before the first commit there is no HEAD to reset to.
     withRepo('git:reset', async (repo, options: { files: string[] }) => {
@@ -184,20 +327,7 @@ export function registerGitHandlers(ipcMain: Electron.IpcMain, getCurrentWorkspa
     })
 
     // A branch without an upstream is pushed to origin and linked to it.
-    withRepo('git:push', async repo => {
-        const git = gitFor(repo, true)
-        const status = await git.status()
-        if (status.tracking) {
-            await git.push()
-        } else {
-            const remotes = await git.getRemotes()
-            const remote = remotes.find(r => r.name === 'origin') ?? remotes[0]
-            if (!remote) return { success: false, error: 'This repository has no remote to push to' }
-            if (!status.current) return { success: false, error: 'Check out a branch before pushing' }
-            await git.push(['--set-upstream', remote.name, status.current])
-        }
-        return { success: true }
-    })
+    withRepo('git:push', async repo => pushBranch(gitFor(repo, true)))
 
     // Explicitly publish the current (or requested) branch to a remote with -u.
     withRepo('git:publish', async (repo, options: string | { repoPath: string; remote?: string; branch?: string }) => {

@@ -13,7 +13,19 @@ import type { BrowserWindow as BrowserWindowType } from 'electron'
 import { validatePath } from '../utils/pathValidator'
 import { sendToWindow } from '../utils/window'
 import { clearBinaryCache, findBinary, killProcessTree, safeEnv, wrapWindowsCommand } from './code-exec/binaries'
-import { EXTENSIONS, planRun, type Step } from './code-exec/languages'
+import { EXTENSIONS, planRun, sanitizeNimModuleName, type Step } from './code-exec/languages'
+
+export { sanitizeNimModuleName } from './code-exec/languages'
+
+/** Builds a safe temporary source filename for unsaved drafts. */
+export function tempScriptFilename(language: string, id: string): string {
+    const ext = EXTENSIONS[language] ?? '.txt'
+    if (language === 'nim') {
+        return `${sanitizeNimModuleName(id)}${ext}`
+    }
+    const safeId = id.replace(/[^\w-]/g, '_')
+    return `kalynt_${safeId}${ext}`
+}
 
 const runningProcesses = new Map<string, ChildProcess>()
 const htmlPreviewFiles = new Set<string>()
@@ -163,7 +175,7 @@ export function registerCodeExecutionHandlers(
                 script = validatePath(workspace, options.filePath)
                 if (!fs.existsSync(script)) return { success: false, error: `${path.basename(script)} doesn't exist on disk` }
             } else {
-                script = path.join(buildDir, `kalynt_${safeId}${EXTENSIONS[language] ?? '.txt'}`)
+                script = path.join(buildDir, tempScriptFilename(language, id))
                 await fs.promises.writeFile(script, options.code ?? '')
                 isTempScript = true
                 cleanup.push(script)
@@ -222,7 +234,7 @@ export function registerCodeExecutionHandlers(
         } catch (error) {
             return { success: false, error: error instanceof Error ? error.message : String(error) }
         } finally {
-            for (const file of cleanup) fs.promises.rm(file, { force: true }).catch(() => undefined)
+            await Promise.all(cleanup.map(file => fs.promises.rm(file, { force: true }).catch(() => undefined)))
         }
     })
 

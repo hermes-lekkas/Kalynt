@@ -214,16 +214,24 @@ function extractHoverMarkdown(contents: unknown): Monaco.IMarkdownString[] {
 class LspClientManager {
     private sessions = new Map<string, LspSessionEntry>()
     private starting = new Map<string, Promise<LspSessionEntry | null>>()
-    private unavailable = new Set<string>()
+    private unavailable = new Map<string, { error: string; actionableHint?: string }>()
     private workspacePath: string | null = null
     private providersRegistered = false
     private disposables: Monaco.IDisposable[] = []
     private diagnosticTimers = new Map<string, ReturnType<typeof setTimeout>>()
     private monacoRef: typeof Monaco | null = null
     private stopListenerOff: (() => void) | null = null
+    private notificationListenerOff: (() => void) | null = null
 
     private sessionKey(workspacePath: string, serverLang: string): string {
         return `${workspacePath.replace(/\\/g, '/')}::${serverLang}`
+    }
+
+    getUnavailableReason(languageId: string, workspaceOverride?: string | null): { error: string; actionableHint?: string } | null {
+        const workspace = (workspaceOverride ?? this.workspacePath)?.replace(/\\/g, '/')
+        const serverLang = backendLanguageId(languageId)
+        if (!workspace || !serverLang) return null
+        return this.unavailable.get(this.sessionKey(workspace, serverLang)) ?? null
     }
 
     setWorkspace(workspacePath: string | null): void {
@@ -235,6 +243,13 @@ class LspClientManager {
             void this.stopWorkspace(prev)
         }
         useDiagnosticsStore.getState().clearOrigin('lsp')
+        if (this.monacoRef) {
+            for (const model of this.monacoRef.editor.getModels()) {
+                if (!model.isDisposed()) {
+                    this.monacoRef.editor.setModelMarkers(model, LSP_MARKER_OWNER, [])
+                }
+            }
+        }
     }
 
     getWorkspace(): string | null {
@@ -264,8 +279,12 @@ class LspClientManager {
             .then(result => {
                 this.starting.delete(key)
                 if (!result?.success) {
-                    // Server binary likely not installed; remember and gracefully no-op for this workspace.
-                    this.unavailable.add(key)
+                    // Server binary or module unavailable; remember actionable reason and gracefully no-op.
+                    const typed = result as { error?: string; actionableHint?: string } | undefined
+                    this.unavailable.set(key, {
+                        error: typed?.error || `${serverLang} language server is unavailable`,
+                        actionableHint: typed?.actionableHint
+                    })
                     return null
                 }
                 const entry: LspSessionEntry = {
@@ -278,9 +297,11 @@ class LspClientManager {
                 this.sessions.set(key, entry)
                 return entry
             })
-            .catch(() => {
+            .catch((err) => {
                 this.starting.delete(key)
-                this.unavailable.add(key)
+                this.unavailable.set(key, {
+                    error: err instanceof Error ? err.message : String(err)
+                })
                 return null
             })
 
@@ -300,6 +321,92 @@ class LspClientManager {
         }
     }
 
+    private async sendNotification(session: LspSessionEntry, method: string, params?: unknown): Promise<boolean> {
+        const runtime = typeof window !== 'undefined' ? window.electronAPI?.runtime : undefined
+        if (!runtime) return false
+        try {
+            const sendNotif = (runtime as { sendLSPNotification?: (sessionId: string, method: string, params?: unknown) => Promise<{ success?: boolean }> }).sendLSPNotification
+            if (typeof sendNotif === 'function') {
+                const response = await sendNotif(session.sessionId, method, params)
+                return Boolean(response?.success)
+            }
+            // Fallback for older shims (gateway also routes standard notifications cleanly)
+            if (typeof runtime.sendLSPRequest === 'function') {
+                const response = await runtime.sendLSPRequest(session.sessionId, method, params)
+                return Boolean(response?.success)
+            }
+            return false
+        } catch {
+            return false
+        }
+    }
+
+    private applyDiagnostics(
+        filePath: string,
+        rawItems: LspDiagnostic[],
+        sourceFallback: string,
+        explicitModel?: Monaco.editor.ITextModel | null
+    ): void {
+        const validItems = rawItems.filter(d => typeof d?.message === 'string' && d.message.length > 0)
+        const items: DiagnosticItem[] = validItems.map((d, idx) => ({
+            id: `lsp:${filePath}:${(d.range?.start?.line ?? 0) + 1}:${(d.range?.start?.character ?? 0) + 1}:${idx}`,
+            file: filePath,
+            line: Math.max(1, (d.range?.start?.line ?? 0) + 1),
+            column: Math.max(1, (d.range?.start?.character ?? 0) + 1),
+            endLine: d.range?.end ? d.range.end.line + 1 : undefined,
+            endColumn: d.range?.end ? d.range.end.character + 1 : undefined,
+            severity: mapLspSeverity(d.severity),
+            message: d.message ?? '',
+            source: d.source || sourceFallback,
+            code: d.code != null ? String(d.code) : undefined,
+            origin: 'lsp'
+        }))
+
+        useDiagnosticsStore.getState().setFileDiagnostics('lsp', filePath, items)
+
+        if (this.monacoRef) {
+            const monaco = this.monacoRef
+            const normalizedPath = filePath.replace(/\\/g, '/')
+            const model = (explicitModel && !explicitModel.isDisposed())
+                ? explicitModel
+                : monaco.editor.getModels().find(m => !m.isDisposed() && modelFilePath(m) === normalizedPath) ?? null
+
+            if (model && !model.isDisposed()) {
+                const markers: Monaco.editor.IMarkerData[] = validItems.map(d => {
+                    const r = toMonacoRange(monaco, d.range)
+                    return {
+                        severity: mapMonacoSeverity(monaco, d.severity),
+                        message: d.message ?? '',
+                        source: d.source || sourceFallback,
+                        code: d.code != null ? String(d.code) : undefined,
+                        startLineNumber: r.startLineNumber,
+                        startColumn: r.startColumn,
+                        endLineNumber: r.endLineNumber,
+                        endColumn: r.endColumn
+                    }
+                })
+                monaco.editor.setModelMarkers(model, LSP_MARKER_OWNER, markers)
+            }
+        }
+    }
+
+    handleServerNotification(data: { sessionId: string; languageId?: string; method: string; params: unknown }): void {
+        if (!data || data.method !== 'textDocument/publishDiagnostics') return
+        const params = data.params as { uri?: string; diagnostics?: LspDiagnostic[] } | undefined
+        if (!params?.uri) return
+
+        const filePath = fromFileUri(params.uri).replace(/\\/g, '/')
+        const rawItems = Array.isArray(params.diagnostics) ? params.diagnostics : []
+        let sourceFallback = data.languageId || 'lsp'
+        for (const entry of this.sessions.values()) {
+            if (entry.sessionId === data.sessionId) {
+                sourceFallback = entry.serverLang
+                break
+            }
+        }
+        this.applyDiagnostics(filePath, rawItems, sourceFallback)
+    }
+
     async syncDocument(model: Monaco.editor.ITextModel): Promise<LspSessionEntry | null> {
         const filePath = modelFilePath(model)
         if (!filePath) return null
@@ -313,32 +420,54 @@ class LspClientManager {
 
         if (lastVersion === version) return session
 
-        // Fire-and-forget with short timeout tolerance: some servers do not reply to notification methods sent as requests.
         if (lastVersion === undefined) {
             session.openedUris.set(uri, version)
-            void Promise.race([
-                this.sendRequest(session, 'textDocument/didOpen', {
-                    textDocument: {
-                        uri,
-                        languageId: lang,
-                        version,
-                        text: model.getValue()
-                    }
-                }),
-                new Promise(resolve => setTimeout(resolve, 400))
-            ])
+            await this.sendNotification(session, 'textDocument/didOpen', {
+                textDocument: {
+                    uri,
+                    languageId: lang,
+                    version,
+                    text: model.getValue()
+                }
+            })
         } else {
             session.openedUris.set(uri, version)
-            void Promise.race([
-                this.sendRequest(session, 'textDocument/didChange', {
-                    textDocument: { uri, version },
-                    contentChanges: [{ text: model.getValue() }]
-                }),
-                new Promise(resolve => setTimeout(resolve, 400))
-            ])
+            await this.sendNotification(session, 'textDocument/didChange', {
+                textDocument: { uri, version },
+                contentChanges: [{ text: model.getValue() }]
+            })
         }
 
         return session
+    }
+
+    async notifyDidSave(model: Monaco.editor.ITextModel): Promise<void> {
+        const filePath = modelFilePath(model)
+        if (!filePath) return
+        const session = await this.syncDocument(model)
+        if (!session) return
+        const uri = toFileUri(filePath)
+        await this.sendNotification(session, 'textDocument/didSave', {
+            textDocument: { uri },
+            text: model.getValue()
+        })
+    }
+
+    async notifyDidClose(model: Monaco.editor.ITextModel): Promise<void> {
+        const filePath = modelFilePath(model)
+        if (!filePath) return
+        const serverLang = backendLanguageId(model.getLanguageId())
+        const workspace = this.workspacePath?.replace(/\\/g, '/')
+        if (!serverLang || !workspace) return
+        const session = this.sessions.get(this.sessionKey(workspace, serverLang))
+        if (!session) return
+
+        const uri = toFileUri(filePath)
+        if (!session.openedUris.has(uri)) return
+        session.openedUris.delete(uri)
+        await this.sendNotification(session, 'textDocument/didClose', {
+            textDocument: { uri }
+        })
     }
 
     scheduleDiagnostics(model: Monaco.editor.ITextModel): void {
@@ -386,43 +515,7 @@ class LspClientManager {
                     ? result.items
                     : []
 
-            const items: DiagnosticItem[] = rawItems
-                .filter(d => typeof d?.message === 'string' && d.message.length > 0)
-                .map((d, idx) => ({
-                    id: `lsp:${filePath}:${(d.range?.start?.line ?? 0) + 1}:${(d.range?.start?.character ?? 0) + 1}:${idx}`,
-                    file: filePath,
-                    line: Math.max(1, (d.range?.start?.line ?? 0) + 1),
-                    column: Math.max(1, (d.range?.start?.character ?? 0) + 1),
-                    endLine: d.range?.end ? d.range.end.line + 1 : undefined,
-                    endColumn: d.range?.end ? d.range.end.character + 1 : undefined,
-                    severity: mapLspSeverity(d.severity),
-                    message: d.message ?? '',
-                    source: d.source || session.serverLang,
-                    code: d.code != null ? String(d.code) : undefined,
-                    origin: 'lsp'
-                }))
-
-            useDiagnosticsStore.getState().setFileDiagnostics('lsp', filePath, items)
-
-            if (this.monacoRef && !model.isDisposed()) {
-                const monaco = this.monacoRef
-                const markers: Monaco.editor.IMarkerData[] = rawItems
-                    .filter(d => typeof d?.message === 'string' && d.message.length > 0)
-                    .map(d => {
-                        const r = toMonacoRange(monaco, d.range)
-                        return {
-                            severity: mapMonacoSeverity(monaco, d.severity),
-                            message: d.message ?? '',
-                            source: d.source || session.serverLang,
-                            code: d.code != null ? String(d.code) : undefined,
-                            startLineNumber: r.startLineNumber,
-                            startColumn: r.startColumn,
-                            endLineNumber: r.endLineNumber,
-                            endColumn: r.endColumn
-                        }
-                    })
-                monaco.editor.setModelMarkers(model, LSP_MARKER_OWNER, markers)
-            }
+            this.applyDiagnostics(filePath, rawItems, session.serverLang, model)
         } catch {
             session.pullDiagnosticsSupported = false
         }
@@ -455,6 +548,13 @@ class LspClientManager {
             }
         }) as unknown
         if (typeof off === 'function') this.stopListenerOff = off as () => void
+
+        // Listen for server-pushed LSP notifications (e.g. textDocument/publishDiagnostics).
+        const onNotif = (runtime as { onLSPNotification?: (cb: (data: { sessionId: string; languageId?: string; method: string; params: unknown }) => void) => unknown } | undefined)?.onLSPNotification
+        const offNotif = onNotif?.((data) => {
+            this.handleServerNotification(data)
+        })
+        if (typeof offNotif === 'function') this.notificationListenerOff = offNotif as () => void
 
         for (const lang of LSP_LANGUAGES) {
             // Hover provider
@@ -621,6 +721,7 @@ class LspClientManager {
             const disposeSub = model.onWillDispose(() => {
                 changeSub.dispose()
                 disposeSub.dispose()
+                void this.notifyDidClose(model)
                 const filePath = modelFilePath(model)
                 if (filePath) {
                     const timer = this.diagnosticTimers.get(filePath)
@@ -648,9 +749,13 @@ class LspClientManager {
         }
         for (const [key, entry] of toStop) {
             this.sessions.delete(key)
+            for (const uri of entry.openedUris.keys()) {
+                await this.sendNotification(entry, 'textDocument/didClose', { textDocument: { uri } })
+            }
+            entry.openedUris.clear()
             await runtime?.stopLSP?.(entry.sessionId).catch(() => undefined)
         }
-        for (const key of Array.from(this.unavailable)) {
+        for (const key of Array.from(this.unavailable.keys())) {
             if (key.startsWith(`${normalized}::`)) this.unavailable.delete(key)
         }
     }
@@ -660,6 +765,8 @@ class LspClientManager {
         this.diagnosticTimers.clear()
         this.stopListenerOff?.()
         this.stopListenerOff = null
+        this.notificationListenerOff?.()
+        this.notificationListenerOff = null
         this.disposables.forEach(d => d.dispose())
         this.disposables = []
         this.providersRegistered = false

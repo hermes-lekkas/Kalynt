@@ -1,96 +1,130 @@
 # Contributing to Kalynt
 
-Thank you for your interest in contributing to Kalynt! We welcome contributions from the community to help make this the best privacy-first IDE.
+Thank you for contributing to Kalynt! This guide covers workspace setup, engineering conventions, verification commands, and how to submit pull requests.
 
-## Repository Structure
+---
 
-Kalynt is a monorepo managed by npm workspaces.
+## Repository Layout
+
+Kalynt is an npm-workspaces monorepo:
 
 ```text
 kalynt/
-├── apps/
-│   └── desktop/              # The Electron application
-│       ├── electron/         # Main process: IPC handlers, services, terminal, extensions, preload
-│       ├── src/              # Renderer: React components, stores, services, styles
-│       └── scripts/          # Build hooks (electron-builder afterPack)
+├── apps/desktop/              # Electron desktop application
+│   ├── electron/              # Main process: IPC handlers, AI gateway, services, terminal/LSP/DAP, extensions, preload
+│   ├── src/                   # Sandboxed React renderer: components, hooks, stores, services, styles
+│   └── scripts/               # Build hooks (after-pack.cjs), test runner, Electron smoke harness
 ├── packages/
-│   ├── crdt/                 # Shared CRDT logic (Yjs wrappers)
-│   ├── networking/           # P2P networking layer
-│   ├── shared/               # Common types and utilities
-│   └── native-macos/         # Swift native helper (FSEvents, CoreML, memory)
-└── ...
+│   ├── crdt/                  # Shared Yjs CRDT helpers
+│   ├── networking/            # P2P WebRTC helpers
+│   ├── shared/                # Common types and utilities
+│   └── native-macos/          # Swift native helper for macOS (FSEvents, CoreML, memory)
+├── examples/test-extension/   # Reference VS Code extension fixture
+└── website/                   # Static marketing & download site
 ```
 
-[ARCHITECTURE.md](./ARCHITECTURE.md) explains how the pieces fit together.
-
-## Getting Started
-
-1.  **Prerequisites**:
-    *   Node.js >= 22.0.0
-    *   Python 3.10+ (for native module builds)
-    *   C++ build tools
-    *   Swift 5.9+ (for the macOS native helper, optional)
-
-2.  **Setup**:
-    ```bash
-    git clone https://github.com/trisle-app/Kalynt.git
-    cd Kalynt
-    npm install
-    ```
-
-3.  **Run the app in development**:
-    ```bash
-    npm run electron:dev
-    ```
-    This starts the Vite dev server and launches Electron. `npm run dev:web` runs the interface alone in a browser, with the desktop APIs stubbed out.
-
-4.  **Check your changes** before opening a pull request:
-    ```bash
-    cd apps/desktop
-    npx tsc --noEmit -p tsconfig.json        # renderer
-    npx tsc --noEmit -p tsconfig.node.json   # main process
-    npx vite build                           # production build
-    ```
-
-## Conventions
-
-*   **Keep files under 500 lines.** Split by responsibility (see `components/ide/` or `electron/handlers/debug/` for examples).
-*   **UI** uses the primitives in `src/components/ui` and the CSS variables in `src/styles/tokens.css`; don't hard-code colours. Every view must work in both the light and dark themes.
-*   **Write interface text in plain language**, in sentence case, and say what happens ("Stage file", not "Submit").
-*   **Main process:** never spawn a shell. Pass commands as argument lists, and send every path that comes from the renderer through `validatePath` (`electron/utils/pathValidator.ts`). The one exception is the agent's `run_command` (`electron/agent/exec.ts`), which runs behind the approval rules in `src/services/agent/approvals.ts`.
-*   **Cloud providers and model IDs** live only in `src/types/aiProviders.ts`. Each protocol has one adapter in `electron/ai/`; a provider with an OpenAI-compatible API usually needs only a catalog entry and its parameters in `openaiChat.ts`.
-*   **Agent tools** live in `src/services/agent/tools/`, one file per area. A tool that changes something needs a `kind` that the approval rules understand, and should snapshot files with `ctx.checkpoint` before writing.
-
-## What You Can Contribute To
-
-We accept pull requests for:
-
-*   **UI/UX**: components, styling and themes (`apps/desktop/src/components`)
-*   **Language support**: new languages for Run, Build and Debug (`electron/handlers/code-exec`, `electron/handlers/debug`)
-*   **Networking**: P2P reliability (`packages/networking`, `src/services/p2pService.ts`)
-*   **Performance**: memory and startup time (`electron/services/Performance_Acceleration`)
-*   **Security**: path handling, CSP, process isolation
-*   **Tests**: Kalynt has no unit-test suite yet, and tests are very welcome
-*   **Native (macOS)**: the Swift helper (`packages/native-macos`)
-*   **Documentation**: guides and tutorials
-
-## Submission Guidelines
-
-1.  **Fork the repository**.
-2.  **Create a feature branch**: `git checkout -b feature/my-new-feature`
-3.  **Commit your changes**: `git commit -am 'Add some feature'`
-4.  **Push to the branch**: `git push origin feature/my-new-feature`
-5.  **Submit a Pull Request**.
-
-## Code of Conduct
-
-*   Be respectful and inclusive.
-*   Focus on constructive feedback.
-*   Zero tolerance for harassment or discrimination.
-
-## License
-
-By contributing, you agree that your contributions will be licensed under the **AGPL-3.0-only** license.
+Read [ARCHITECTURE.md](./ARCHITECTURE.md) for a walkthrough of the process model and service boundaries.
 
 ---
-© 2026 Hermes Lekkas (hermeslekkasdev@gmail.com). All rights reserved.
+
+## Development Setup
+
+### Prerequisites
+
+- **Node.js `>= 22.12.0`** and **npm `>= 10`** (required by `@electron/rebuild` and CI)
+- **Python 3.10+** and a **C++20 build toolchain** (for rebuilding `node-pty`)
+- **Swift 5.9+** (optional, macOS native helper only)
+
+### Install & Run
+
+```bash
+git clone https://github.com/hermes-lekkas/Kalynt.git
+cd Kalynt
+npm ci
+npm run electron:dev
+```
+
+- `npm run electron:dev` starts Vite and launches the Electron desktop app.
+- `npm run dev:web` runs the renderer alone in a browser with explicit desktop-only shims (`src/electronShim.ts`).
+- `npm run rebuild:native --workspace=apps/desktop` explicitly rebuilds hoisted `node-pty` against Electron.
+
+---
+
+## Verification Checklist
+
+Run these checks before opening a pull request:
+
+```bash
+npm test
+npm run lint
+npm run typecheck --workspace=apps/desktop
+npm run typecheck:fixtures --workspace=apps/desktop
+npm run build:vite --workspace=apps/desktop
+```
+
+Additional platform checks:
+
+- **Linux production Electron smoke (uses disposable profile & keyring):**
+  ```bash
+  npm run rebuild:native --workspace=apps/desktop
+  bash apps/desktop/scripts/smoke-linux-ci.sh
+  ```
+- **Local installer build (rebuilds `node-pty` and never publishes):**
+  ```bash
+  npm run build --workspace=apps/desktop
+  ```
+- **Website changes:**
+  ```bash
+  npm run website:build
+  ```
+
+---
+
+## Engineering Conventions
+
+- **Keep modules focused and under ~500 lines.** Split by responsibility (see `apps/desktop/src/components/ide/` and `apps/desktop/electron/handlers/debug/`).
+- **Design system & theming:** Build UI with primitives from `src/components/ui/` and semantic variables in `src/styles/tokens.css`. Never hard-code colors; ensure every view works in light, dark, and contributed VS Code color themes.
+- **Plain-language copy:** Use sentence case and describe the exact action ("Stage file", "Lift ban", "Retry password"). Never display optimistic success states for canceled, partial, or unverified operations.
+- **Main-process security:**
+  - Validate every renderer-supplied filesystem path through `validatePath` (`electron/utils/pathValidator.ts`).
+  - Spawn external commands with argument lists (`shell: false`). Only `tasks.json` `shell` tasks and approved agent `run_command` executions invoke a shell.
+  - Keep API keys, tokens, and room passwords in `safeStorage` and never commit secrets (see [SECURITY_HYGIENE.md](./SECURITY_HYGIENE.md)).
+- **AI providers & agent tools:** Curated cloud model catalogs live in `src/types/aiProviders.ts`; protocol adapters live in `electron/ai/`; agent tools live one per module under `src/services/agent/tools/` with `ctx.checkpoint` snapshots before writes.
+- **Tests:** Add focused `*.test.mjs` regression tests next to your changes (automatically discovered by `npm test`). Use disposable directories in `os.tmpdir()` and loopback HTTP fixtures rather than real external services or user profiles.
+
+---
+
+## Areas to Contribute
+
+- **Editor, Git & UX:** Monaco reliability, theming, accessibility, and workflow polish (`apps/desktop/src/components/`)
+- **Languages, LSP & Debugging:** Additional runners, DAP adapters, and LSP integrations (`apps/desktop/electron/handlers/`, `electron/terminal/`)
+- **Collaboration:** WebRTC reliability, TURN diagnostics, and CRDT sync (`packages/networking/`, `src/services/p2pService.ts`)
+- **Local & Cloud AI:** Engine memory tuning, provider adapters, and agent tools (`electron/ai/`, `electron/handlers/llm/`, `src/services/agent/`)
+- **Security & Testing:** Path validation, CSP, process isolation, and automated regression coverage
+- **macOS Native Helper & Docs:** `packages/native-macos/`, guides, and examples
+
+---
+
+## Submitting a Pull Request
+
+1. Fork the repository and create a feature branch: `git checkout -b feat/short-description`
+2. Make focused commits with clear messages and passing tests.
+3. Push your branch and open a Pull Request summarizing the problem, approach, and verification commands run.
+
+---
+
+## Publishing a release
+
+1. Confirm the root and desktop package versions match the intended tag, and include upgrade notes in the changelog.
+2. Wait for **Verify IDE** and **Build Installers** on the release source commit. Download the Windows, macOS, and Linux artifacts from that run.
+3. Verify the installers and the generated `latest*.yml` SHA-512 hashes. Upload the installers, generated updater files, and a SHA-256 checksum manifest to a draft GitHub release targeting the same source commit.
+4. Publish the draft once all platforms are present. Verify the public GitHub download links and the download section on GitHub Pages.
+
+---
+
+## Community Standards & License
+
+- Follow our [Code of Conduct](./CODE_OF_CONDUCT.md) and [Security Policy](./SECURITY.md).
+- By contributing, you agree that your contributions are licensed under **AGPL-3.0-only**.
+
+Copyright © 2026 Hermes Lekkas (`hermeslekkasdev@gmail.com`).

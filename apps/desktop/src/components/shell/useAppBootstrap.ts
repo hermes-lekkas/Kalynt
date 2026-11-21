@@ -6,15 +6,16 @@
  * and live document theme synchronisation.
  */
 import { useEffect, useState } from 'react'
-import { resolveTheme, useAppStore } from '../../stores/appStore'
+import { useAppStore, resolveTheme } from '../../stores/appStore'
 import { useModelStore } from '../../stores/modelStore'
 import { useNotificationStore } from '../../stores/notificationStore'
+import { useUiStore } from '../../stores/uiStore'
 import { useUpdateStore } from '../../stores/updateStore'
 import { usePerformanceAcceleration } from '../../hooks/usePerformanceAcceleration'
 import { flushEditorStates, onRecoveryError } from '../../services/editorRecovery'
 import { setModelsDirectory } from '../../services/modelDownloadService'
-import { p2pService } from '../../services/p2pService'
-import { markEncryptionEnabled, migrateLegacyRoomPasswords, setVolatileRoomPassword } from '../../services/roomPasswordStore'
+import { normalizeRoomId, p2pService } from '../../services/p2pService'
+import { hasRoomPassword, markEncryptionEnabled, migrateLegacyRoomPasswords, setVolatileRoomPassword } from '../../services/roomPasswordStore'
 import { logger } from '../../utils/logger'
 
 export function useAppBootstrap(): { ready: boolean } {
@@ -94,35 +95,65 @@ export function useAppBootstrap(): { ready: boolean } {
         }
     }, [])
 
-    // kalynt:// invite links open (or create) the shared workspace.
+    // kalynt:// invite links open (or create) the shared workspace, or prompt for a password when required.
+    // Wait until app initialization completes so cold-start invites match existing workspaces and never race hydration.
     useEffect(() => {
-        const join = (url: string) => {
+        if (!ready) return
+        const join = async (url: string) => {
             const parsed = p2pService.parseRoomLink(url)
             if (!parsed) {
                 logger.general.warn('Could not parse deep link', { url })
+                useNotificationStore.getState().addNotification('That invite link could not be opened.', 'warning')
                 return
             }
+
+            const normalizedId = normalizeRoomId(parsed.roomId)
+            const storedPassword = await hasRoomPassword(normalizedId)
+
+            if (parsed.passwordProtected && !parsed.password && !storedPassword) {
+                useUiStore.getState().openJoinInvite({
+                    url,
+                    roomId: normalizedId,
+                    spaceName: parsed.spaceName,
+                    passwordProtected: true
+                })
+                return
+            }
+
             if (parsed.password) {
                 // Keep the link password only in volatile in-memory storage (never persisted)
                 // so the room decrypts immediately on join.
-                setVolatileRoomPassword(parsed.roomId, parsed.password)
-                void markEncryptionEnabled(parsed.roomId)
+                setVolatileRoomPassword(normalizedId, parsed.password)
+                void markEncryptionEnabled(normalizedId)
             }
             const store = useAppStore.getState()
-            const existing = store.spaces.find(s => s.id === parsed.roomId)
-            store.setCurrentSpace(existing ?? store.createSpace(parsed.spaceName || 'Shared workspace', parsed.roomId))
+            const existing = store.spaces.find(s => normalizeRoomId(s.id) === normalizedId)
+            store.setCurrentSpace(existing ?? store.createSpace(parsed.spaceName || 'Shared workspace', normalizedId))
         }
 
-        const onDomLink = (e: Event) => join((e as CustomEvent<{ url: string }>).detail.url)
+        const onDomLink = (e: Event) => {
+            void join((e as CustomEvent<{ url: string }>).detail.url)
+        }
         window.addEventListener('kalynt-deep-link', onDomLink)
         const removeIpc = window.electronAPI?.on?.('deep-link', (url: string) => {
             window.dispatchEvent(new CustomEvent('kalynt-deep-link', { detail: { url } }))
         })
+
+        // Drain any deep links queued during cold start or macOS open-url before mount.
+        void window.electronAPI?.consumePendingDeepLinks?.().then(links => {
+            if (!Array.isArray(links)) return
+            for (const link of links) {
+                if (typeof link === 'string' && link) {
+                    void join(link)
+                }
+            }
+        }).catch(err => logger.general.warn('Failed to consume pending deep links', err))
+
         return () => {
             window.removeEventListener('kalynt-deep-link', onDomLink)
             if (typeof removeIpc === 'function') removeIpc()
         }
-    }, [])
+    }, [ready])
 
     return { ready }
 }

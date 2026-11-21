@@ -20,7 +20,8 @@ import {
 import path from 'node:path'
 import {
     languageServerConfigurations,
-    debugAdapterConfigurations
+    debugAdapterConfigurations,
+    resolvePythonExecutable
 } from './languageConfigs'
 import { DebugAdapterGateway } from './debugGateway'
 import type { LanguageServerConfig, DebugAdapterConfig } from './languageConfigs'
@@ -31,6 +32,86 @@ export type { DebugSession } from './debugGateway'
 
 const LSP_INIT_TIMEOUT_MS = 15000
 const LSP_SHUTDOWN_TIMEOUT_MS = 3000
+const MAX_STARTUP_STDERR_CHARS = 4096
+
+/**
+ * Standard LSP methods that MUST be sent as JSON-RPC notifications (no `id`, no response expected).
+ */
+export const LSP_NOTIFICATION_METHODS = new Set<string>([
+    'initialized',
+    'exit',
+    '$/cancelRequest',
+    '$/setTrace',
+    'textDocument/didOpen',
+    'textDocument/didChange',
+    'textDocument/didSave',
+    'textDocument/didClose',
+    'workspace/didChangeConfiguration',
+    'workspace/didChangeWatchedFiles',
+    'workspace/didChangeWorkspaceFolders'
+])
+
+function formatStartupFailure(
+    languageId: string,
+    command: string,
+    args: string[],
+    error: unknown,
+    stderrOutput: string
+): { error: string; actionableHint?: string } {
+    const errObj = error as NodeJS.ErrnoException | undefined
+    const rawMsg = error instanceof Error ? error.message : String(error)
+    const stderrTrimmed = stderrOutput.trim()
+    const isPythonPylsp = languageId === 'python' && args.includes('pylsp')
+
+    if (errObj?.code === 'ENOENT' || rawMsg.includes('ENOENT')) {
+        if (languageId === 'python') {
+            return {
+                error: `Python executable '${command}' was not found on PATH or in the workspace environment.`,
+                actionableHint: 'Install Python 3 (or create a workspace .venv) and install python-lsp-server: python3 -m pip install python-lsp-server'
+            }
+        }
+        return {
+            error: `Language server '${command}' for ${languageId} is not installed or not on PATH.`,
+            actionableHint: `Install '${command}' and ensure it is available on PATH to enable ${languageId} language features.`
+        }
+    }
+
+    if (isPythonPylsp && /No module named ['"]?pylsp['"]?/i.test(stderrTrimmed)) {
+        const pyDisplay = path.basename(command) || 'python3'
+        return {
+            error: `Python language server (pylsp) is not installed for ${command}.`,
+            actionableHint: `Install it to enable Python language features: ${pyDisplay} -m pip install python-lsp-server`
+        }
+    }
+
+    if (stderrTrimmed) {
+        const firstLine = stderrTrimmed.split(/\r?\n/).find(l => l.trim().length > 0)?.trim()
+        if (firstLine && !rawMsg.includes(firstLine)) {
+            return {
+                error: `${rawMsg}: ${firstLine}`,
+                actionableHint: isPythonPylsp
+                    ? `Verify python-lsp-server is installed: ${path.basename(command) || 'python3'} -m pip install python-lsp-server`
+                    : undefined
+            }
+        }
+    }
+
+    return { error: rawMsg }
+}
+
+function safeDisposeConnection(connection: MessageConnection | null | undefined): void {
+    if (!connection) return
+    try {
+        connection.end()
+    } catch {
+        // Already ended or stream closed
+    }
+    try {
+        connection.dispose()
+    } catch {
+        // Already disposed
+    }
+}
 
 export interface LanguageSession {
     id: string
@@ -69,7 +150,7 @@ export class LanguageRuntimeGateway extends EventEmitter {
             timeoutMs?: number
         }
         timeoutMs?: number
-    }): Promise<{ success: boolean; sessionId?: string; error?: string }> {
+    }): Promise<{ success: boolean; sessionId?: string; error?: string; actionableHint?: string }> {
         const config = this.languageConfigs.get(options.languageId)
         if (!config) {
             return { success: false, error: `No language server configuration found for ${options.languageId}` }
@@ -95,14 +176,80 @@ export class LanguageRuntimeGateway extends EventEmitter {
             }
         }
 
+        let resolvedCommand = config.command
+        const resolvedArgs = config.args || []
+        if (options.languageId === 'python' && (resolvedCommand === 'python' || resolvedCommand === 'python3')) {
+            const discovered = await resolvePythonExecutable(options.workspacePath)
+            if (!discovered) {
+                const detail = formatStartupFailure(
+                    options.languageId,
+                    resolvedCommand,
+                    resolvedArgs,
+                    Object.assign(new Error(`spawn ${resolvedCommand} ENOENT`), { code: 'ENOENT' }),
+                    ''
+                )
+                this.emit('language_server_error', {
+                    sessionId,
+                    languageId: options.languageId,
+                    error: detail.error,
+                    actionableHint: detail.actionableHint
+                })
+                return { success: false, error: detail.error, actionableHint: detail.actionableHint }
+            }
+            resolvedCommand = discovered
+        }
+
         let serverProcess: import('node:child_process').ChildProcess | null = null
         let connection: MessageConnection | null = null
+        let startupStderr = ''
 
         try {
-            serverProcess = spawn(config.command, config.args || [], {
+            serverProcess = spawn(resolvedCommand, resolvedArgs, {
                 cwd: options.workspacePath,
                 env: { ...process.env, ...config.env },
                 stdio: ['pipe', 'pipe', 'pipe']
+            })
+
+            // Prevent uncaught stream errors (e.g. EPIPE / ERR_STREAM_DESTROYED) when child exits early
+            serverProcess.stdin?.on('error', () => undefined)
+            serverProcess.stdout?.on('error', () => undefined)
+            serverProcess.stderr?.on('error', () => undefined)
+
+            serverProcess.stderr?.on('data', (data: Buffer) => {
+                const text = data.toString()
+                if (startupStderr.length < MAX_STARTUP_STDERR_CHARS) {
+                    startupStderr += text.slice(0, MAX_STARTUP_STDERR_CHARS - startupStderr.length)
+                }
+                console.error(`[LSP ${options.languageId}]`, text)
+            })
+
+            // Wait for the OS spawn to succeed or fail (ENOENT) BEFORE attaching JSON-RPC
+            // so we never write an initialize request into an already-destroyed stdin stream.
+            await new Promise<void>((resolve, reject) => {
+                if (serverProcess!.pid) {
+                    resolve()
+                    return
+                }
+                const onSpawn = () => {
+                    cleanup()
+                    resolve()
+                }
+                const onError = (err: Error) => {
+                    cleanup()
+                    reject(err)
+                }
+                const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+                    cleanup()
+                    reject(new Error(`Language server ${options.languageId} exited before startup (${code !== null ? `code ${code}` : `signal ${signal}`})`))
+                }
+                const cleanup = () => {
+                    serverProcess!.off('spawn', onSpawn)
+                    serverProcess!.off('error', onError)
+                    serverProcess!.off('exit', onExit)
+                }
+                serverProcess!.once('spawn', onSpawn)
+                serverProcess!.once('error', onError)
+                serverProcess!.once('exit', onExit)
             })
 
             connection = createMessageConnection(
@@ -126,26 +273,65 @@ export class LanguageRuntimeGateway extends EventEmitter {
             // Prevent unhandled rejection if init resolves before an error/exit
             earlyFailure.catch(() => undefined)
 
+            connection.onError((err) => {
+                const error = Array.isArray(err) ? err[0] : err
+                const message = error instanceof Error ? error.message : String(error)
+                if (session.status === 'starting') {
+                    rejectInit?.(error instanceof Error ? error : new Error(message))
+                } else if (session.status === 'running') {
+                    session.status = 'error'
+                    this.languageServers.delete(sessionId)
+                    safeDisposeConnection(connection)
+                    this.emit('language_server_error', {
+                        sessionId,
+                        languageId: options.languageId,
+                        error: message
+                    })
+                }
+            })
+
+            connection.onClose(() => {
+                if (session.status === 'starting') {
+                    rejectInit?.(new Error(`Language server ${options.languageId} closed its connection during initialization`))
+                } else if (session.status === 'running') {
+                    session.status = 'stopped'
+                    this.languageServers.delete(sessionId)
+                }
+            })
+
+            // Forward all server-pushed notifications (including textDocument/publishDiagnostics)
+            connection.onNotification((method, params) => {
+                this.emit('lsp_notification', {
+                    sessionId,
+                    languageId: options.languageId,
+                    method,
+                    params
+                })
+            })
+
             serverProcess.on('error', (error) => {
                 console.error(`[LanguageGateway] Process error for ${options.languageId}:`, error)
                 session.status = 'error'
                 this.languageServers.delete(sessionId)
-                this.emit('language_server_error', { sessionId, error: error.message || String(error) })
+                safeDisposeConnection(connection)
+                this.emit('language_server_error', {
+                    sessionId,
+                    languageId: options.languageId,
+                    error: error.message || String(error)
+                })
                 rejectInit?.(error)
             })
 
-            serverProcess.on('exit', (code) => {
+            serverProcess.on('exit', (code, signal) => {
                 const wasStarting = session.status === 'starting'
                 session.status = 'stopped'
                 this.languageServers.delete(sessionId)
+                safeDisposeConnection(connection)
                 this.emit('language_server_stopped', { sessionId, exitCode: code })
                 if (wasStarting) {
-                    rejectInit?.(new Error(`Language server ${options.languageId} exited before initialization (code ${code})`))
+                    const reason = code !== null ? `code ${code}` : `signal ${signal ?? 'unknown'}`
+                    rejectInit?.(new Error(`Language server ${options.languageId} exited before initialization (${reason})`))
                 }
-            })
-
-            serverProcess.stderr?.on('data', (data: Buffer) => {
-                console.error(`[LSP ${options.languageId}]`, data.toString())
             })
 
             connection.listen()
@@ -192,11 +378,21 @@ export class LanguageRuntimeGateway extends EventEmitter {
                     reject(new Error(`Language server ${options.languageId} initialization timed out after ${timeoutMs}ms`))
                 }, timeoutMs)
             })
+            timeoutPromise.catch(() => undefined)
+
+            // Guard against process exiting in the microtask before initialize is written
+            if (serverProcess.exitCode !== null || serverProcess.killed || serverProcess.stdin?.destroyed) {
+                throw new Error(`Language server ${options.languageId} exited before initialization (code ${serverProcess.exitCode ?? 'unknown'})`)
+            }
+
+            const initRequest = connection.sendRequest(InitializeRequest.type, initParams)
+            // Always attach a rejection handler so losing Promise.race never causes an unhandled rejection
+            initRequest.catch(() => undefined)
 
             let initResult: Awaited<ReturnType<typeof connection.sendRequest<typeof InitializeRequest.type>>>
             try {
                 initResult = await Promise.race([
-                    connection.sendRequest(InitializeRequest.type, initParams),
+                    initRequest,
                     earlyFailure,
                     timeoutPromise
                 ]) as any
@@ -207,7 +403,7 @@ export class LanguageRuntimeGateway extends EventEmitter {
 
             session.capabilities = (initResult as any).capabilities
 
-            connection.sendNotification(InitializedNotification.type, {})
+            await connection.sendNotification(InitializedNotification.type, {})
 
             this.languageServers.set(sessionId, session)
             session.status = 'running'
@@ -220,16 +416,22 @@ export class LanguageRuntimeGateway extends EventEmitter {
 
             return { success: true, sessionId }
         } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            console.error(`[LanguageGateway] Failed to start language server for ${options.languageId}:`, error)
-            try { connection?.dispose() } catch { /* ignore */ }
+            const detail = formatStartupFailure(options.languageId, resolvedCommand, resolvedArgs, error, startupStderr)
+            console.error(`[LanguageGateway] Failed to start language server for ${options.languageId}:`, detail.error)
+            safeDisposeConnection(connection)
             try {
                 if (serverProcess && serverProcess.exitCode === null) {
                     serverProcess.kill('SIGKILL')
                 }
             } catch { /* ignore */ }
             this.languageServers.delete(sessionId)
-            return { success: false, error: message }
+            this.emit('language_server_error', {
+                sessionId,
+                languageId: options.languageId,
+                error: detail.error,
+                actionableHint: detail.actionableHint
+            })
+            return { success: false, error: detail.error, actionableHint: detail.actionableHint }
         }
     }
 
@@ -241,9 +443,9 @@ export class LanguageRuntimeGateway extends EventEmitter {
     }
 
     /**
-     * Send LSP request through the message connection
+     * Send an LSP JSON-RPC notification (no `id` field, no response expected).
      */
-    async sendLSPRequest(sessionId: string, method: string, params: unknown): Promise<unknown> {
+    async sendLSPNotification(sessionId: string, method: string, params?: unknown): Promise<void> {
         const session = this.languageServers.get(sessionId)
         if (!session) {
             throw new Error(`Language session ${sessionId} not found`)
@@ -251,6 +453,56 @@ export class LanguageRuntimeGateway extends EventEmitter {
 
         if (session.status !== 'running') {
             throw new Error(`Language session ${sessionId} is not running (status: ${session.status})`)
+        }
+
+        if (session.process.exitCode !== null || session.process.stdin?.destroyed || !session.process.stdin?.writable) {
+            session.status = 'stopped'
+            this.languageServers.delete(sessionId)
+            safeDisposeConnection(session.connection)
+            throw new Error(`Language session ${sessionId} stdin is closed`)
+        }
+
+        try {
+            if (params === undefined) {
+                await session.connection.sendNotification(method)
+            } else {
+                await session.connection.sendNotification(method, params as object)
+            }
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err)
+            if (msg.includes('ERR_STREAM_DESTROYED') || msg.includes('EPIPE') || msg.includes('disposed')) {
+                session.status = 'stopped'
+                this.languageServers.delete(sessionId)
+                safeDisposeConnection(session.connection)
+            }
+            throw err
+        }
+    }
+
+    /**
+     * Send LSP request through the message connection.
+     * Standard LSP notification methods are automatically dispatched as notifications.
+     */
+    async sendLSPRequest(sessionId: string, method: string, params: unknown): Promise<unknown> {
+        if (LSP_NOTIFICATION_METHODS.has(method)) {
+            await this.sendLSPNotification(sessionId, method, params)
+            return null
+        }
+
+        const session = this.languageServers.get(sessionId)
+        if (!session) {
+            throw new Error(`Language session ${sessionId} not found`)
+        }
+
+        if (session.status !== 'running') {
+            throw new Error(`Language session ${sessionId} is not running (status: ${session.status})`)
+        }
+
+        if (session.process.exitCode !== null || session.process.stdin?.destroyed || !session.process.stdin?.writable) {
+            session.status = 'stopped'
+            this.languageServers.delete(sessionId)
+            safeDisposeConnection(session.connection)
+            throw new Error(`Language session ${sessionId} stdin is closed`)
         }
 
         return session.connection.sendRequest(method, params as object)
@@ -281,21 +533,29 @@ export class LanguageRuntimeGateway extends EventEmitter {
 
         let timer: ReturnType<typeof setTimeout> | undefined
         try {
-            await Promise.race([
-                session.connection.sendRequest(ShutdownRequest.type),
-                new Promise<void>((_resolve, reject) => {
-                    timer = setTimeout(() => reject(new Error('LSP shutdown timed out')), LSP_SHUTDOWN_TIMEOUT_MS)
-                })
-            ])
-            session.connection.sendNotification(ExitNotification.type)
-            session.connection.dispose()
-            session.process.kill()
+            if (session.process.exitCode === null && !session.process.stdin?.destroyed) {
+                const shutdownReq = session.connection.sendRequest(ShutdownRequest.type)
+                shutdownReq.catch(() => undefined)
+                await Promise.race([
+                    shutdownReq,
+                    new Promise<void>((_resolve, reject) => {
+                        timer = setTimeout(() => reject(new Error('LSP shutdown timed out')), LSP_SHUTDOWN_TIMEOUT_MS)
+                    })
+                ])
+                await session.connection.sendNotification(ExitNotification.type).catch(() => undefined)
+            }
+            safeDisposeConnection(session.connection)
+            if (session.process.exitCode === null) {
+                session.process.kill()
+            }
             this.languageServers.delete(sessionId)
             return true
         } catch (error) {
             console.error(`[LanguageGateway] Error stopping language server ${sessionId}:`, error)
-            try { session.connection.dispose() } catch { /* ignore */ }
-            try { session.process.kill('SIGKILL') } catch { /* ignore */ }
+            safeDisposeConnection(session.connection)
+            try {
+                if (session.process.exitCode === null) session.process.kill('SIGKILL')
+            } catch { /* ignore */ }
             this.languageServers.delete(sessionId)
             return false
         } finally {

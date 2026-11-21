@@ -6,7 +6,7 @@ import { Download, FileArchive, FileCode2, FileImage, FileText, FileVideo, File 
 import type { Space } from '../../stores/appStore'
 import type { SharedFile } from '../../services/fileTransferService'
 import { useUiStore } from '../../stores/uiStore'
-import { Avatar, Button, EmptyState, IconButton, ProgressBar, SearchInput, Select, Tabs } from '../ui'
+import { Avatar, Badge, Button, EmptyState, IconButton, ProgressBar, SearchInput, Select, Tabs } from '../ui'
 import { MAX_SHARE_MB, useSharedFiles } from './useSharedFiles'
 import '../workspace/workspace.css'
 import './files.css'
@@ -32,6 +32,24 @@ function size(bytes: number): string {
     const units = ['B', 'KB', 'MB', 'GB']
     const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)))
     return `${(bytes / 1024 ** i).toFixed(i ? 1 : 0)} ${units[i]}`
+}
+
+function transferBadge(file: SharedFile, mine: boolean): { label: string; tone: 'neutral' | 'warning' | 'danger' | 'success'; detail?: string } {
+    const received = file.receivedChunks ?? 0
+    const total = file.totalChunks ?? file.chunkCount ?? 1
+    switch (file.transferState) {
+        case 'local-only':
+            return { label: 'Local only', tone: 'neutral', detail: 'Waiting for peers to connect' }
+        case 'sending':
+            return { label: 'Sending', tone: 'warning', detail: `${received}/${total} chunks` }
+        case 'receiving':
+            return { label: 'Receiving', tone: 'warning', detail: `${received}/${total} chunks` }
+        case 'incomplete':
+            return { label: 'Incomplete', tone: 'danger', detail: `${received}/${total} chunks · sender offline before completion` }
+        case 'ready':
+        default:
+            return { label: mine ? 'Synced' : 'Ready', tone: 'success' }
+    }
 }
 
 export default function SharedFilesView({ space }: { space: Space }) {
@@ -60,24 +78,46 @@ export default function SharedFilesView({ space }: { space: Space }) {
 
     const row = (file: SharedFile) => {
         const Icon = ICON[categorize(file.type, file.name)]
-        const pct = s.progress[file.id]
         const mine = file.ownerId === s.localUserId
+        const status = transferBadge(file, mine)
+        const total = file.totalChunks ?? file.chunkCount ?? 1
+        const received = file.receivedChunks ?? 0
+        const chunkPct = total > 1 ? Math.round((received / total) * 100) : undefined
+        const pct = s.progress[file.id] ?? (file.transferState === 'receiving' || file.transferState === 'sending' ? chunkPct : undefined)
+        const canDownload = file.transferState === 'ready' || file.transferState === 'local-only' || !file.transferState
+
         return (
             <li key={file.id} className="shared-row">
                 <Icon size={18} className="shared-row__icon" strokeWidth={1.6} aria-hidden />
                 <div className="shared-row__main">
                     <span className="shared-row__name truncate" title={file.name}>{file.name}</span>
-                    <span className="shared-row__meta">
-                        {size(file.size)}, shared {new Date(file.uploadedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                    <span className="shared-row__meta" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        <span>
+                            {size(file.size)}, shared {new Date(file.uploadedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                        </span>
+                        <Badge tone={status.tone}>{status.label}</Badge>
+                        {status.detail && <span>{status.detail}</span>}
                     </span>
-                    {pct !== undefined && pct < 100 && <ProgressBar value={pct / 100} tone="agent" label={`Transferring ${file.name}`} />}
+                    {(file.transferState === 'sending' || file.transferState === 'receiving') && pct !== undefined && pct < 100 && (
+                        <ProgressBar value={pct / 100} tone="agent" label={`${status.label} ${file.name}`} />
+                    )}
                 </div>
                 <span className="shared-row__owner">
                     <Avatar name={file.uploadedBy || 'Someone'} size={20} />
                     {mine ? 'You' : file.uploadedBy}
                 </span>
                 <div className="shared-row__actions">
-                    <Button size="sm" variant="ghost" icon={<Download size={13} />} loading={s.downloading === file.id} onClick={() => s.download(file)}>Download</Button>
+                    <Button
+                        size="sm"
+                        variant="ghost"
+                        icon={<Download size={13} />}
+                        loading={s.downloading === file.id}
+                        disabled={!canDownload}
+                        title={canDownload ? `Download ${file.name}` : status.detail || status.label}
+                        onClick={() => s.download(file)}
+                    >
+                        Download
+                    </Button>
                     {(mine || s.isAdmin) && <IconButton size="sm" tone="danger" label={`Remove ${file.name}`} icon={<Trash2 size={13} />} onClick={() => s.remove(file)} />}
                 </div>
             </li>
@@ -95,7 +135,7 @@ export default function SharedFilesView({ space }: { space: Space }) {
                 <div className="page__titles">
                     <h1 className="page__title">Shared files</h1>
                     <p className="page__subtitle">
-                        Files sent straight to the people in {space.name}, up to {MAX_SHARE_MB} MB each. {s.peers.length > 0 ? `${s.peers.length} ${s.peers.length === 1 ? 'person is' : 'people are'} connected.` : 'Nobody else is connected right now; files sync when they join.'}
+                        Files sent straight to the people in {space.name}, up to {MAX_SHARE_MB} MB each. {s.peerCount > 0 ? `${s.peerCount} ${s.peerCount === 1 ? 'person is' : 'people are'} connected.` : 'Nobody else is connected right now; files stay local until peers join.'}
                     </p>
                 </div>
                 <div className="page__actions">
@@ -134,7 +174,7 @@ export default function SharedFilesView({ space }: { space: Space }) {
                             description={s.canShare ? 'They are encrypted when the workspace has a room password, and never pass through a server.' : 'Your role can view and download shared files.'}
                             actions={<>
                                 {s.canShare && <Button variant="primary" onClick={() => inputRef.current?.click()}>Choose files</Button>}
-                                {s.peers.length === 0 && <Button icon={<Users size={14} />} onClick={() => openCollaboration('invite')}>Invite people</Button>}
+                                {s.peerCount === 0 && <Button icon={<Users size={14} />} onClick={() => openCollaboration('invite')}>Invite people</Button>}
                             </>}
                         />
                     </div>

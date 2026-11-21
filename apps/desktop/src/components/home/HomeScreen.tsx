@@ -12,7 +12,8 @@ import { MachineSummary } from './MachineSummary'
 import { QuickStart } from './QuickStart'
 import { NewWorkspaceDialog } from './NewWorkspaceDialog'
 import { CloneDialog } from './CloneDialog'
-import { openFolderAsWorkspace } from './workspaceActions'
+import { isBrowserMode, openFolderAsWorkspace } from './workspaceActions'
+import '../../services/extensions/monacoThemeBridge'
 import './home.css'
 
 export function HomeScreen() {
@@ -21,6 +22,7 @@ export function HomeScreen() {
     const openCollaboration = useUiStore(s => s.openCollaboration)
     const [query, setQuery] = useState('')
     const [dialog, setDialog] = useState<'new' | 'clone' | null>(null)
+    const browserMode = isBrowserMode()
 
     const sorted = useMemo(() => {
         const q = query.trim().toLowerCase()
@@ -41,10 +43,29 @@ export function HomeScreen() {
                     )}
                     <div className="home__actions">
                         <Button variant="primary" icon={<Plus size={15} />} onClick={() => setDialog('new')}>New workspace</Button>
-                        <Button icon={<FolderOpen size={15} />} onClick={() => openFolderAsWorkspace()}>Open folder</Button>
-                        <Button icon={<GitBranch size={15} />} onClick={() => setDialog('clone')}>Clone repository</Button>
+                        <Button
+                            icon={<FolderOpen size={15} />}
+                            disabled={browserMode}
+                            title={browserMode ? 'Requires the desktop app' : undefined}
+                            onClick={() => openFolderAsWorkspace()}
+                        >
+                            Open folder
+                        </Button>
+                        <Button
+                            icon={<GitBranch size={15} />}
+                            disabled={browserMode}
+                            title={browserMode ? 'Requires the desktop app' : undefined}
+                            onClick={() => setDialog('clone')}
+                        >
+                            Clone repository
+                        </Button>
                         <Button icon={<LogIn size={15} />} onClick={() => openCollaboration('join')}>Join session</Button>
                     </div>
+                    {browserMode && (
+                        <p className="home__browser-note" role="status">
+                            Browser preview mode: opening local folders and cloning repositories require the desktop app. Create a workspace to try tasks and collaboration here.
+                        </p>
+                    )}
                 </header>
 
                 <QuickStart />

@@ -1,52 +1,59 @@
-# Kalynt - The Privacy-First AI IDE
+# Kalynt
 
 <div align="center">
-  <img src="apps/desktop/public/Kalynt.png" alt="Kalynt Logo" width="128" height="128" />
+  <img src="apps/desktop/public/Kalynt.png" alt="Kalynt Logo" width="120" height="120" />
 
-  <h3>Local-First AI. Peer-to-Peer Collaboration. No Subscription Required.</h3>
+  <h3>Local-First AI IDE · Peer-to-Peer Collaboration · No Subscription Required</h3>
 
   <p>
-    Kalynt is a desktop code editor with an AI agent built in. Run models on your own machine or bring your own API key,
-    and edit together with your team directly, peer to peer, without a server in between.
+    A desktop code editor with a built-in AI agent and direct WebRTC collaboration.
+    Run local GGUF models on your own hardware, connect to local Ollama/LM Studio servers,
+    or bring your own cloud API keys — with no intermediary Kalynt server.
   </p>
 
   [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-  [![Version](https://img.shields.io/badge/version-v2.0.0-green)](https://github.com/trisle-app/Kalynt/releases)
-  [![Platform](https://img.shields.io/badge/platform-win%20%7C%20mac%20%7C%20linux-lightgrey)](https://github.com/trisle-app/Kalynt/releases)
+  [![Version](https://img.shields.io/badge/version-v2.1.0-green)](https://github.com/hermes-lekkas/Kalynt/releases)
+  [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey)](https://github.com/hermes-lekkas/Kalynt/releases)
   [![Reddit](https://img.shields.io/badge/reddit-r%2FKalynt__IDE-FF4500?logo=reddit)](https://reddit.com/r/Kalynt_IDE)
   [![YouTube](https://img.shields.io/badge/YouTube-Kalynt-FF0000?logo=youtube)](https://youtu.be/pV7THS2ZGls)
   [![Spotify](https://img.shields.io/badge/Spotify-Podcast-1DB954?logo=spotify)](https://open.spotify.com/show/0Hm1TtyPtzpRkhGCZjaAbb)
 </div>
 
-**[Download Kalynt](https://github.com/hermes-lekkas/Kalynt/releases/latest)** · **[Website and setup guide](https://hermes-lekkas.github.io/Kalynt/)** · **[Get help](https://github.com/hermes-lekkas/Kalynt/discussions)**
+<p align="center">
+  <a href="https://github.com/hermes-lekkas/Kalynt/releases/latest"><strong>Download Latest Release</strong></a> ·
+  <a href="https://hermes-lekkas.github.io/Kalynt/"><strong>Website & Setup Guide</strong></a> ·
+  <a href="./ARCHITECTURE.md"><strong>Architecture</strong></a> ·
+  <a href="./CHANGELOG.md"><strong>Changelog</strong></a> ·
+  <a href="https://github.com/hermes-lekkas/Kalynt/discussions"><strong>Discussions</strong></a>
+</p>
 
-No Kalynt subscription or account is required. Local models use your hardware; cloud providers bill API usage separately.
+> No Kalynt account or subscription is required. Local models run on your machine; cloud providers bill API usage separately under your own key.
 
 ---
 
 <div align="center">
-  <img src="website/assets/showcase/Editor.png" alt="The Kalynt code view: explorer, editor and agent panel" width="100%" />
+  <img src="website/assets/showcase/Editor.png" alt="Kalynt workspace showing file explorer, Monaco editor, and AI agent panel" width="100%" />
 </div>
 
 <details>
-  <summary><b>More screenshots</b></summary>
+  <summary><strong>More screenshots</strong></summary>
 
-  ### Source control and diffs
+  ### Source control and side-by-side diffs
   ![Diff view](website/assets/showcase/Diff.png)
 
-  ### Task board
+  ### Shared task board
   ![Tasks](website/assets/showcase/Tasks.png)
 
-  ### History
+  ### Git history
   ![History](website/assets/showcase/History.png)
 
-  ### Inviting people
+  ### Team and collaboration
   ![Team and collaboration](website/assets/showcase/Team_and_Collaboration.png)
 
-  ### Shared files
+  ### Peer-to-peer shared files
   ![Shared files](website/assets/showcase/Files.png)
 
-  ### Models and keys
+  ### Models and API keys
   ![Settings](website/assets/showcase/Settings.png)
 
   ### Local model memory (AIME)
@@ -57,169 +64,149 @@ No Kalynt subscription or account is required. Local models use your hardware; c
 
 </details>
 
-## Quick start
+---
 
-1. Install Kalynt for your platform from the [latest release](https://github.com/hermes-lekkas/Kalynt/releases/latest), launch it, and select **Open folder**.
-2. Open **Settings → Models and keys**. Download and load a local model, or add your cloud provider's API key. Choose the model in the agent panel.
-3. Start with a task you can verify:
+## Quick Start
 
+1. **Install:** Download the package for your platform from [GitHub Releases](https://github.com/hermes-lekkas/Kalynt/releases/latest), launch Kalynt, and select **Open folder**.
+2. **Connect a model:** Open **Settings → Models and keys**. Choose one of three routes:
+   - **Built-in local models (GGUF):** Download and load a curated model via `node-llama-cpp` with AIME memory management.
+   - **Local inference server:** Connect to a loopback **Ollama** or **LM Studio** OpenAI-compatible server on your machine.
+   - **Cloud API key:** Add your own key for Anthropic, OpenAI, Google Gemini, DeepSeek, Kimi (Moonshot AI), or GLM (Z.ai).
+3. **Start with a verifiable prompt:**
    > Explain how this project starts. Point me to the entry file and the command to run it. Don't change any files.
 
-For editing tasks, use **Ask before changes**, review the diff, and run your project's tests. Try Kalynt alongside your current editor before moving your daily workflow.
+For code edits, use **Ask before changes**, inspect every proposed diff, and run your project's test suite.
 
-**Local AI requirements:** installers are roughly 200–550 MB, with model files downloaded separately. The model manager shows download sizes and estimated memory requirements. Leave RAM for your operating system, IDE, and project. Small models are useful for code chat and explanations; larger models are better suited to editing and tool use. A supported GPU can help, but actual speed depends on your model and machine.
+### Footprint, Hardware & Privacy Notes
 
-**Privacy:** local inference runs on your computer. Cloud mode sends request context directly to the selected provider. Collaboration shares workspace data with your peers; set a room password to enable end-to-end encryption. Network access is also used for downloads, update checks, and agent web tools.
-
-### In development
-
-The source on this branch adds a first-session guide, memory-aware model suggestions, clearer connection errors, and **Ollama / LM Studio** setup. These changes are **not included in the 2.0.0 installers** yet.
-
-To try a local server from source, start Ollama or enable LM Studio's local server and load a tool-capable model. In **Settings → Models and keys → Ollama / LM Studio**, select a preset, enter an optional server token, and choose **Test and connect**. Then select a discovered model in the agent menu. Only loopback servers on this computer are supported. Ollama can also proxy remote models; check your model's configuration if offline inference is required.
-
-## What's new in 2.0
-
-Kalynt 2.0 is the first stable release: a rebuilt interface and a reliability pass over every backend service. Highlights:
-
-*   **A new interface** with a home screen, per-workspace folders, full-page Tasks, History and Shared files views, a command palette, and light and dark themes.
-*   **Six cloud providers, current models only:** Claude (Opus 5.5, Fable 5.1, Sonnet 5.5, Haiku 5.5), OpenAI (GPT-6.1 Sol, GPT-6 Astra, GPT-6 Luna), Gemini (4 Argon, 3.8 Flash, 3.5 Flash-Lite), DeepSeek (V4 Pro, V4.1 Flash), Kimi K3 and GLM-5.3. Each provider's live model list is read with your key, so new models show up without an app update and retired ones disappear.
-*   **A rebuilt agent** with native tool calling on every provider: it edits files with reviewable diffs, runs commands and background servers, searches the web, keeps a plan, and can be undone in one click.
-*   **Local AI that works in the installed app**, with MemoryGuard to free memory before your machine starts swapping.
-*   **A rewritten debugger** for Python, Node.js, C/C++ and Go.
-*   **"Stop all processes" stops only what Kalynt started**, never unrelated programs.
-
-See the [changelog](./CHANGELOG.md) for the full list.
-
-## Features
-
-### AI agent
-*   **Local or cloud.** Run GGUF models on your CPU or GPU through `node-llama-cpp`, or bring your own key for Anthropic, OpenAI, Google, DeepSeek, Kimi (Moonshot AI) or GLM (Z.ai). Requests go from your machine straight to the provider; once saved, keys are used only by the main process.
-*   **Real tools.** The agent reads, searches and edits your files, runs tests, builds, scripts and git in your shell, starts dev servers in the background and checks their output, searches the web and reads pages, and keeps a step-by-step plan you can follow.
-*   **You stay in control.** Pick *Ask before changes*, *Auto-edit* or *Full auto*. Every edit is shown as a diff, commands show exactly what will run, and destructive commands (`sudo`, `rm -rf`, force push, …) always ask, whatever the mode. Decline with a note to steer the agent, or allow similar commands for the rest of the chat.
-*   **Undo a whole run.** Files are snapshotted before the agent first touches them, so one click restores everything it changed, created or deleted.
-*   **Checks its own edits.** Python, JavaScript, JSON and shell edits are syntax-checked immediately, and the agent can run your project's own TypeScript compiler, `go vet` or `cargo check`; errors go back to the agent to fix.
-*   **Thinking you can read.** Reasoning streams in a collapsible section, effort is adjustable (Low to Max), and long conversations are summarized automatically before they outgrow the model's context.
-*   **Conversations are saved** per workspace and survive restarts. Mention files with `@` to attach them.
-*   **Code review.** A *Review code* mode scans the workspace and suggests fixes you can apply.
-*   **AIME, the AI memory engine.** Indexes your codebase in the background so the agent has context, and manages local model memory: context window, GPU offload, threads, batch size, reserved RAM, and automatic unloading when memory runs low or the model sits idle.
-*   **Model manager.** Download curated models (Qwen2.5-Coder, Qwen3, Devstral and more) with pause and resume.
-
-### Editor and tools
-*   **Monaco editor** (the core of VS Code) with split view, breadcrumbs, and optional AI inline completions.
-*   **Terminal** built on xterm.js and node-pty, with search and multiple sessions.
-*   **Run** the current file in 25 languages, **build** with your project's tasks (`tasks.json`, npm scripts and more), and **debug** Python, Node.js, C/C++ and Go with breakpoints, call stacks and expression evaluation.
-*   **Source control:** stage, commit, branch, pull and push, with a diff view.
-*   **Workspace search** with regex and replace preview, and a **command palette** for files, commands and workspaces.
-*   **Language runtimes:** detect, install and remove 34 runtimes from one place.
-*   **VS Code extensions** from the Open VSX marketplace or a local `.vsix`, running in a separate process.
-
-### Working together
-*   **Peer-to-peer sync** with Yjs CRDTs over WebRTC. Invite people with a link or a room code.
-*   **End-to-end encryption** (AES-256-GCM) when the workspace has a room password. Without one, anyone with the link can join.
-*   **Shared task board, team chat, member roles and file sharing** (up to 200 MB per file), all synced directly between peers.
-
-### Privacy and security
-*   **Local-first:** your code, conversations and index stay on your disk.
-*   **API keys** are kept in the operating system's keychain through Electron's `safeStorage` and used only by the main process.
-*   **Sandboxed renderer** (`contextIsolation`, `sandbox`, no `nodeIntegration`) and a strict Content Security Policy.
-*   **Every file operation** is checked against the workspace folder, with symlinks resolved.
-*   **No shell is spawned** for run or package commands; arguments are passed as lists. Build tasks declared as `shell` in `tasks.json` and the agent's commands do use a shell, and the agent's only run after your approval unless you choose *Full auto*.
-*   **Agent web access** stays on the public internet; reading a page on your machine or local network needs your approval.
-
-See [SECURITY.md](./SECURITY.md) for details and how to report a vulnerability.
+- **Installer size vs. installed footprint:** Compressed installers and extracted disk footprints differ significantly. On Linux x64, pre-release 2.1 builds measure ~312 MB (`.deb`) and ~502 MB (AppImage) compressed, expanding to ~1.12 GB on disk (down from 2.0.0's 328 MB `.deb`, 542 MB AppImage, and 1.38 GB extracted footprint; `app.asar` dropped from 201 MB to 29.5 MB). Final platform sizes are measured from published 2.1.0 release assets.
+- **Local AI memory:** GGUF model files download separately and display exact size and estimated RAM requirements in the model manager. Leave headroom for your OS, IDE, and project tools. Small models work well for explanations and quick questions; larger models are better suited to multi-file edits and tool use.
+- **Privacy boundary:** Local GGUF inference stays on your device. Loopback server connections target only this machine (note that Ollama can proxy remote models depending on your Ollama config). Cloud mode sends request context directly from Electron's main process to your selected provider. Collaboration syncs directly over WebRTC; set a room password to enable end-to-end encryption. Network access is also used for downloads, update checks, and agent web tools.
 
 ---
 
-## Platforms
+## Highlights in v2.1.0
 
-*   **Linux** (AppImage and .deb): 2.0.0 was tested end to end on Ubuntu, in both development and packaged builds.
-*   **Windows** (installer) and **macOS** (DMG, with a Swift native helper on Apple Silicon): built by CI from the same code.
+- **Local inference servers (Ollama / LM Studio):** Loopback OpenAI-compatible server integration with live model discovery, optional encrypted tokens, and request cancellation.
+- **Editor recovery & atomic saves:** Unsaved buffers survive workspace switches and normal restarts, backed by atomic writes, external disk-conflict prompts, and buffer-aware workspace search/replace.
+- **Collaboration protocol v2:** Deterministic room salt + PBKDF2→HKDF encryption with explicit version/password negotiation, canonical live-document shared files (64 KiB chunking + SHA-256 verification), cold-start `kalynt://` invite handling, live presence across reconnects, and durable signed ban management with Lift ban.
+- **IDE, LSP, debugging & runtime reliability:** Safe Monaco diff disposal, workspace-relative TS/JS discovery, manual-save-only Format on Save with clear Auto-save behavior, non-detaching multi-remote Git branch checkouts, JSON-RPC LSP notifications + pushed diagnostics, DAP `scopes(frameId)`, standalone `vscode-js-debug` adapter support, `rustup-init` installer fix, .NET 10+ `dotnet run --file`, Nim temp module naming, and full `TaskRunnerService` coverage in Stop all processes.
+- **Honest AI states & extension support:** Separate live vs. fallback provider catalogs, truncated-stream detection with preserved partial output, Workspace Review scope disclosure (`sampled` vs. `full`) and explicit canceled/partial/failed outcomes, contributed VS Code commands in the Command Palette, and contributed VS Code color themes with persistence and uninstall fallback.
 
-Local models use your GPU where `node-llama-cpp` supports it (CUDA, Vulkan, Metal) and fall back to the CPU otherwise.
+See [CHANGELOG.md](./CHANGELOG.md) for the complete release history.
+
+### Upgrading from 2.0.0
+
+> [!IMPORTANT]
+> - **Save open files before updating from 2.0.0.** Kalynt 2.0.0 predates the editor draft recovery service, so unsaved edits open in 2.0.0 are not migrated. From 2.1.0 onward, unsaved buffers survive workspace switches and normal restarts.
+> - **Encrypted rooms require all peers to upgrade together.** Kalynt 2.1.0 introduces protocol v2 (deterministic room salt + PBKDF2→HKDF). Mixed 2.0.0/2.1.0 encrypted rooms are unsupported and clearly flagged as a protocol mismatch. Legacy 2.0.0 encrypted team chat history cannot be decrypted with protocol v2 keys; start a fresh encrypted room or archive legacy chat after upgrading (workspace files and local AI agent sessions are unaffected).
+
+**Preserved across an in-place upgrade (same user-data profile):** workspace folders and workspace list, saved agent conversations, open/pinned tabs, theme and layout preferences, installed extensions, downloaded local models and settings, saved room passwords, and OS keychain API keys (`safeStorage`).
 
 ---
 
-## Architecture
+## Core Capabilities
 
-*   **Runtime:** Electron 40 (main process) and Chromium (renderer)
-*   **Interface:** React 18, TypeScript (strict), Vite 7, a small in-house design system with CSS variables
-*   **Editor and terminal:** Monaco Editor, xterm.js and node-pty
-*   **State:** Zustand, with Yjs for shared workspace data
-*   **AI:** `node-llama-cpp` for local models; a main-process gateway for Anthropic (official SDK), OpenAI (Responses API), Gemini, and the OpenAI-compatible APIs of DeepSeek, Kimi and GLM
-*   **Storage:** IndexedDB, better-sqlite3 and Electron `safeStorage`
-*   **Icons:** Lucide
+| Area | Capabilities |
+| --- | --- |
+| **AI Agent & Models** | Local GGUF inference (`node-llama-cpp` + AIME MemoryGuard), loopback Ollama/LM Studio servers, and 6 cloud providers (Anthropic, OpenAI, Google Gemini, DeepSeek, Kimi, GLM). Native tool calling, file checkpoints with one-click run Undo, syntax/compiler self-checks, approval modes (*Ask before changes*, *Auto-edit*, *Full auto*), workspace code review (`sampled` or `full`), and persistent per-workspace conversations. |
+| **Editor & Search** | Monaco Editor with split views, breadcrumbs, inline AI completions (opt-in), atomic saves with conflict resolution, unsaved draft recovery, buffer-aware workspace search/replace with recursive globs and regex capture groups, and Command Palette (`Ctrl+P`, `Ctrl+Shift+P`, `#`). |
+| **Git & Execution** | Integrated Source Control (stage, commit, non-detaching multi-remote branch tracking, stash, push/pull, side-by-side diffs, searchable History), xterm.js + `node-pty` multi-session terminals, single-file Run across 25+ languages, `tasks.json`/npm Build tasks, and DAP debugging for Python, Node.js, C/C++, and Go. |
+| **Collaboration** | Serverless Yjs CRDT sync over WebRTC with AES-256-GCM + HMAC-SHA256 encryption (protocol v2), room password verification, shared task board, encrypted team chat, direct peer-to-peer file sharing (up to 200 MB with SHA-256 verification), and ECDSA-signed roles & moderation. |
+| **Runtimes & Extensions** | 34-runtime detection/install catalog and Open VSX / local `.vsix` extension support in an isolated host process, including contributed Command Palette commands and VS Code color themes. Kalynt implements a subset of the VS Code API; arbitrary extensions require individual validation. |
+| **Security & Isolation** | Sandboxed renderer (`sandbox: true`, `contextIsolation: true`, `nodeIntegration: false`), strict CSP, main-process-only API keys in OS keychain (`safeStorage`), single symlink-resolving `validatePath`, argument-list spawning (`shell: false`) for Run/package managers, SSRF-guarded agent web fetch, and scoped "Stop all processes". See [SECURITY.md](./SECURITY.md). |
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for how the pieces fit together.
+---
 
-### Monorepo structure
+## External Tool Prerequisites
+
+Built-in TypeScript and JavaScript language support works out of the box. The following integrations require external tools installed separately on your system:
+
+| Feature | Required External Tool |
+| --- | --- |
+| **Python debugging / LSP** | `debugpy` (`python3 -m pip install debugpy`) / `pylsp` (`python-lsp-server`) |
+| **C / C++ debugging / LSP** | `gdb` with DAP support (tested on Linux with GDB 17) / `clangd` |
+| **Go debugging / LSP** | Delve (`dlv`) / `gopls` |
+| **Rust LSP** | `rust-analyzer` |
+| **Node.js / TypeScript debugging** | Standalone Microsoft `vscode-js-debug` DAP release archive (`js-debug-dap`; `@vscode/js-debug-dap` is not published on the public npm registry) |
+| **C# and F# execution** | **.NET SDK 10+** runs standalone `.cs` files directly via `dotnet run --file` and F# via `dotnet fsi`. Older SDKs (`< 10`) or `.csx` scripts require `dotnet-script` (`dotnet tool install -g dotnet-script`). |
+
+---
+
+## Platforms & Verification Scope
+
+| Platform | Artifacts | Verification Status |
+| --- | --- | --- |
+| **Linux (x86-64)** | `.AppImage`, `.deb` | End-to-end verified on Ubuntu across development and packaged builds (editor, Git, PTY terminal, Python/C/C++/Go debug fixtures, LSPs, local GGUF inference, and P2P collaboration). |
+| **Windows (x64)** | NSIS `.exe` | Built by CI (`windows-2022`) and covered by cross-platform unit, lint, and type-check CI jobs. Native installer, signing, and GUI runtime validation tracked separately from Linux checks. |
+| **macOS** | `.dmg`, `.zip` (+ `latest-mac.yml`) | Built by CI (`macos-latest`) including the Swift native helper (`packages/native-macos`), and covered by cross-platform unit, lint, and type-check CI jobs. Native Apple signing, notarization, and `MacUpdater` checks tracked separately. |
+
+**macOS updates:** In-app macOS auto-updates via `electron-updater` require a code-signed release `.zip` archive alongside the `.dmg`. Kalynt 2.1.0 builds both targets; users on unsigned or manual installs should download the latest `.dmg` directly from [GitHub Releases](https://github.com/hermes-lekkas/Kalynt/releases).
+
+Local GGUF models use GPU acceleration where `node-llama-cpp` supports it (CUDA, Vulkan, Metal) and fall back to CPU automatically.
+
+---
+
+## Architecture & Monorepo Layout
 
 ```text
 kalynt/
-├── apps/
-│   └── desktop/                 # Kalynt Desktop (Electron)
-│       ├── electron/            # Main process: IPC handlers, services, terminal, extensions
-│       ├── src/                 # Renderer: React UI, stores, services
-│       └── scripts/             # Build hooks (after-pack.cjs)
-│
+├── apps/desktop/              # Kalynt Desktop (Electron 40 + React 18 + TypeScript + Vite 7)
+│   ├── electron/              # Main process: IPC handlers, AI gateway, terminal/LSP/DAP, extensions
+│   ├── src/                   # Sandboxed renderer: UI, Monaco editor, Zustand stores, Yjs P2P services
+│   └── scripts/               # Build hooks (after-pack.cjs), test runner, Electron smoke suite
 ├── packages/
-│   ├── crdt/                    # Shared Yjs CRDT logic
-│   ├── networking/              # P2P WebRTC management
-│   ├── shared/                  # Common types and utilities
-│   └── native-macos/            # Swift native helper (FSEvents, CoreML, memory)
-└── ...
+│   ├── crdt/                  # Shared Yjs CRDT helpers
+│   ├── networking/            # P2P WebRTC connection layer
+│   ├── shared/                # Common types and utilities
+│   └── native-macos/          # Swift native helper (FSEvents, CoreML, memory trimming)
+├── examples/test-extension/   # Sample VS Code extension for command palette verification
+└── website/                   # Static landing site builder
 ```
+
+Key stack: Electron 40, React 18, strict TypeScript 5.7, Vite 7, Monaco Editor, xterm.js, `node-pty`, Zustand, Yjs/y-webrtc, `node-llama-cpp`, IndexedDB, atomic JSON user-data files, and Electron `safeStorage`. See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design.
 
 ---
 
-## Installation
+## Building from Source
 
-### Pre-built binaries
-Download the installer for Windows, macOS or Linux from the [releases page](https://github.com/trisle-app/Kalynt/releases). Kalynt checks for updates and asks before downloading one.
-
-### Building from source
+**Prerequisites:** Node.js `>= 22.12.0`, npm `>= 10`, Python `3.10+`, and a C++20-capable build toolchain (plus Swift 5.9+ on macOS for `packages/native-macos`).
 
 ```bash
-# Prerequisites: Node.js >= 22, Python 3.10+, a C++ toolchain
-git clone https://github.com/trisle-app/Kalynt.git
+git clone https://github.com/hermes-lekkas/Kalynt.git
 cd Kalynt
-npm install
+npm ci
 npm run electron:dev
 ```
 
-To build installers for your platform:
+Run tests, linting, and type checks:
 
 ```bash
-cd apps/desktop
-npx tsc && npx vite build && npx electron-builder
+npm test
+npm run lint
+npm run typecheck --workspace=apps/desktop
+npm run typecheck:fixtures --workspace=apps/desktop
 ```
 
-For the macOS native helper:
+Build local installers (explicitly rebuilds `node-pty` for Electron and skips publishing):
+
 ```bash
-cd packages/native-macos
-swift build -c release
+npm run build --workspace=apps/desktop
+```
+
+Build the optional macOS Swift helper:
+
+```bash
+cd packages/native-macos && swift build -c release
 ```
 
 ---
 
-## Contributing
+## Contributing, Community & License
 
-We welcome contributions! See [CONTRIBUTING.md](./CONTRIBUTING.md) for how to submit pull requests, report bugs and request features.
+- **Contributing:** See [CONTRIBUTING.md](./CONTRIBUTING.md), [SECURITY.md](./SECURITY.md), [SECURITY_HYGIENE.md](./SECURITY_HYGIENE.md), and [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md).
+- **Community:** [GitHub Issues](https://github.com/hermes-lekkas/Kalynt/issues) · [GitHub Discussions](https://github.com/hermes-lekkas/Kalynt/discussions) · [r/Kalynt_IDE](https://reddit.com/r/Kalynt_IDE) · [YouTube](https://youtu.be/pV7THS2ZGls) · [Spotify Podcast](https://open.spotify.com/show/0Hm1TtyPtzpRkhGCZjaAbb)
+- **License:** Free and open-source software under the **GNU Affero General Public License v3.0 (AGPL-3.0-only)**. See [LICENSE](./LICENSE).
 
----
-
-## Community and support
-
-*   **Reddit:** [r/Kalynt_IDE](https://reddit.com/r/Kalynt_IDE): support, feature requests and discussion
-*   **YouTube:** [Kalynt channel](https://youtu.be/pV7THS2ZGls): demos and tutorials
-*   **Spotify:** [Kalynt podcast](https://open.spotify.com/show/0Hm1TtyPtzpRkhGCZjaAbb)
-*   **GitHub:** [issues](https://github.com/trisle-app/Kalynt/issues) for bugs and feature requests
-
----
-
-## Licensing
-
-Kalynt is free and open-source software licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
-
-Files marked with `SPDX-License-Identifier: AGPL-3.0-only` are free to use, modify, and distribute under the terms of the AGPL.
-
-Copyright (c) 2026 Hermes Lekkas (hermeslekkasdev@gmail.com).
+Copyright © 2026 Hermes Lekkas (`hermeslekkasdev@gmail.com`).

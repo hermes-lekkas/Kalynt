@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 import { useEffect, useRef, useState } from 'react'
-import { Monitor, Moon, RotateCcw, Sun } from 'lucide-react'
+import { Monitor, Moon, Palette, RotateCcw, Sun } from 'lucide-react'
 import { useAppStore, type ThemePreference } from '../../stores/appStore'
 import {
     EDITOR_PREF_DEFAULTS,
@@ -16,6 +16,8 @@ import { inlineCompletionsEnabled, setInlineCompletionsEnabled } from '../ide/ed
 import { SavedNote, SettingRow, SettingsPage, SettingsSection } from './parts'
 import { pickProvider } from '../../services/aiService'
 import { providerInfo } from '../../types/aiProviders'
+import { extensionService } from '../../services/extensions/extensionService'
+import { selectExtensionTheme, uiThemeBase, type ContributedThemeEntry } from '../../services/extensions/themeService'
 
 const FONT_PRESETS: ReadonlyArray<{ value: string; label: string }> = [
     { value: '', label: 'JetBrains Mono (Default)' },
@@ -31,6 +33,7 @@ export function GeneralSettings() {
     const theme = useAppStore(s => s.theme)
     const resolvedTheme = useAppStore(s => s.resolvedTheme)
     const setTheme = useAppStore(s => s.setTheme)
+    const extensionTheme = useAppStore(s => s.extensionTheme)
     const apiKeys = useAppStore(s => s.apiKeys)
 
     const editorFontSize = useLayoutStore(s => s.editorFontSize)
@@ -49,9 +52,31 @@ export function GeneralSettings() {
     const [name, setName] = useState(userName === 'Local User' ? '' : userName)
     const [saved, setSaved] = useState(false)
     const [completions, setCompletions] = useState(inlineCompletionsEnabled)
+    const [extensionThemes, setExtensionThemes] = useState<ContributedThemeEntry[]>([])
     const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const completionProvider = pickProvider(apiKeys)
     const canComplete = !!completionProvider
+
+    useEffect(() => {
+        let cancelled = false
+        const loadThemes = () => {
+            void extensionService.getContributions().then(contribs => {
+                if (cancelled) return
+                const list = Array.isArray(contribs?.themes) ? (contribs.themes as ContributedThemeEntry[]) : []
+                setExtensionThemes(list.filter(t => typeof t?.id === 'string' && typeof t?.extensionId === 'string'))
+            }).catch(() => {
+                if (!cancelled) setExtensionThemes([])
+            })
+        }
+        loadThemes()
+        const offContrib = extensionService.onContributionsChanged(loadThemes)
+        const offInstalled = extensionService.onInstalledChange(loadThemes)
+        return () => {
+            cancelled = true
+            offContrib()
+            offInstalled()
+        }
+    }, [])
 
     useEffect(() => {
         setName(userName === 'Local User' ? '' : userName)
@@ -106,24 +131,54 @@ export function GeneralSettings() {
 
             <SettingsSection
                 title="Appearance"
-                description={theme === 'system' ? `Following your operating system (${resolvedTheme === 'light' ? 'Light' : 'Dark'}).` : undefined}
+                description={extensionTheme
+                    ? `Using extension theme “${extensionTheme.label}”. Select Dark, Light, or System to switch back.`
+                    : theme === 'system'
+                        ? `Following your operating system (${resolvedTheme === 'light' ? 'Light' : 'Dark'}).`
+                        : undefined}
             >
                 <div className="theme-choice" role="radiogroup" aria-label="Theme">
-                    {themeChoices.map(({ id, label, icon }) => (
-                        <button
-                            key={id}
-                            type="button"
-                            role="radio"
-                            aria-checked={theme === id}
-                            className={`theme-choice__card ${theme === id ? 'is-selected' : ''}`}
-                            onClick={() => setTheme(id)}
-                        >
-                            <span className={`theme-choice__preview theme-choice__preview--${id}`} aria-hidden>
-                                <span /><span /><span />
-                            </span>
-                            <span className="theme-choice__label">{icon}{label}</span>
-                        </button>
-                    ))}
+                    {themeChoices.map(({ id, label, icon }) => {
+                        const selected = !extensionTheme && theme === id
+                        return (
+                            <button
+                                key={id}
+                                type="button"
+                                role="radio"
+                                aria-checked={selected}
+                                className={`theme-choice__card ${selected ? 'is-selected' : ''}`}
+                                onClick={() => setTheme(id)}
+                            >
+                                <span className={`theme-choice__preview theme-choice__preview--${id}`} aria-hidden>
+                                    <span /><span /><span />
+                                </span>
+                                <span className="theme-choice__label">{icon}{label}</span>
+                            </button>
+                        )
+                    })}
+                    {extensionThemes.map(extTheme => {
+                        const selected = extensionTheme?.id === extTheme.id
+                        const base = uiThemeBase(extTheme.uiTheme)
+                        return (
+                            <button
+                                key={extTheme.id}
+                                type="button"
+                                role="radio"
+                                aria-checked={selected}
+                                className={`theme-choice__card ${selected ? 'is-selected' : ''}`}
+                                title={extTheme.extensionName ? `Contributed by ${extTheme.extensionName}` : extTheme.extensionId}
+                                onClick={() => void selectExtensionTheme(extTheme)}
+                            >
+                                <span className={`theme-choice__preview theme-choice__preview--${base}`} aria-hidden>
+                                    <span /><span /><span />
+                                </span>
+                                <span className="theme-choice__label">
+                                    <Palette size={14} />
+                                    <span className="truncate">{extTheme.label}</span>
+                                </span>
+                            </button>
+                        )
+                    })}
                 </div>
             </SettingsSection>
 
@@ -178,7 +233,7 @@ export function GeneralSettings() {
                 />
                 <SettingRow
                     label="Auto-save"
-                    description="Automatically write dirty files to disk after a pause or when switching tabs."
+                    description="Automatically write dirty files to disk after a pause or when switching tabs or leaving the window. Auto-save skips Format on save."
                     htmlFor="set-auto-save"
                     control={
                         <Select id="set-auto-save" size="sm" value={autoSave} onChange={e => setEditorPref({ autoSave: e.target.value as AutoSaveMode })}>
@@ -190,7 +245,7 @@ export function GeneralSettings() {
                 />
                 <SettingRow
                     label="Format on save"
-                    description="Run the active language formatter automatically before saving."
+                    description="Run the active language formatter on manual saves (Ctrl+S / Save all). Auto-save skips formatting to avoid disrupting your cursor and undo history."
                     control={<Switch label="Format on save" checked={formatOnSave} onChange={v => setEditorPref({ formatOnSave: v })} />}
                 />
                 <SettingRow

@@ -43,6 +43,7 @@ const runtimeShim = {
     startLSP: noopAsync,
     stopLSP: noopAsync,
     sendLSPRequest: noopAsync,
+    sendLSPNotification: noopAsync,
     getLanguageServers: () => Promise.resolve({ success: true, servers: [] }),
     startDebug: noopAsync,
     stopDebug: noopAsync,
@@ -50,6 +51,8 @@ const runtimeShim = {
     getDebugSessions: () => Promise.resolve({ success: true, sessions: [] }),
     onLanguageServerStarted: noopReturn,
     onLanguageServerStopped: noopReturn,
+    onLanguageServerError: noopReturn,
+    onLSPNotification: noopReturn,
     onDebugSessionStarted: noopReturn,
     onDebugSessionStopped: noopReturn,
     onDebugSessionError: noopReturn,
@@ -89,7 +92,7 @@ const sessionsShim = {
 }
 
 const fsShim = {
-    openFolder: () => Promise.resolve({ success: false, canceled: true }),
+    openFolder: () => Promise.resolve({ success: false, canceled: false, error: 'Opening local folders requires the desktop app.' }),
     setWorkspace: noopAsync,
     readDir: noopAsync,
     stat: noopAsync,
@@ -152,7 +155,7 @@ const updateShim = {
     checkForUpdates: () => Promise.resolve({ success: true, updateAvailable: false }),
     downloadUpdate: noopAsync,
     installUpdate: noopAsync,
-    getVersion: () => Promise.resolve({ success: true, version: '2.0.0-web' }),
+    getVersion: () => Promise.resolve({ success: true, version: '2.1.0-web' }),
     getStatus: () => Promise.resolve({ success: true, checking: false, downloading: false }),
     onUpdateChecking: noopReturn,
     onUpdateAvailable: noopReturn,
@@ -226,6 +229,7 @@ const debugShim = {
     stepOut: noopAsync,
     pause: noopAsync,
     getCallStack: () => Promise.resolve({ success: true, callStack: [] }),
+    getScopes: () => Promise.resolve({ success: true, scopes: [] }),
     getVariables: () => Promise.resolve({ success: true, variables: [] }),
     evaluate: noopAsync,
     addWatch: noopAsync,
@@ -255,6 +259,8 @@ const extensionsShim = {
     list: () => Promise.resolve([]),
     active: () => Promise.resolve([]),
     contributions: () => Promise.resolve({}),
+    executeCommand: noopAsync,
+    loadTheme: () => Promise.resolve(null),
     startHost: noopVoidAsync,
     stopHost: noopVoidAsync,
     download: noopVoidAsync,
@@ -262,6 +268,7 @@ const extensionsShim = {
     onDeactivated: noopReturn,
     onExtensionActivated: noopReturn,
     onExtensionDeactivated: noopReturn,
+    onContributionsChanged: noopReturn,
     onShowMessage: noopReturn,
     removeListeners: noop,
 }
@@ -301,7 +308,7 @@ const windowControlsShim = {
 export const electronAPIShim = {
     platform: 'browser' as const,
     getAppPath: () => Promise.resolve('/'),
-    getVersion: () => Promise.resolve('2.0.0-web'),
+    getVersion: () => Promise.resolve('2.1.0-web'),
     getModelsDirectory: () => Promise.resolve('/models'),
     getHardwareInfo: () => Promise.resolve({
         cpuCores: typeof navigator !== 'undefined' ? (navigator.hardwareConcurrency || 4) : 4,
@@ -360,6 +367,7 @@ export const electronAPIShim = {
     onMaximizedChange: windowControlsShim.onMaximizedChange,
     window: windowControlsShim,
 
+    consumePendingDeepLinks: () => Promise.resolve([] as string[]),
     on: noopReturn,
 
     dialog: {

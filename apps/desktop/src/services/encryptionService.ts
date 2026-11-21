@@ -29,7 +29,12 @@ export interface RoomKeyBundle {
     aesKey: CryptoKey
     hmacKey: CryptoKey
     salt: Uint8Array
+    /** Non-secret 16-byte key-confirmation tag used to verify peers share the same room key. */
+    keyCheck: string
 }
+
+/** Room encryption protocol version (v2.0 = 1/unspecified, v2.1+ deterministic PBKDF2->HKDF = 2). */
+export const ROOM_ENCRYPTION_PROTOCOL_VERSION = 2
 
 type KeyChangeListener = (roomId: string, hasKey: boolean) => void
 
@@ -47,6 +52,7 @@ const KEY_EXPIRATION_MS = 10 * 60 * 1000
 const SALT_DOMAIN = 'kalynt:e2ee:v1:salt:'
 const AES_INFO_PREFIX = 'kalynt:e2ee:v1:aes-gcm:'
 const HMAC_INFO_PREFIX = 'kalynt:e2ee:v1:hmac:'
+const KEY_CHECK_PREFIX = 'kalynt:e2ee:v2:key-check:'
 
 function normalizeRoomKeyId(roomId: string): string {
     return roomId.trim().toLowerCase()
@@ -72,6 +78,7 @@ class EncryptionService {
     private roomKeys: Map<string, CryptoKey> = new Map()
     private roomHmacKeys: Map<string, CryptoKey> = new Map()
     private roomSalts: Map<string, Uint8Array> = new Map()
+    private roomKeyChecks: Map<string, string> = new Map()
     private keyAccessOrder: string[] = [] // Track access order for LRU eviction
     private keyAccessTimes: Map<string, number> = new Map()
     private keyChangeListeners: Set<KeyChangeListener> = new Set()
@@ -101,6 +108,7 @@ class EncryptionService {
                 this.roomKeys.delete(roomId)
                 this.roomHmacKeys.delete(roomId)
                 this.roomSalts.delete(roomId)
+                this.roomKeyChecks.delete(roomId)
                 this.keyAccessTimes.delete(roomId)
                 this.keyAccessOrder = this.keyAccessOrder.filter(id => id !== roomId)
                 this.notifyKeyChange(roomId, false)
@@ -245,7 +253,14 @@ class EncryptionService {
             )
         ])
 
-        return { aesKey, hmacKey, salt }
+        const checkSig = await crypto.subtle.sign(
+            'HMAC',
+            hmacKey,
+            encoder.encode(`${KEY_CHECK_PREFIX}${normalizedRoomId}`)
+        )
+        const keyCheck = this.uint8ArrayToBase64(new Uint8Array(checkSig).slice(0, 16))
+
+        return { aesKey, hmacKey, salt, keyCheck }
     }
 
     // Generate RSA key pair for peer-to-peer key exchange
@@ -358,16 +373,18 @@ class EncryptionService {
                 this.roomKeys.delete(oldestRoomId)
                 this.roomHmacKeys.delete(oldestRoomId)
                 this.roomSalts.delete(oldestRoomId)
+                this.roomKeyChecks.delete(oldestRoomId)
                 this.keyAccessTimes.delete(oldestRoomId)
                 console.log(`[Encryption] Evicted key for room ${oldestRoomId} (LRU)`)
             }
         }
 
         try {
-            const { aesKey, hmacKey, salt } = await this.deriveRoomKeys(keyId, password, existingSalt)
+            const { aesKey, hmacKey, salt, keyCheck } = await this.deriveRoomKeys(keyId, password, existingSalt)
             this.roomKeys.set(keyId, aesKey)
             this.roomHmacKeys.set(keyId, hmacKey)
             this.roomSalts.set(keyId, salt)
+            this.roomKeyChecks.set(keyId, keyCheck)
 
             this.keyAccessOrder = this.keyAccessOrder.filter(id => id !== keyId)
             this.keyAccessOrder.push(keyId)
@@ -410,6 +427,10 @@ class EncryptionService {
         return this.roomHmacKeys.get(keyId)
     }
 
+    getRoomKeyCheck(roomId: string): string | undefined {
+        return this.roomKeyChecks.get(normalizeRoomKeyId(roomId))
+    }
+
     hasRoomKey(roomId: string): boolean {
         return this.roomKeys.has(normalizeRoomKeyId(roomId))
     }
@@ -420,6 +441,7 @@ class EncryptionService {
         this.roomKeys.delete(keyId)
         this.roomHmacKeys.delete(keyId)
         this.roomSalts.delete(keyId)
+        this.roomKeyChecks.delete(keyId)
         this.keyAccessTimes.delete(keyId)
         this.keyAccessOrder = this.keyAccessOrder.filter(id => id !== keyId)
         if (existed) {
@@ -438,6 +460,7 @@ class EncryptionService {
         this.roomKeys.clear()
         this.roomHmacKeys.clear()
         this.roomSalts.clear()
+        this.roomKeyChecks.clear()
         this.keyAccessTimes.clear()
         this.keyAccessOrder = []
         ids.forEach(id => this.notifyKeyChange(id, false))

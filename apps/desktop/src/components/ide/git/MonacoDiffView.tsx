@@ -2,14 +2,16 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  *
  * Lazy-loaded Monaco DiffEditor wrapper so DiffDialog does not pull Monaco into
- * the initial renderer bundle.
+ * the initial renderer bundle. Manages diff editor & model ownership explicitly
+ * so both models are detached (`setModel(null)`) BEFORE disposal and models
+ * belonging to the main CodeEditor are never touched or disposed.
  */
-import { useMemo } from 'react'
-import { DiffEditor } from '@monaco-editor/react'
+import { useEffect, useMemo, useRef } from 'react'
+import type { editor as MonacoEditor } from 'monaco-editor'
 import { useAppStore } from '../../../stores/appStore'
 import { useLayoutStore } from '../../../stores/layoutStore'
-import { Spinner } from '../../ui'
-import { EDITOR_THEMES } from '../editor/monacoSetup'
+import { EDITOR_THEMES, monaco } from '../editor/monacoSetup'
+import { mountManagedDiffEditor, type ManagedDiffController } from './monacoDiffLifecycle'
 
 interface MonacoDiffViewProps {
     original: string
@@ -21,8 +23,12 @@ interface MonacoDiffViewProps {
 export default function MonacoDiffView({ original, modified, language, sideBySide }: MonacoDiffViewProps) {
     const theme = useAppStore(s => s.theme)
     const editorFontSize = useLayoutStore(s => s.editorFontSize)
+    const containerRef = useRef<HTMLDivElement>(null)
+    const controllerRef = useRef<ManagedDiffController<MonacoEditor.IDiffEditorConstructionOptions> | null>(null)
+    const initialRef = useRef({ original, modified, language })
+    initialRef.current = { original, modified, language }
 
-    const options = useMemo(() => ({
+    const options = useMemo<MonacoEditor.IDiffEditorConstructionOptions>(() => ({
         readOnly: true,
         originalEditable: false,
         renderSideBySide: sideBySide,
@@ -39,18 +45,47 @@ export default function MonacoDiffView({ original, modified, language, sideBySid
         overviewRulerBorder: false
     }), [sideBySide, editorFontSize])
 
+    const optionsRef = useRef(options)
+    optionsRef.current = options
+    const themeName = theme === 'light' ? EDITOR_THEMES.light : EDITOR_THEMES.dark
+    const themeRef = useRef(themeName)
+    themeRef.current = themeName
+
+    useEffect(() => {
+        const container = containerRef.current
+        if (!container) return
+        const { original: initOrig, modified: initMod, language: initLang } = initialRef.current
+        const controller = mountManagedDiffEditor(monaco, container, {
+            original: initOrig,
+            modified: initMod,
+            language: initLang,
+            options: optionsRef.current,
+            theme: themeRef.current
+        })
+        controllerRef.current = controller
+        return () => {
+            controllerRef.current = null
+            controller.dispose()
+        }
+    }, [])
+
+    useEffect(() => {
+        controllerRef.current?.updateContent(original, modified, language)
+    }, [original, modified, language])
+
+    useEffect(() => {
+        controllerRef.current?.updateOptions(options)
+    }, [options])
+
+    useEffect(() => {
+        controllerRef.current?.updateTheme(themeName)
+    }, [themeName])
+
     return (
-        <DiffEditor
-            height="100%"
-            width="100%"
-            original={original}
-            modified={modified}
-            language={language}
-            theme={theme === 'light' ? EDITOR_THEMES.light : EDITOR_THEMES.dark}
-            options={options}
-            keepCurrentOriginalModel={false}
-            keepCurrentModifiedModel={false}
-            loading={<div className="git-diff-view__note"><Spinner label="Loading diff editor" /></div>}
+        <div
+            ref={containerRef}
+            className="git-diff-view__editor"
+            style={{ width: '100%', height: '100%' }}
         />
     )
 }

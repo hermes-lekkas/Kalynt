@@ -1,6 +1,6 @@
 {
     "name": "@kalynt/desktop",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "private": true,
     "productName": "Kalynt",
     "author": {
@@ -13,19 +13,20 @@
     "scripts": {
         "test": "node scripts/test.cjs",
         "test:smoke": "electron scripts/smoke.cjs",
+        "rebuild:native": "electron-rebuild --module-dir ../.. --only node-pty",
         "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
         "typecheck:fixtures": "tsc --noEmit -p tsconfig.fixtures.json",
         "dev": "vite",
         "dev:web": "vite --config vite.config.web.ts",
-        "build": "npm run typecheck && vite build && electron-builder",
+        "build": "npm run typecheck && vite build && npm run rebuild:native && electron-builder --publish never",
         "build:vite": "npm run typecheck && vite build",
-        "build:prod": "cross-env NODE_ENV=production npm run typecheck && cross-env NODE_ENV=production vite build && electron-builder",
-        "build:secure": "cross-env NODE_ENV=production npm run typecheck && cross-env NODE_ENV=production vite build && electron-builder",
+        "build:prod": "cross-env NODE_ENV=production npm run typecheck && cross-env NODE_ENV=production vite build && npm run rebuild:native && electron-builder --publish never",
+        "build:secure": "cross-env NODE_ENV=production npm run typecheck && cross-env NODE_ENV=production vite build && npm run rebuild:native && electron-builder --publish never",
         "preview": "vite preview",
         "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron . --no-sandbox\"",
         "electron:dev:linux": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron . --no-sandbox --ozone-platform-hint=auto\"",
-        "electron:build": "vite build && electron-builder",
-        "electron:build:secure": "cross-env NODE_ENV=production vite build && electron-builder"
+        "electron:build": "vite build && npm run rebuild:native && electron-builder --publish never",
+        "electron:build:secure": "cross-env NODE_ENV=production vite build && npm run rebuild:native && electron-builder --publish never"
     },
     "dependencies": {
         "chokidar": "^3.6.0",
@@ -37,6 +38,7 @@
     },
     "devDependencies": {
         "@anthropic-ai/sdk": "^0.135.0",
+        "@electron/rebuild": "^4.0.3",
         "@fontsource-variable/instrument-sans": "^5.3.0",
         "@fontsource-variable/jetbrains-mono": "^5.3.0",
         "@monaco-editor/react": "^4.7.0",
@@ -86,6 +88,7 @@
         "appId": "com.kalynt.app",
         "productName": "Kalynt",
         "electronVersion": "40.6.1",
+        "npmRebuild": false,
         "directories": {
             "output": "release"
         },
@@ -139,7 +142,8 @@
         "mac": {
             "icon": "public/Kalynt.png",
             "target": [
-                "dmg"
+                "dmg",
+                "zip"
             ],
             "artifactName": "${productName}-${version}.${ext}",
             "category": "public.app-category.developer-tools",

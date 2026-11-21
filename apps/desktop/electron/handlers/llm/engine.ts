@@ -89,8 +89,25 @@ function exclusive<T>(fn: () => Promise<T>): Promise<T> {
     return run
 }
 
+/**
+ * On Linux, node-llama-cpp probes native bindings by spawning process.execPath
+ * with ELECTRON_RUN_AS_NODE=1. Ensure the directory holding Electron's shared
+ * libraries (such as libffmpeg.so) is on LD_LIBRARY_PATH so source-build and
+ * unpacked runs do not fail to load the binary probe.
+ */
+function ensureLinuxElectronLibraryPath() {
+    if (process.platform !== 'linux') return
+    const execDir = path.dirname(process.execPath)
+    if (!fs.existsSync(path.join(execDir, 'libffmpeg.so'))) return
+    const current = process.env.LD_LIBRARY_PATH ? process.env.LD_LIBRARY_PATH.split(path.delimiter).filter(Boolean) : []
+    if (!current.includes(execDir)) {
+        process.env.LD_LIBRARY_PATH = [execDir, ...current].join(path.delimiter)
+    }
+}
+
 async function importEngine(): Promise<Engine> {
     if (engine) return engine
+    ensureLinuxElectronLibraryPath()
     // Packaged builds ship node-llama-cpp outside the asar archive.
     const packaged = !process.defaultApp && process.resourcesPath
         ? path.join(process.resourcesPath, 'node_modules', 'node-llama-cpp')

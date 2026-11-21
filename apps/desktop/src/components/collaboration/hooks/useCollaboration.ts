@@ -4,10 +4,16 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useMemberStore } from '../../../stores/memberStore'
 import { useAppStore } from '../../../stores/appStore'
+import { useNotificationStore } from '../../../stores/notificationStore'
 import { p2pService, normalizeRoomId } from '../../../services/p2pService'
 import { memberSyncService } from '../../../services/memberSyncService'
-import { getRoomPassword, setRoomPassword } from '../../../services/roomPasswordStore'
-import { initializeRoomEncryption } from '../../../services/encryptedProvider'
+import {
+  clearRoomPassword,
+  getRoomPassword,
+  setRoomPassword,
+  setVolatileRoomPassword
+} from '../../../services/roomPasswordStore'
+import { disableRoomEncryption, initializeRoomEncryption } from '../../../services/encryptedProvider'
 import { getSpaceDocument } from '../../../hooks/useYjs'
 import type { ActivityItem, ConnectionDiagnostics, CollaborationTab } from '../types'
 import type { WorkspaceRole, MemberPermissions } from '../../../types/permissions'
@@ -53,6 +59,7 @@ export function useCollaboration(spaceId: string | undefined) {
   const spaces = useAppStore(s => s.spaces)
 
   const members = useMemo(() => spaceInfo?.members ?? [], [spaceInfo])
+  const bannedMembers = useMemo(() => spaceInfo?.bannedMembers ?? [], [spaceInfo])
 
   const myRole = useMemo<WorkspaceRole>(() => {
     if (!spaceId || !spaceInfo) return 'member'
@@ -86,10 +93,25 @@ export function useCollaboration(spaceId: string | undefined) {
     return result
   }, [members, searchQuery, showOfflineMembers])
 
+  // Banned members remain locatable regardless of the "Online only" filter so owners/admins can always lift a ban.
+  const filteredBannedMembers = useMemo(() => {
+    if (!searchQuery.trim()) return bannedMembers
+    const query = searchQuery.toLowerCase()
+    return bannedMembers.filter(m =>
+      m.displayName.toLowerCase().includes(query) ||
+      m.userId.toLowerCase().includes(query) ||
+      (m.banReason?.toLowerCase().includes(query) ?? false)
+    )
+  }, [bannedMembers, searchQuery])
+
   const selectedMember = useMemo(() => {
     if (!selectedMemberId) return null
-    return members.find(m => m.userId === selectedMemberId) || null
-  }, [selectedMemberId, members])
+    return (
+      members.find(m => m.userId === selectedMemberId) ||
+      bannedMembers.find(m => m.userId === selectedMemberId) ||
+      null
+    )
+  }, [selectedMemberId, members, bannedMembers])
 
   const updateConnectionStatus = useCallback(() => {
     if (!spaceId || !currentSpace) return
@@ -211,6 +233,7 @@ export function useCollaboration(spaceId: string | undefined) {
           details: `Banned ${target.displayName}${reason ? `: ${reason}` : ''}`,
           metadata: { targetUserId, targetName: target.displayName, reason }
         })
+        useNotificationStore.getState().addNotification(`Banned ${target.displayName}`, 'info')
       }
       return success
     } catch (error) {
@@ -222,20 +245,38 @@ export function useCollaboration(spaceId: string | undefined) {
   const handleUnban = useCallback(async (targetUserId: string) => {
     if (!spaceId) return false
 
+    const target = bannedMembers.find(m => m.userId === targetUserId)
+    const targetName = target?.displayName || targetUserId
+
     try {
-      return await memberSyncService.unbanMember(spaceId, targetUserId)
+      const success = await memberSyncService.unbanMember(spaceId, targetUserId)
+      if (success) {
+        addActivity({
+          type: 'permission',
+          userId: currentUserId,
+          userName: currentUserName,
+          timestamp: Date.now(),
+          details: `Lifted ban for ${targetName}`,
+          metadata: { targetUserId, targetName }
+        })
+        useNotificationStore.getState().addNotification(`Lifted ban for ${targetName}`, 'success')
+        setSelectedMemberId(prev => (prev === targetUserId ? null : prev))
+      }
+      return success
     } catch (error) {
       console.error('[Collaboration] Failed to unban member:', error)
       return false
     }
-  }, [spaceId])
+  }, [spaceId, bannedMembers, currentUserId, currentUserName, addActivity])
 
   // Invite actions — use consistent normalized room code matching JoinSection and p2pService
-  const generateInviteLink = useCallback(() => {
+  const generateInviteLink = useCallback((options?: { passwordProtected?: boolean }) => {
     if (!spaceId || !currentSpace) return null
 
     const normalizedCode = normalizeRoomId(spaceId)
-    const link = p2pService.generateRoomLink(normalizedCode, undefined, currentSpace.name)
+    const link = p2pService.generateRoomLink(normalizedCode, undefined, currentSpace.name, {
+      passwordProtected: options?.passwordProtected
+    })
     return {
       url: link,
       code: normalizedCode,
@@ -243,7 +284,7 @@ export function useCollaboration(spaceId: string | undefined) {
     }
   }, [spaceId, currentSpace])
 
-  // Join workspace (supports both invite links and room codes with consistent normalization)
+  // Join workspace (supports invite links & room codes, verifies password against online peers)
   const handleJoin = useCallback(async (input: string, password?: string) => {
     setIsJoining(true)
     setJoinError(null)
@@ -254,21 +295,64 @@ export function useCollaboration(spaceId: string | undefined) {
 
       let roomId: string
       let spaceName = 'Shared Space'
-      let effectivePassword = password
+      let effectivePassword = password?.trim() ? password : undefined
+      let passwordProtected = false
 
       if (parsed) {
         roomId = normalizeRoomId(parsed.roomId)
         spaceName = parsed.spaceName || 'Shared Space'
-        effectivePassword = password ?? parsed.password
+        effectivePassword = effectivePassword ?? parsed.password
+        passwordProtected = Boolean(parsed.passwordProtected)
       } else if (trimmed.length > 0 && trimmed.length <= 50 && !/\s/.test(trimmed)) {
         roomId = normalizeRoomId(trimmed)
       } else {
         throw new Error('Invalid link or code')
       }
 
+      if (passwordProtected && !effectivePassword) {
+        throw new Error('This workspace requires a room password.')
+      }
+
+      const wasAlreadyCurrent = Boolean(currentSpace && normalizeRoomId(currentSpace.id) === roomId)
+      const doc = getSpaceDocument(roomId)
+
       if (effectivePassword) {
-        await setRoomPassword(roomId, effectivePassword)
         await initializeRoomEncryption(roomId, effectivePassword)
+        if (p2pService.isConnected(roomId)) {
+          await p2pService.reconnect(roomId, effectivePassword, doc)
+        } else {
+          p2pService.connect(roomId, doc, effectivePassword)
+        }
+      } else {
+        disableRoomEncryption(roomId)
+        if (p2pService.isConnected(roomId)) {
+          await p2pService.reconnect(roomId, null, doc)
+        } else {
+          p2pService.connect(roomId, doc, undefined)
+        }
+      }
+
+      const auth = await p2pService.waitForRoomAuth(roomId, 1500)
+      if (auth.status === 'auth-failed' || auth.status === 'password-required') {
+        if (!wasAlreadyCurrent) {
+          p2pService.disconnect(roomId)
+        }
+        disableRoomEncryption(roomId)
+        await clearRoomPassword(roomId)
+        throw new Error(
+          auth.reason ||
+          (auth.status === 'password-required'
+            ? 'This workspace requires a room password.'
+            : 'Incorrect room password. Check the password and try again.')
+        )
+      }
+
+      if (effectivePassword) {
+        try {
+          await setRoomPassword(roomId, effectivePassword)
+        } catch {
+          setVolatileRoomPassword(roomId, effectivePassword)
+        }
       }
 
       const existing = spaces.find(s => normalizeRoomId(s.id) === roomId)
@@ -284,7 +368,7 @@ export function useCollaboration(spaceId: string | undefined) {
     } finally {
       setIsJoining(false)
     }
-  }, [spaces])
+  }, [spaces, currentSpace])
 
   const testConnection = useCallback(async () => {
     try {
@@ -311,6 +395,7 @@ export function useCollaboration(spaceId: string | undefined) {
     recentJoinTimestampsRef.current.clear()
 
     const handlePeersChange = (peers: { id: string; name: string; color: string }[]) => {
+      updateConnectionStatus()
       const now = Date.now()
       peers.forEach(peer => {
         const lastJoined = recentJoinTimestampsRef.current.get(peer.id)
@@ -328,9 +413,11 @@ export function useCollaboration(spaceId: string | undefined) {
     }
 
     return p2pService.addRoomListener(spaceId, {
-      onPeers: handlePeersChange
+      onPeers: handlePeersChange,
+      onProvider: () => updateConnectionStatus(),
+      onAuthChange: () => updateConnectionStatus()
     })
-  }, [spaceId, addActivity])
+  }, [spaceId, addActivity, updateConnectionStatus])
 
   return {
     // State
@@ -340,7 +427,9 @@ export function useCollaboration(spaceId: string | undefined) {
     showOfflineMembers,
     connectionStatus,
     members,
+    bannedMembers,
     filteredMembers,
+    filteredBannedMembers,
     selectedMember,
     peers: connectedPeers,
     activities,

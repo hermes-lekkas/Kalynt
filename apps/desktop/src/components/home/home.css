@@ -45,6 +45,13 @@
     margin-top: var(--sp-2);
 }
 
+.home__browser-note {
+    margin-top: var(--sp-1);
+    color: var(--text-3);
+    font-size: var(--fs-xs);
+    line-height: var(--lh-base);
+}
+
 .home__section {
     display: flex;
     flex-direction: column;

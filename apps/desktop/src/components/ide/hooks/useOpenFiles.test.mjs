@@ -11,7 +11,16 @@ const values = new Map()
 globalThis.localStorage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) }
 globalThis.window = new EventTarget()
 const { outputFiles } = await build({
-    stdin: { contents: "export { useOpenFiles } from './useOpenFiles'; export { useWorkspaceFolderStore } from '../../../stores/workspaceFolderStore';", resolveDir: fileURLToPath(new URL('.', import.meta.url)), loader: 'ts' },
+    stdin: {
+        contents: `
+            export { useOpenFiles } from './useOpenFiles'
+            export { useWorkspaceFolderStore } from '../../../stores/workspaceFolderStore'
+            export { useLayoutStore } from '../../../stores/layoutStore'
+            export { useNotificationStore } from '../../../stores/notificationStore'
+        `,
+        resolveDir: fileURLToPath(new URL('.', import.meta.url)),
+        loader: 'ts'
+    },
     bundle: true, write: false, platform: 'node', format: 'esm',
     banner: { js: `import { createRequire as testCreateRequire } from 'node:module'; const require = testCreateRequire(${JSON.stringify(import.meta.url)});` },
     plugins: [{ name: 'hook-test-boundaries', setup(build) {
@@ -20,17 +29,24 @@ const { outputFiles } = await build({
         build.onLoad({ filter: /editor[/\\]monacoSetup\.ts$/ }, () => ({ contents: 'export const updateWorkspaceExtraLib = (p, c) => { globalThis.extraLibUpdates?.push([p, c]) }', loader: 'ts' }))
     } }]
 })
-const { useOpenFiles, useWorkspaceFolderStore: folders } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString('base64')}`)
+const {
+    useOpenFiles,
+    useWorkspaceFolderStore: folders,
+    useLayoutStore: layoutStore,
+    useNotificationStore: notificationStore
+} = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString('base64')}`)
 let instance, current, workspace, disks, recoveries, listeners, decisions, reads, writes, disposed
 const wait = () => new Promise(resolve => setImmediate(resolve))
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r }); return { promise, resolve } }
 function Harness(props) { current = useOpenFiles(props); return null }
-const propsFor = (spaceId, folder) => ({ spaceId, folder, onRevealDirectory() {}, onDisposeModel: file => disposed.push(file) })
-async function mount(paths = ['/project/a.txt']) {
+const propsFor = (spaceId, folder, extra = {}) => ({ spaceId, folder, onRevealDirectory() {}, onDisposeModel: file => disposed.push(file), ...extra })
+async function mount(paths = ['/project/a.txt'], extraProps = {}) {
     const spaceId = crypto.randomUUID()
-    workspace = propsFor(spaceId, '/project')
+    workspace = propsFor(spaceId, '/project', extraProps)
     disks = new Map(paths.map(file => [file, 'original']))
     recoveries = new Map(); listeners = new Set(); decisions = []; reads = []; writes = []; disposed = []
+    layoutStore.setState({ autoSave: 'off', formatOnSave: false })
+    notificationStore.setState({ notifications: [] })
     globalThis.chooseTestAction = async () => decisions.shift() ?? 'cancel'
     window.electronAPI = {
         platform: 'linux',
@@ -204,4 +220,116 @@ test('saving or externally updating a TypeScript file updates Monaco extraLib li
         ['/project/app.ts', 'export const x = 1\n'],
         ['/project/app.ts', 'export const x = 2\n']
     ])
+})
+
+test('QA-17: manual save formats when formatOnSave is enabled, while afterDelay and onFocusChange auto-save skip formatting', async () => {
+    const formattedPaths = []
+    await mount(['/project/app.ts', '/project/other.ts'], {
+        onFormatBeforeSave: async filePath => {
+            formattedPaths.push(filePath)
+            const currentFile = current.files.find(f => f.path === filePath)
+            if (currentFile) {
+                current.updateContent(filePath, currentFile.content.trim() + ';\n')
+            }
+        }
+    })
+    await act(async () => { layoutStore.setState({ formatOnSave: true }) })
+
+    // 1. Manual save runs formatter and writes formatted output.
+    await act(async () => current.updateContent('/project/app.ts', 'const x=1'))
+    await act(async () => { assert.equal(await current.saveFile('/project/app.ts'), true); await wait() })
+    assert.deepEqual(formattedPaths, ['/project/app.ts'])
+    assert.equal(disks.get('/project/app.ts'), 'const x=1;\n')
+
+    // 2. Auto-save onFocusChange (tab switch + window blur) writes unformatted and skips formatter.
+    await act(async () => { layoutStore.setState({ autoSave: 'onFocusChange', formatOnSave: true }) })
+    await act(async () => current.updateContent('/project/app.ts', 'const y=2'))
+    await act(async () => { current.setActivePath('/project/other.ts'); await wait(); await wait() })
+    assert.equal(disks.get('/project/app.ts'), 'const y=2')
+    assert.deepEqual(formattedPaths, ['/project/app.ts'])
+
+    await act(async () => current.updateContent('/project/other.ts', 'const z=3'))
+    await act(async () => { window.dispatchEvent(new Event('blur')); await wait(); await wait() })
+    assert.equal(disks.get('/project/other.ts'), 'const z=3')
+    assert.deepEqual(formattedPaths, ['/project/app.ts'])
+
+    // 3. Auto-save afterDelay writes unformatted after delay and skips formatter.
+    await act(async () => { layoutStore.setState({ autoSave: 'afterDelay', formatOnSave: true }) })
+    await act(async () => current.updateContent('/project/other.ts', 'const w=4'))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 1150)); await wait() })
+    assert.equal(disks.get('/project/other.ts'), 'const w=4')
+    assert.deepEqual(formattedPaths, ['/project/app.ts'])
+})
+
+test('QA-17: formatter failure warns and saves unformatted without data loss; cancellation aborts cleanly', async () => {
+    let mode = 'fail'
+    const gate = deferred()
+    await mount(['/project/app.ts'], {
+        onFormatBeforeSave: async () => {
+            if (mode === 'fail') throw new Error('Prettier crashed')
+            if (mode === 'canceled-in-place') {
+                const err = new Error('Canceled')
+                err.name = 'Canceled'
+                throw err
+            }
+            if (mode === 'wait-for-switch') {
+                await gate.promise
+            }
+        }
+    })
+    await act(async () => { layoutStore.setState({ formatOnSave: true }) })
+
+    // Real formatter failure: warns user and saves unformatted content with zero data loss.
+    await act(async () => current.updateContent('/project/app.ts', 'const unformatted=1'))
+    await act(async () => { assert.equal(await current.saveFile('/project/app.ts'), true); await wait() })
+    assert.equal(disks.get('/project/app.ts'), 'const unformatted=1')
+    assert.equal(current.files[0].isDirty, false)
+    assert.ok(
+        notificationStore.getState().notifications.some(n => n.type === 'warning' && n.message.includes('Prettier crashed')),
+        'expected warning notification for formatter failure'
+    )
+
+    // Normal cancellation during format (e.g. Monaco Canceled): saves without warning toast.
+    notificationStore.setState({ notifications: [] })
+    mode = 'canceled-in-place'
+    await act(async () => current.updateContent('/project/app.ts', 'const afterCancel=2'))
+    await act(async () => { assert.equal(await current.saveFile('/project/app.ts'), true); await wait() })
+    assert.equal(disks.get('/project/app.ts'), 'const afterCancel=2')
+    assert.equal(notificationStore.getState().notifications.length, 0)
+
+    // Workspace switch while format is awaiting cancels the save without writing to disk.
+    mode = 'wait-for-switch'
+    await act(async () => current.updateContent('/project/app.ts', 'const staleEdit=3'))
+    let pendingSave
+    await act(async () => { pendingSave = current.saveFile('/project/app.ts'); await wait() })
+    await act(async () => { instance.update(React.createElement(Harness, propsFor(crypto.randomUUID(), '/other'))); await wait() })
+    await act(async () => { gate.resolve(); assert.equal(await pendingSave, false) })
+    assert.equal(disks.get('/project/app.ts'), 'const afterCancel=2')
+})
+
+test('QA-17: concurrent disk change during format-on-save preserves disk until resolved', async () => {
+    await mount(['/project/app.ts'], {
+        onFormatBeforeSave: async filePath => {
+            const currentFile = current.files.find(f => f.path === filePath)
+            if (currentFile) {
+                current.updateContent(filePath, currentFile.content + ' /* formatted */')
+            }
+            // Simulate another tool modifying the file on disk while formatting ran.
+            disks.set(filePath, 'external tool edit')
+        }
+    })
+    await act(async () => { layoutStore.setState({ formatOnSave: true }) })
+    await act(async () => current.updateContent('/project/app.ts', 'const x = 1'))
+
+    // Cancel preserves disk content and keeps buffer dirty.
+    decisions.push('cancel')
+    await act(async () => { assert.equal(await current.saveFile('/project/app.ts'), false); await wait() })
+    assert.equal(disks.get('/project/app.ts'), 'external tool edit')
+    assert.equal(current.files[0].isDirty, true)
+
+    // Overwrite writes the formatted buffer explicitly.
+    decisions.push('overwrite')
+    await act(async () => { assert.equal(await current.saveFile('/project/app.ts'), true); await wait() })
+    assert.equal(disks.get('/project/app.ts'), 'const x = 1 /* formatted */ /* formatted */')
+    assert.equal(current.files[0].isDirty, false)
 })

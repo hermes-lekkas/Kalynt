@@ -47,10 +47,21 @@ let currentWorkspacePath: string | null = null
 // Built-in P2P signaling server handle
 let signalingServer: SignalingServerHandle | null = null
 
+// Deep links received at launch (argv / macOS open-url) or before the renderer mounts.
+const pendingDeepLinks: string[] = []
+let rendererDeepLinkReady = false
+
 // SECURITY: Deep link validation to prevent URL-based attacks
 // Only allow safe paths that match expected patterns
 function validateDeepLink(link: string): string | null {
     try {
+        // Reject raw path traversal sequences before WHATWG URL normalization collapses `/../`
+        const rawBeforeQueryOrHash = link.split(/[?#]/)[0]
+        if (rawBeforeQueryOrHash.includes('..')) {
+            console.warn('[Main] Invalid deep link path traversal:', link)
+            return null
+        }
+
         const url = new URL(link)
 
         // Must be kalynt:// protocol
@@ -59,20 +70,26 @@ function validateDeepLink(link: string): string | null {
             return null
         }
 
-        // Validate pathname: only allow alphanumeric, hyphens, underscores, slashes
-        // Prevent path traversal and special characters
-        const pathPattern = /^\/[a-zA-Z0-9_\-/]*$/
-        if (!pathPattern.test(url.pathname) || url.pathname.includes('..')) {
+        // Only allow supported actions (currently join/<roomId>)
+        if (url.hostname !== 'join') {
+            console.warn('[Main] Invalid deep link host:', url.hostname)
+            return null
+        }
+
+        // Validate pathname: only allow alphanumeric, hyphens, underscores across path segments and require a room id
+        const segmentPattern = /^[a-zA-Z0-9_-]{1,64}$/
+        const segments = url.pathname.split('/').filter(Boolean)
+        if (!url.pathname.startsWith('/') || segments.length === 0 || !segments.every(seg => segmentPattern.test(seg)) || url.pathname.includes('..')) {
             console.warn('[Main] Invalid deep link path:', url.pathname)
             return null
         }
 
-        // Validate query params: block dangerous patterns
+        // Validate query and fragment params: block dangerous patterns
         const dangerousPatterns = ['javascript:', 'data:', 'file:', '<script', 'onerror']
-        const searchLower = url.search.toLowerCase()
+        const inspect = `${url.search}${url.hash}`.toLowerCase()
         for (const pattern of dangerousPatterns) {
-            if (searchLower.includes(pattern)) {
-                console.warn('[Main] Dangerous pattern in deep link query:', pattern)
+            if (inspect.includes(pattern)) {
+                console.warn('[Main] Dangerous pattern in deep link params:', pattern)
                 return null
             }
         }
@@ -82,6 +99,25 @@ function validateDeepLink(link: string): string | null {
         console.warn('[Main] Failed to parse deep link:', e)
         return null
     }
+}
+
+function deliverOrQueueDeepLink(rawUrl: string): boolean {
+    const validated = validateDeepLink(rawUrl)
+    if (!validated) return false
+
+    if (rendererDeepLinkReady && mainWindow && !mainWindow.isDestroyed()) {
+        sendToWindow(mainWindow, 'deep-link', validated)
+        return true
+    }
+
+    if (!pendingDeepLinks.includes(validated)) {
+        pendingDeepLinks.push(validated)
+    }
+    return true
+}
+
+function extractDeepLinkFromArgv(argv: string[]): string | undefined {
+    return argv.find(arg => typeof arg === 'string' && arg.startsWith('kalynt://'))
 }
 
 // Hardware Acceleration: Enable by default for better UI performance. 
@@ -226,6 +262,12 @@ function registerAllHandlers() {
     // Extension system
     registerExtensionHandlers()
 
+    // Deep links queued during cold start or macOS open-url before renderer mounted
+    ipcMain.handle('deep-link:consume', () => {
+        rendererDeepLinkReady = true
+        return pendingDeepLinks.splice(0, pendingDeepLinks.length)
+    })
+
     // Window controls
     ipcMain.handle('minimize-window', () => {
         if (mainWindow && !mainWindow.isDestroyed()) {
@@ -276,10 +318,17 @@ function registerExtensionHandlers() {
 
 function attachMainWindow(win: BrowserWindowType) {
     mainWindow = win
+    rendererDeepLinkReady = false
     nativeHelperService.setMainWindow(win)
+    win.webContents.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
+        if (isMainFrame) {
+            rendererDeepLinkReady = false
+        }
+    })
     win.on('closed', () => {
         if (mainWindow === win) {
             mainWindow = null
+            rendererDeepLinkReady = false
             nativeHelperService.setMainWindow(null)
         }
     })
@@ -301,20 +350,22 @@ const gotTheLock = app.requestSingleInstanceLock()
 if (!gotTheLock) {
     app.quit()
 } else {
+    const startupDeepLink = extractDeepLinkFromArgv(process.argv.slice(1))
+    if (startupDeepLink) {
+        deliverOrQueueDeepLink(startupDeepLink)
+    }
+
     app.on('second-instance', (_event, commandLine, _workingDirectory) => {
         // Someone tried to run a second instance, we should focus our window.
-        if (mainWindow) {
+        if (mainWindow && !mainWindow.isDestroyed()) {
             if (mainWindow.isMinimized()) mainWindow.restore()
             mainWindow.focus()
+        }
 
-            // Handle deep link on Windows/Linux
-            const deepLink = commandLine.find((arg) => arg.startsWith('kalynt://'))
-            if (deepLink) {
-                const validatedLink = validateDeepLink(deepLink)
-                if (validatedLink) {
-                    sendToWindow(mainWindow, 'deep-link', validatedLink)
-                }
-            }
+        // Handle deep link on Windows/Linux (deliver immediately or queue if renderer isn't ready yet)
+        const deepLink = extractDeepLinkFromArgv(commandLine)
+        if (deepLink) {
+            deliverOrQueueDeepLink(deepLink)
         }
     })
 
@@ -368,17 +419,14 @@ if (!gotTheLock) {
     })
 }
 
-// Handle deep link on macOS
+// Handle deep link on macOS (may arrive before window or renderer is ready)
 app.on('open-url', (event, url) => {
     event.preventDefault()
-    if (mainWindow) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
         if (mainWindow.isMinimized()) mainWindow.restore()
         mainWindow.focus()
-        const validatedLink = validateDeepLink(url)
-        if (validatedLink) {
-            sendToWindow(mainWindow, 'deep-link', validatedLink)
-        }
     }
+    deliverOrQueueDeepLink(url)
 })
 
 // Stop everything Kalynt started before quitting, so no shell, program,

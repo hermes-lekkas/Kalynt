@@ -237,6 +237,8 @@ export function registerUpdateHandlers(
                 userFriendlyError = 'GitHub token is invalid or expired.'
             } else if (errorMessage.includes('ENOTFOUND') || errorMessage.includes('network')) {
                 userFriendlyError = 'Network error. Please check your internet connection.'
+            } else if (process.platform === 'darwin' && /code signature|could not find|zip/i.test(errorMessage)) {
+                userFriendlyError = 'Automatic macOS updates require a signed release ZIP. Download the latest .dmg installer manually from GitHub Releases.'
             }
 
             return {

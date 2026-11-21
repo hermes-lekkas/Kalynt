@@ -99,6 +99,8 @@ export const platformApi = {
         list: () => ipcRenderer.invoke('extensions:list'),
         active: () => ipcRenderer.invoke('extensions:active'),
         contributions: () => ipcRenderer.invoke('extensions:contributions'),
+        executeCommand: (command: string, ...args: unknown[]) => ipcRenderer.invoke('extensions:execute-command', command, args),
+        loadTheme: (extensionId: string, themeId: string) => ipcRenderer.invoke('extensions:load-theme', extensionId, themeId),
         startHost: () => ipcRenderer.invoke('extensions:start-host'),
         stopHost: () => ipcRenderer.invoke('extensions:stop-host'),
         download: (url: string, targetPath: string) => ipcRenderer.invoke('extensions:download', url, targetPath),
@@ -115,12 +117,16 @@ export const platformApi = {
         onExtensionDeactivated: (callback: (data: { id: string }) => void) => {
             return subscribe('extension:deactivated', callback)
         },
+        onContributionsChanged: (callback: () => void) => {
+            return subscribe('extension:contributions-changed', () => callback())
+        },
         onShowMessage: (callback: (data: { type: string; message: string }) => void) => {
             return subscribe('extension:show-message', callback)
         },
         removeListeners: () => {
             ipcRenderer.removeAllListeners('extension:activated')
             ipcRenderer.removeAllListeners('extension:deactivated')
+            ipcRenderer.removeAllListeners('extension:contributions-changed')
             ipcRenderer.removeAllListeners('extension:show-message')
         }
     },
@@ -146,12 +152,14 @@ export const platformApi = {
     // ==========================================
     // Generic IPC listener for allowlisted events
     // ==========================================
+    consumePendingDeepLinks: (): Promise<string[]> => ipcRenderer.invoke('deep-link:consume'),
     on: (channel: string, callback: (...args: any[]) => void) => {
         const validChannels = [
             'deep-link',
             'window:maximized-changed',
             'extension:activated',
             'extension:deactivated',
+            'extension:contributions-changed',
             'extension:show-message',
             'performance:request-gc',
             'performance:suspend-background-tasks',

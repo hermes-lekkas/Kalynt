@@ -134,6 +134,72 @@ export async function findBinary(name: string, workspacePath?: string | null): P
 }
 
 /**
+ * Resolves a usable Python executable consistently across code execution,
+ * debugging, and language servers.
+ * Order: explicit configured path -> workspace virtualenv (.venv/venv) ->
+ * active VIRTUAL_ENV -> Kalynt-managed/PATH python3 -> python (or python -> py on Windows).
+ */
+export async function resolvePythonExecutable(
+    workspacePath?: string | null,
+    preferred?: string | null
+): Promise<string | null> {
+    const isExecutable = async (p: string): Promise<boolean> => {
+        if (!p || isStoreStub(p)) return false
+        try {
+            const stat = await fs.promises.stat(p)
+            if (!stat.isFile()) return false
+            if (!isWindows) {
+                await fs.promises.access(p, fs.constants.X_OK)
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    if (preferred && typeof preferred === 'string' && preferred.trim()) {
+        const trimmed = preferred.trim()
+        if (path.isAbsolute(trimmed) || trimmed.includes(path.sep) || trimmed.includes('/')) {
+            const resolved = workspacePath && !path.isAbsolute(trimmed)
+                ? path.resolve(workspacePath, trimmed)
+                : trimmed
+            if (await isExecutable(resolved)) return resolved
+        } else {
+            const found = await findBinary(trimmed, workspacePath)
+            if (found) return found
+        }
+    }
+
+    const venvCandidates = (rootDir: string): string[] => (
+        isWindows
+            ? [path.join(rootDir, 'Scripts', 'python.exe'), path.join(rootDir, 'python.exe')]
+            : [path.join(rootDir, 'bin', 'python3'), path.join(rootDir, 'bin', 'python')]
+    )
+
+    if (workspacePath) {
+        for (const venvDir of ['.venv', 'venv', '.virtualenv', 'env']) {
+            for (const candidate of venvCandidates(path.join(workspacePath, venvDir))) {
+                if (await isExecutable(candidate)) return candidate
+            }
+        }
+    }
+
+    if (process.env.VIRTUAL_ENV) {
+        for (const candidate of venvCandidates(process.env.VIRTUAL_ENV)) {
+            if (await isExecutable(candidate)) return candidate
+        }
+    }
+
+    const order = isWindows ? ['python', 'python3', 'py'] : ['python3', 'python']
+    for (const name of order) {
+        const found = await findBinary(name, workspacePath)
+        if (found) return found
+    }
+
+    return null
+}
+
+/**
  * Windows runs .cmd/.bat files through cmd.exe when spawning without a shell.
  * The arguments are escaped for cmd.exe, so pass windowsVerbatimArguments on to spawn.
  */

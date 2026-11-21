@@ -1,6 +1,6 @@
 {
     "name": "kalynt",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "private": true,
     "description": "Serverless P2P Team Collaboration Platform",
     "workspaces": [
@@ -33,7 +33,7 @@
         "typescript": "5.7.3"
     },
     "engines": {
-        "node": ">=20.0.0",
+        "node": ">=22.12.0",
         "npm": ">=10.0.0"
     },
     "overrides": {

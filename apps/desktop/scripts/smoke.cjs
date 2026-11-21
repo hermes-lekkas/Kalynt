@@ -26,6 +26,9 @@ if (process.env.KALYNT_SMOKE_RESOURCES) {
     for (const file of [...bundles, 'dist/index.html']) {
         assert.deepEqual(asar.extractFile(path.join(resources, 'app.asar'), file), fs.readFileSync(path.join(desktop, file)), `Packaged bundle mismatch: ${file}`)
     }
+    const expectedVersion = JSON.parse(fs.readFileSync(path.join(desktop, 'package.json'), 'utf8')).version
+    const packagedPkg = JSON.parse(asar.extractFile(path.join(resources, 'app.asar'), 'package.json').toString('utf8'))
+    assert.equal(packagedPkg.version, expectedVersion, `Packaged version mismatch: ${packagedPkg.version} !== ${expectedVersion}`)
     Object.defineProperty(process, 'resourcesPath', { value: resources, configurable: true })
     process.defaultApp = false
 }
@@ -122,14 +125,17 @@ async function run() {
     await check('PTY terminal spawn, output, resize and kill', async () => {
         await window.webContents.executeJavaScript('window.__smokeOutput = ""; window.__smokeOff = window.electronAPI.terminal.onData(e => { if (e.id === "smoke") window.__smokeOutput += e.data }); void 0')
         ok(await call('terminal.spawn', { id: 'smoke', cwd: workspace, cols: 80, rows: 24 }))
-        assert.equal(await call('terminal.resize', { id: 'smoke', cols: 100, rows: 30 }), true)
-        assert.equal(await call('terminal.write', { id: 'smoke', data: 'node -e "console.log(\'KALYNT_\' + \'SMOKE_OK\')"\r' }), true)
+        ok(await call('terminal.resize', { id: 'smoke', cols: 100, rows: 30 }))
+        ok(await call('terminal.write', { id: 'smoke', data: 'node -e "console.log(\'KALYNT_\' + \'SMOKE_OK\')"\r' }))
         for (let i = 0; i < 30; i++) {
             if (await window.webContents.executeJavaScript('window.__smokeOutput.includes("KALYNT_SMOKE_OK")')) break
             await delay(100)
         }
         assert.equal(await window.webContents.executeJavaScript('window.__smokeOutput.includes("KALYNT_SMOKE_OK")'), true)
-        assert.equal(await call('terminal.kill', 'smoke'), true)
+        ok(await call('terminal.kill', 'smoke'))
+        assert.equal((await call('terminal.resize', { id: 'missing-smoke-pty', cols: 80, rows: 24 }))?.success, false)
+        assert.equal((await call('terminal.write', { id: 'missing-smoke-pty', data: 'noop\r' }))?.success, false)
+        assert.equal((await call('terminal.kill', 'missing-smoke-pty'))?.success, false)
         await window.webContents.executeJavaScript('window.__smokeOff()')
     })
     await check('run a real process', async () => {

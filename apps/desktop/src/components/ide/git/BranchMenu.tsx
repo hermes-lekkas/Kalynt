@@ -33,17 +33,14 @@ export function BranchMenu({ git, canEdit: canEditProp }: { git: GitApi; canEdit
     const [open, setOpen] = useState(false)
     const [query, setQuery] = useState('')
 
-    const { local, remote, localSet, remoteShortCounts } = useMemo(() => {
+    const { local, remote } = useMemo(() => {
         const allLocal: string[] = []
         const allRemote: RemoteEntry[] = []
-        const shortCounts = new Map<string, number>()
 
         for (const b of git.branches) {
             if (b.startsWith('remotes/')) {
                 if (b.endsWith('/HEAD')) continue
-                const parsed = parseRemoteBranch(b)
-                allRemote.push(parsed)
-                shortCounts.set(parsed.shortName, (shortCounts.get(parsed.shortName) ?? 0) + 1)
+                allRemote.push(parseRemoteBranch(b))
             } else {
                 allLocal.push(b)
             }
@@ -52,9 +49,7 @@ export function BranchMenu({ git, canEdit: canEditProp }: { git: GitApi; canEdit
         const q = query.trim().toLowerCase()
         return {
             local: q ? allLocal.filter(b => b.toLowerCase().includes(q)) : allLocal,
-            remote: q ? allRemote.filter(r => r.ref.toLowerCase().includes(q)) : allRemote,
-            localSet: new Set(allLocal),
-            remoteShortCounts: shortCounts
+            remote: q ? allRemote.filter(r => r.ref.toLowerCase().includes(q)) : allRemote
         }
     }, [git.branches, query])
 
@@ -84,13 +79,10 @@ export function BranchMenu({ git, canEdit: canEditProp }: { git: GitApi; canEdit
         close()
         if (!canEdit) return
         // Avoid redundant checkout if the active local branch already tracks this exact remote ref.
-        if (git.branch === entry.shortName && git.tracking === entry.ref) return
-        const isAmbiguous = (remoteShortCounts.get(entry.shortName) ?? 0) > 1
-        const hasLocal = localSet.has(entry.shortName)
-        // Use DWIM short name only when unambiguous and no conflicting local branch exists;
-        // otherwise preserve the full `<remote>/<branch>` ref so multi-remote branches never collide.
-        const target = !isAmbiguous && !hasLocal ? entry.shortName : entry.ref
-        git.checkout(target)
+        if (git.tracking === entry.ref) return
+        // Pass the explicit remote ref so main-process checkout creates or switches to a local
+        // tracking branch for this exact remote without ever detaching HEAD.
+        git.checkout(entry.ref, { remoteRef: entry.ref })
     }
 
     return (
@@ -138,7 +130,7 @@ export function BranchMenu({ git, canEdit: canEditProp }: { git: GitApi; canEdit
                             <p className="branch-menu__heading">Remote</p>
                             <ul className="branch-menu__list" aria-label="Remote branches">
                                 {remote.map(entry => {
-                                    const isTracking = git.tracking === entry.ref && git.branch === entry.shortName
+                                    const isTracking = git.tracking === entry.ref
                                     return (
                                         <li key={entry.raw}>
                                             <button

@@ -6,6 +6,21 @@ import * as Y from 'yjs'
 import { WebrtcProvider } from 'y-webrtc'
 import { logger } from '../utils/logger'
 import { p2pLog, securityLog } from './auditLogService'
+import { encryptionService, ROOM_ENCRYPTION_PROTOCOL_VERSION } from './encryptionService'
+
+export type RoomAuthStatus =
+    | 'unencrypted'
+    | 'key-configured'
+    | 'authenticated'
+    | 'auth-failed'
+    | 'password-required'
+    | 'protocol-mismatch'
+
+export interface RoomAuthInfo {
+    status: RoomAuthStatus
+    reason?: string
+    incompatiblePeers: number
+}
 
 export interface PeerInfo {
     id: string
@@ -43,11 +58,15 @@ export interface P2PStats {
 type ConnectionCallback = (peerId: string, connected: boolean) => void
 type SyncCallback = (synced: boolean) => void
 type PeersCallback = (peers: PeerInfo[]) => void
+type ProviderCallback = (provider: WebrtcProvider | null) => void
+type AuthCallback = (auth: RoomAuthInfo) => void
 
 export interface RoomCallbacks {
     onConnection?: ConnectionCallback
     onSync?: SyncCallback
     onPeers?: PeersCallback
+    onProvider?: ProviderCallback
+    onAuthChange?: AuthCallback
 }
 
 interface SafeStorageResult {
@@ -61,6 +80,49 @@ interface SignalingConnLike {
     connected?: boolean
     connect?: () => void
     send?: (msg: Record<string, unknown>) => void
+    on?: (event: string, listener: (msg: Record<string, unknown>) => void) => void
+    off?: (event: string, listener: (msg: Record<string, unknown>) => void) => void
+}
+
+function readVarUint(bytes: Uint8Array, state: { pos: number }): number {
+    let num = 0
+    let mult = 1
+    while (state.pos < bytes.length) {
+        const r = bytes[state.pos++]
+        num += (r & 127) * mult
+        mult *= 128
+        if (r < 128) return num
+    }
+    throw new Error('Unexpected end of varUint')
+}
+
+function readVarBytes(bytes: Uint8Array, state: { pos: number }): Uint8Array {
+    const len = readVarUint(bytes, state)
+    if (state.pos + len > bytes.length) throw new Error('Unexpected end of varBytes')
+    const out = bytes.subarray(state.pos, state.pos + len)
+    state.pos += len
+    return out
+}
+
+async function canDecryptYWebrtcPayload(base64Payload: string, key: CryptoKey): Promise<boolean> {
+    try {
+        const binary = atob(base64Payload)
+        const bytes = new Uint8Array(binary.length)
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+        const cursor = { pos: 0 }
+        const algo = new TextDecoder().decode(readVarBytes(bytes, cursor))
+        if (algo !== 'AES-GCM') return false
+        const iv = readVarBytes(bytes, cursor)
+        const cipher = readVarBytes(bytes, cursor)
+        await crypto.subtle.decrypt(
+            { name: 'AES-GCM', iv: new Uint8Array(iv) },
+            key,
+            new Uint8Array(cipher)
+        )
+        return true
+    } catch {
+        return false
+    }
 }
 
 const TURN_SAFE_STORAGE_KEY = 'kalynt_turn_settings'
@@ -294,6 +356,8 @@ class P2PService {
         latencies: number[]
     }> = new Map()
     private statsCleanups: Map<string, () => void> = new Map()
+    private providerCleanups: Map<string, () => void> = new Map()
+    private roomAuthStates: Map<string, RoomAuthInfo> = new Map()
 
     // Bounded signaling retry tracking per room
     private retryAttempts: Map<string, number> = new Map()
@@ -339,33 +403,45 @@ class P2PService {
 
     /**
      * Subscribe to room events without clobbering other subscribers.
+     * Seeds current peer and authentication state immediately if already connected.
      * Returns an unsubscribe function that removes only this listener.
      */
     addRoomListener(roomId: string, callbacks: RoomCallbacks): () => void {
-        let listeners = this.roomListeners.get(roomId)
+        const key = normalizeRoomId(roomId)
+        let listeners = this.roomListeners.get(key)
         if (!listeners) {
             listeners = new Set()
-            this.roomListeners.set(roomId, listeners)
+            this.roomListeners.set(key, listeners)
         }
         listeners.add(callbacks)
 
+        if (this.providers.has(key)) {
+            try {
+                callbacks.onPeers?.(this.getConnectedPeers(key))
+                callbacks.onAuthChange?.(this.getRoomAuthInfo(key))
+            } catch (err) {
+                console.error(`[P2P] Error seeding room listener for ${key}:`, err)
+            }
+        }
+
         return () => {
-            const current = this.roomListeners.get(roomId)
+            const current = this.roomListeners.get(key)
             if (!current) return
             current.delete(callbacks)
             if (current.size === 0) {
-                this.roomListeners.delete(roomId)
+                this.roomListeners.delete(key)
             }
         }
     }
 
     /** Backwards-compatible single-slot room callback setter. Prefer `addRoomListener`. */
     setRoomCallbacks(roomId: string, callbacks: RoomCallbacks) {
-        if (!callbacks.onConnection && !callbacks.onSync && !callbacks.onPeers) {
-            this.roomCallbacks.delete(roomId)
+        const key = normalizeRoomId(roomId)
+        if (!callbacks.onConnection && !callbacks.onSync && !callbacks.onPeers && !callbacks.onProvider && !callbacks.onAuthChange) {
+            this.roomCallbacks.delete(key)
             return
         }
-        this.roomCallbacks.set(roomId, callbacks)
+        this.roomCallbacks.set(key, callbacks)
     }
 
     // Legacy: set global default callbacks
@@ -378,25 +454,113 @@ class P2PService {
     }
 
     private emitRoomEvent(roomId: string, invoke: (cb: RoomCallbacks) => void): void {
-        const listeners = this.roomListeners.get(roomId)
+        const key = normalizeRoomId(roomId)
+        const listeners = this.roomListeners.get(key)
         if (listeners) {
             listeners.forEach(cb => {
                 try {
                     invoke(cb)
                 } catch (err) {
-                    console.error(`[P2P] Error in room listener for ${roomId}:`, err)
+                    console.error(`[P2P] Error in room listener for ${key}:`, err)
                 }
             })
         }
 
-        const legacy = this.roomCallbacks.get(roomId) || this.roomCallbacks.get('__default__')
+        const legacy = this.roomCallbacks.get(key) || this.roomCallbacks.get('__default__')
         if (legacy) {
             try {
                 invoke(legacy)
             } catch (err) {
-                console.error(`[P2P] Error in legacy room callback for ${roomId}:`, err)
+                console.error(`[P2P] Error in legacy room callback for ${key}:`, err)
             }
         }
+    }
+
+    private setRoomAuthInfo(roomId: string, next: RoomAuthInfo): void {
+        const key = normalizeRoomId(roomId)
+        const prev = this.roomAuthStates.get(key)
+        if (
+            prev &&
+            prev.status === next.status &&
+            prev.reason === next.reason &&
+            prev.incompatiblePeers === next.incompatiblePeers
+        ) {
+            return
+        }
+        this.roomAuthStates.set(key, next)
+        this.emitRoomEvent(key, cb => cb.onAuthChange?.(next))
+    }
+
+    getRoomAuthInfo(roomId: string): RoomAuthInfo {
+        const key = normalizeRoomId(roomId)
+        const stored = this.roomAuthStates.get(key)
+        if (stored) return stored
+        const hasPassword = Boolean(this.roomPasswords.get(key)) || encryptionService.hasRoomKey(key)
+        return {
+            status: hasPassword ? 'key-configured' : 'unencrypted',
+            incompatiblePeers: 0
+        }
+    }
+
+    private evaluateAwarenessAuth(roomId: string, provider: WebrtcProvider): void {
+        const key = normalizeRoomId(roomId)
+        const hasPassword = Boolean(this.roomPasswords.get(key)) || encryptionService.hasRoomKey(key)
+        const localKeyCheck = encryptionService.getRoomKeyCheck(key)
+        const states = provider.awareness.getStates()
+        const localId = provider.awareness.clientID
+
+        let remoteCount = 0
+        let incompatiblePeers = 0
+        let keyMismatch = false
+
+        states.forEach((state, clientId) => {
+            if (clientId === localId || !state) return
+            remoteCount++
+            if (hasPassword) {
+                const proto = (state as { protocol?: { version?: number; encrypted?: boolean; keyCheck?: string } }).protocol
+                if (!proto || proto.version !== ROOM_ENCRYPTION_PROTOCOL_VERSION) {
+                    incompatiblePeers++
+                } else if (proto.encrypted && localKeyCheck && proto.keyCheck && proto.keyCheck !== localKeyCheck) {
+                    keyMismatch = true
+                }
+            }
+        })
+
+        if (remoteCount === 0) {
+            const current = this.roomAuthStates.get(key)
+            // Keep explicit signaling auth failures visible until cleared by reconnect/password change
+            if (current && (current.status === 'auth-failed' || current.status === 'password-required')) {
+                return
+            }
+            this.setRoomAuthInfo(key, {
+                status: hasPassword ? 'key-configured' : 'unencrypted',
+                incompatiblePeers: 0
+            })
+            return
+        }
+
+        if (incompatiblePeers > 0) {
+            this.setRoomAuthInfo(key, {
+                status: 'protocol-mismatch',
+                incompatiblePeers,
+                reason: 'A connected peer is using an older Kalynt 2.0 version with an incompatible encryption protocol. All room members must upgrade to Kalynt 2.1.'
+            })
+            return
+        }
+
+        if (keyMismatch) {
+            this.setRoomAuthInfo(key, {
+                status: 'auth-failed',
+                incompatiblePeers: 0,
+                reason: 'Your room password does not match the online peers.'
+            })
+            return
+        }
+
+        this.setRoomAuthInfo(key, {
+            status: hasPassword ? 'authenticated' : 'unencrypted',
+            incompatiblePeers: 0
+        })
     }
 
     private clearRetryTimer(roomId: string): void {
@@ -486,17 +650,17 @@ class P2PService {
     }
 
     connect(roomId: string, doc: Y.Doc, password?: string): WebrtcProvider | null {
-        if (this.providers.has(roomId)) {
+        const key = normalizeRoomId(roomId)
+        if (this.providers.has(key)) {
             if (password !== undefined) {
-                this.roomPasswords.set(roomId, password)
+                this.roomPasswords.set(key, password)
             }
-            return this.providers.get(roomId)!
+            return this.providers.get(key)!
         }
 
         try {
-            const normalizedRoom = normalizeRoomId(roomId)
-            const roomName = `kalynt-${normalizedRoom}`
-            const connectionPassword = password ?? this.roomPasswords.get(roomId) ?? this.config.password
+            const roomName = `kalynt-${key}`
+            const connectionPassword = password ?? this.roomPasswords.get(key) ?? this.config.password
             const enableBroadcast = this.config.enableBroadcast ?? false
             const iceServers = buildIceServers(this.cachedTurnSettings)
 
@@ -512,19 +676,43 @@ class P2PService {
                 }
             })
 
+            const publishProtocolState = () => {
+                provider.awareness.setLocalStateField('protocol', {
+                    version: ROOM_ENCRYPTION_PROTOCOL_VERSION,
+                    encrypted: Boolean(connectionPassword),
+                    keyCheck: encryptionService.getRoomKeyCheck(key)
+                })
+            }
+
             provider.awareness.setLocalStateField('user', this.localUser)
+            publishProtocolState()
+
+            const unsubKeyChange = encryptionService.onKeyChange((changedRoomId) => {
+                if (this.providers.get(key) !== provider) return
+                if (normalizeRoomId(changedRoomId) === key) {
+                    publishProtocolState()
+                    this.evaluateAwarenessAuth(key, provider)
+                }
+            })
+
+            const awarenessPeerHandler = () => {
+                if (this.providers.get(key) !== provider) return
+                this.updatePeerList(provider, key)
+                this.evaluateAwarenessAuth(key, provider)
+            }
+            provider.awareness.on('change', awarenessPeerHandler)
 
             provider.on('synced', ({ synced }: { synced: boolean }) => {
-                this.emitRoomEvent(roomId, cb => cb.onSync?.(synced))
+                this.emitRoomEvent(key, cb => cb.onSync?.(synced))
                 if (synced) {
-                    p2pLog.connected(roomId, this.getPeerCount(roomId))
+                    p2pLog.connected(key, this.getPeerCount(key))
                 }
             })
 
             provider.on('peers', ({ added, removed }: { added: string[]; removed: string[] }) => {
                 if (added.length > 0) {
-                    this.clearRetryTimer(roomId)
-                    this.retryAttempts.delete(roomId)
+                    this.clearRetryTimer(key)
+                    this.retryAttempts.delete(key)
                 }
 
                 added.forEach(id => {
@@ -533,28 +721,97 @@ class P2PService {
                         securityLog.rateLimitTriggered(id, 'connection')
                         return
                     }
-                    p2pLog.peerJoined(id, roomId)
-                    this.emitRoomEvent(roomId, cb => cb.onConnection?.(id, true))
+                    p2pLog.peerJoined(id, key)
+                    this.emitRoomEvent(key, cb => cb.onConnection?.(id, true))
                 })
                 removed.forEach(id => {
-                    p2pLog.peerLeft(id, roomId)
-                    this.emitRoomEvent(roomId, cb => cb.onConnection?.(id, false))
+                    p2pLog.peerLeft(id, key)
+                    this.emitRoomEvent(key, cb => cb.onConnection?.(id, false))
                 })
-                this.updatePeerList(provider, roomId)
+                this.updatePeerList(provider, key)
+                this.evaluateAwarenessAuth(key, provider)
             })
 
-            this.providers.set(roomId, provider)
-            this.roomPasswords.set(roomId, connectionPassword)
+            // Observe signaling publish frames to distinguish wrong password / missing password from offline peers.
+            const signalingUnsubs: Array<() => void> = []
+            const internal = provider as unknown as {
+                signalingConns?: SignalingConnLike[]
+                key?: Promise<CryptoKey> | null
+            }
+            if (Array.isArray(internal.signalingConns)) {
+                for (const conn of internal.signalingConns) {
+                    if (typeof conn?.on !== 'function') continue
+                    const onMessage = (msg: Record<string, unknown>) => {
+                        if (this.providers.get(key) !== provider) return
+                        if (msg?.type !== 'publish' || msg?.topic !== roomName) return
+                        const data = msg.data
+                        if (!connectionPassword) {
+                            if (typeof data === 'string') {
+                                this.setRoomAuthInfo(key, {
+                                    status: 'password-required',
+                                    incompatiblePeers: 0,
+                                    reason: 'This workspace requires a room password.'
+                                })
+                            }
+                            return
+                        }
+                        if (typeof data === 'string' && internal.key) {
+                            void Promise.resolve(internal.key).then(async cryptoKey => {
+                                if (!cryptoKey || this.providers.get(key) !== provider) return
+                                const ok = await canDecryptYWebrtcPayload(data, cryptoKey)
+                                if (!ok && this.getPeerCount(key) === 0 && this.providers.get(key) === provider) {
+                                    this.setRoomAuthInfo(key, {
+                                        status: 'auth-failed',
+                                        incompatiblePeers: 0,
+                                        reason: 'Incorrect room password. Check the password and try again.'
+                                    })
+                                }
+                            })
+                        } else if (data && typeof data === 'object' && (data as { type?: string }).type === 'announce') {
+                            if (this.getPeerCount(key) === 0) {
+                                this.setRoomAuthInfo(key, {
+                                    status: 'auth-failed',
+                                    incompatiblePeers: 0,
+                                    reason: 'Online peers are not using a room password.'
+                                })
+                            }
+                        }
+                    }
+                    conn.on('message', onMessage)
+                    signalingUnsubs.push(() => conn.off?.('message', onMessage))
+                }
+            }
 
-            this.roomStats.set(roomId, {
+            this.providerCleanups.set(key, () => {
+                unsubKeyChange()
+                try {
+                    provider.awareness.off('change', awarenessPeerHandler)
+                } catch {
+                    // Ignore if already destroyed
+                }
+                for (const off of signalingUnsubs) {
+                    try { off() } catch { /* ignore */ }
+                }
+            })
+
+            this.providers.set(key, provider)
+            this.roomPasswords.set(key, connectionPassword)
+            this.setRoomAuthInfo(key, {
+                status: connectionPassword ? 'key-configured' : 'unencrypted',
+                incompatiblePeers: 0
+            })
+
+            this.roomStats.set(key, {
                 bytesReceived: 0,
                 bytesSent: 0,
                 lastPingTime: Date.now(),
                 latencies: []
             })
 
-            this.setupStatsTracking(provider, roomId)
-            this.scheduleSignalingRetry(roomId, provider, roomName)
+            this.setupStatsTracking(provider, key)
+            this.scheduleSignalingRetry(key, provider, roomName)
+            this.emitRoomEvent(key, cb => cb.onProvider?.(provider))
+            this.updatePeerList(provider, key)
 
             return provider
         } catch (err) {
@@ -564,34 +821,44 @@ class P2PService {
     }
 
     private teardownProvider(roomId: string, options: { preserveListeners: boolean; preservePassword: boolean }): Promise<void> {
-        this.clearRetryTimer(roomId)
+        const key = normalizeRoomId(roomId)
+        this.clearRetryTimer(key)
 
-        const statsCleanup = this.statsCleanups.get(roomId)
-        if (statsCleanup) {
-            statsCleanup()
-            this.statsCleanups.delete(roomId)
+        const providerCleanup = this.providerCleanups.get(key)
+        if (providerCleanup) {
+            providerCleanup()
+            this.providerCleanups.delete(key)
         }
 
-        const provider = this.providers.get(roomId)
+        const statsCleanup = this.statsCleanups.get(key)
+        if (statsCleanup) {
+            statsCleanup()
+            this.statsCleanups.delete(key)
+        }
+
+        const provider = this.providers.get(key)
         let destroyDone: Promise<void> = Promise.resolve()
         if (provider) {
             const keyPromise = (provider as unknown as { key?: PromiseLike<unknown> }).key
             provider.destroy()
-            this.providers.delete(roomId)
-            this.roomStats.delete(roomId)
-            p2pLog.disconnected(roomId)
+            this.providers.delete(key)
+            this.roomStats.delete(key)
+            this.roomAuthStates.delete(key)
+            p2pLog.disconnected(key)
             if (keyPromise) {
                 destroyDone = Promise.resolve(keyPromise).then(() => undefined, () => undefined)
             }
         }
 
-        this.retryAttempts.delete(roomId)
+        this.retryAttempts.delete(key)
         if (!options.preserveListeners) {
-            this.roomCallbacks.delete(roomId)
-            this.roomListeners.delete(roomId)
+            this.roomCallbacks.delete(key)
+            this.roomListeners.delete(key)
+        } else {
+            this.emitRoomEvent(key, cb => cb.onProvider?.(null))
         }
         if (!options.preservePassword) {
-            this.roomPasswords.delete(roomId)
+            this.roomPasswords.delete(key)
         }
 
         return destroyDone
@@ -607,6 +874,8 @@ class P2PService {
         }
         this.retryTimers.forEach(timer => clearTimeout(timer))
         this.retryTimers.clear()
+        this.providerCleanups.forEach(cleanup => cleanup())
+        this.providerCleanups.clear()
         this.statsCleanups.forEach(cleanup => cleanup())
         this.statsCleanups.clear()
         this.providers.clear()
@@ -614,6 +883,7 @@ class P2PService {
         this.roomListeners.clear()
         this.roomPasswords.clear()
         this.roomStats.clear()
+        this.roomAuthStates.clear()
         this.retryAttempts.clear()
     }
 
@@ -625,27 +895,73 @@ class P2PService {
      * the currently active room password.
      */
     async reconnect(roomId: string, fallbackPassword?: string | null, fallbackDoc?: Y.Doc): Promise<WebrtcProvider | null> {
-        const existingProvider = this.providers.get(roomId)
+        const key = normalizeRoomId(roomId)
+        const existingProvider = this.providers.get(key)
         const doc = existingProvider?.doc ?? fallbackDoc
         if (!doc) return null
 
         const password = fallbackPassword === null
             ? undefined
-            : (fallbackPassword ?? this.roomPasswords.get(roomId))
-        await this.teardownProvider(roomId, { preserveListeners: true, preservePassword: fallbackPassword !== null })
+            : (fallbackPassword ?? this.roomPasswords.get(key))
+        await this.teardownProvider(key, { preserveListeners: true, preservePassword: fallbackPassword !== null })
         // Give y-webrtc's async destroy microtask a tick to release the room name
         await new Promise(resolve => setTimeout(resolve, 20))
         if (this.isDestroyed) return null
-        return this.connect(roomId, doc, password)
+        return this.connect(key, doc, password)
+    }
+
+    /**
+     * Briefly wait on an active room connection to see if online peers
+     * authenticate or reject the supplied password. Returns the settled
+     * RoomAuthInfo (may remain 'key-configured' or 'unencrypted' if all peers are offline).
+     */
+    waitForRoomAuth(roomId: string, timeoutMs = 1500): Promise<RoomAuthInfo> {
+        const key = normalizeRoomId(roomId)
+        const current = this.getRoomAuthInfo(key)
+        if (
+            current.status === 'authenticated' ||
+            current.status === 'auth-failed' ||
+            current.status === 'password-required' ||
+            current.status === 'protocol-mismatch'
+        ) {
+            return Promise.resolve(current)
+        }
+
+        return new Promise(resolve => {
+            let done = false
+            const finish = (info: RoomAuthInfo) => {
+                if (done) return
+                done = true
+                clearTimeout(timer)
+                unsub()
+                resolve(info)
+            }
+            const unsub = this.addRoomListener(key, {
+                onAuthChange: (info) => {
+                    if (
+                        info.status === 'authenticated' ||
+                        info.status === 'auth-failed' ||
+                        info.status === 'password-required' ||
+                        info.status === 'protocol-mismatch'
+                    ) {
+                        finish(info)
+                    }
+                }
+            })
+            const timer = setTimeout(() => {
+                finish(this.getRoomAuthInfo(key))
+            }, timeoutMs)
+        })
     }
 
     private updatePeerList(_provider: WebrtcProvider, roomId: string) {
-        const peers = this.getConnectedPeers(roomId)
-        this.emitRoomEvent(roomId, cb => cb.onPeers?.(peers))
+        const key = normalizeRoomId(roomId)
+        const peers = this.getConnectedPeers(key)
+        this.emitRoomEvent(key, cb => cb.onPeers?.(peers))
     }
 
     getConnectedPeers(roomId: string): PeerInfo[] {
-        const provider = this.providers.get(roomId)
+        const provider = this.providers.get(normalizeRoomId(roomId))
         if (!provider) return []
 
         const peers: PeerInfo[] = []
@@ -672,15 +988,15 @@ class P2PService {
     }
 
     isConnected(roomId: string): boolean {
-        return this.providers.has(roomId)
+        return this.providers.has(normalizeRoomId(roomId))
     }
 
     getProvider(roomId: string): WebrtcProvider | undefined {
-        return this.providers.get(roomId)
+        return this.providers.get(normalizeRoomId(roomId))
     }
 
     // SECURITY FIX V-002: Use URL fragment (#) instead of query string (?)
-    generateRoomLink(roomId: string, password?: string, spaceName?: string): string {
+    generateRoomLink(roomId: string, password?: string, spaceName?: string, options?: { passwordProtected?: boolean }): string {
         const normalized = normalizeRoomId(roomId)
         const base = `kalynt://join/${normalized}`
 
@@ -691,6 +1007,9 @@ class P2PService {
         if (spaceName) {
             params.push(`n=${encodeURIComponent(spaceName)}`)
         }
+        if (options?.passwordProtected && !password) {
+            params.push('lock=1')
+        }
 
         if (params.length > 0) {
             return `${base}#${params.join('&')}`
@@ -699,18 +1018,55 @@ class P2PService {
     }
 
     // Parse a room link (supports both kalynt and legacy collabforge)
-    parseRoomLink(link: string): { roomId: string; password?: string; spaceName?: string } | null {
+    parseRoomLink(link: string): { roomId: string; password?: string; spaceName?: string; passwordProtected?: boolean } | null {
+        if (typeof link !== 'string') return null
+        const trimmed = link.trim()
+        if (!trimmed) return null
+
+        const dangerousPatterns = ['javascript:', 'data:', 'file:', '<script', 'onerror']
+        const lower = trimmed.toLowerCase()
+        if (dangerousPatterns.some(pattern => lower.includes(pattern))) {
+            return null
+        }
+
+        // Reject raw path traversal sequences before WHATWG URL normalization collapses `/../`
+        const rawBeforeQueryOrHash = trimmed.split(/[?#]/)[0]
+        if (rawBeforeQueryOrHash.includes('..')) {
+            return null
+        }
+
+        const roomIdPattern = /^[a-zA-Z0-9_-]{1,64}$/
+
         try {
-            const url = new URL(link)
-            const rawRoomId = url.pathname.split('/').pop()
+            const url = new URL(trimmed)
+            if (url.protocol !== 'kalynt:' && url.protocol !== 'collabforge:') {
+                return null
+            }
+            if (url.hostname !== 'join') {
+                return null
+            }
+            if (url.pathname.includes('..')) {
+                return null
+            }
+
+            const segments = url.pathname.split('/').filter(Boolean)
+            if (segments.length !== 1) {
+                return null
+            }
+            const rawRoomId = segments[0]
+            if (!roomIdPattern.test(rawRoomId)) {
+                return null
+            }
 
             let password: string | undefined
             let spaceName: string | undefined
+            let passwordProtected = false
 
             if (url.hash) {
                 const hashParams = new URLSearchParams(url.hash.slice(1))
                 password = hashParams.get('p') || undefined
                 spaceName = hashParams.get('n') || undefined
+                passwordProtected = hashParams.get('lock') === '1'
             }
 
             if (!password) {
@@ -720,35 +1076,41 @@ class P2PService {
                 }
             }
 
-            if (rawRoomId) {
-                return { roomId: normalizeRoomId(rawRoomId), password, spaceName }
+            return {
+                roomId: normalizeRoomId(rawRoomId),
+                password,
+                spaceName,
+                passwordProtected: passwordProtected || Boolean(password)
             }
         } catch (error) {
-            logger.p2p.debug('Failed to parse room link as URL, trying regex', { link, error })
-            const roomMatch = /(?:kalynt|collabforge):\/\/join\/([^?#]+)/.exec(link)
+            logger.p2p.debug('Failed to parse room link as URL, trying regex', { link: trimmed, error })
+            const roomMatch = /^(?:kalynt|collabforge):\/\/join\/([a-zA-Z0-9_-]{1,64})(?:[?#].*)?$/.exec(trimmed)
             if (roomMatch) {
-                const fragmentMatch = /#(?:[^&]*&)*p=([^&]+)/.exec(link)
-                const queryMatch = /[?&]p=([^&#]+)/.exec(link)
-                const nameMatch = /[#&]n=([^&]+)/.exec(link)
+                const hashIndex = trimmed.indexOf('#')
+                const queryIndex = trimmed.indexOf('?')
+                const hashStr = hashIndex >= 0 ? trimmed.slice(hashIndex + 1) : ''
+                const queryStr = queryIndex >= 0
+                    ? trimmed.slice(queryIndex + 1, hashIndex >= 0 && hashIndex > queryIndex ? hashIndex : undefined)
+                    : ''
 
-                let password: string | undefined
-                let spaceName: string | undefined
+                const hashParams = new URLSearchParams(hashStr)
+                const queryParams = new URLSearchParams(queryStr)
 
-                if (fragmentMatch) {
-                    password = decodeURIComponent(fragmentMatch[1])
-                } else if (queryMatch) {
-                    password = decodeURIComponent(queryMatch[1])
-                    logger.p2p.warn('Room link uses insecure query string for password')
+                let password = hashParams.get('p') || undefined
+                if (!password) {
+                    password = queryParams.get('p') || undefined
+                    if (password) {
+                        logger.p2p.warn('Room link uses insecure query string for password')
+                    }
                 }
-
-                if (nameMatch) {
-                    spaceName = decodeURIComponent(nameMatch[1])
-                }
+                const spaceName = hashParams.get('n') || undefined
+                const lockFlag = hashParams.get('lock') === '1'
 
                 return {
                     roomId: normalizeRoomId(roomMatch[1]),
                     password,
-                    spaceName
+                    spaceName,
+                    passwordProtected: lockFlag || Boolean(password)
                 }
             }
         }
@@ -890,13 +1252,14 @@ class P2PService {
     }
 
     getStats(roomId: string): P2PStats {
-        const stats = this.roomStats.get(roomId)
+        const key = normalizeRoomId(roomId)
+        const stats = this.roomStats.get(key)
         const avgLatency = stats && stats.latencies.length > 0
             ? Math.round(stats.latencies.reduce((a, b) => a + b, 0) / stats.latencies.length)
             : 0
 
         return {
-            connectedPeers: this.getPeerCount(roomId),
+            connectedPeers: this.getPeerCount(key),
             totalBytesReceived: stats?.bytesReceived || 0,
             totalBytesSent: stats?.bytesSent || 0,
             averageLatency: avgLatency
@@ -1109,7 +1472,8 @@ class P2PService {
         iceServers: number
         turnEnabled: boolean
     } {
-        const provider = this.providers.get(roomId)
+        const key = normalizeRoomId(roomId)
+        const provider = this.providers.get(key)
         const iceServers = buildIceServers(this.cachedTurnSettings)
         const hasTurn = iceServers.some(server =>
             (typeof server.urls === 'string' ? server.urls : server.urls?.[0])?.startsWith('turn:')
@@ -1117,7 +1481,7 @@ class P2PService {
 
         return {
             connected: !!provider,
-            peerCount: provider ? this.getPeerCount(roomId) : 0,
+            peerCount: provider ? this.getPeerCount(key) : 0,
             signalingState: provider ? 'connected' : 'disconnected',
             iceServers: iceServers.length,
             turnEnabled: hasTurn

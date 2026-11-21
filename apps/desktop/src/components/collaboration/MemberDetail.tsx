@@ -39,6 +39,7 @@ export default function MemberDetail({
     const canManage = canManageRole(currentUserRole, member.role) && !isCurrentUser
     const kickable = canKick(currentUserRole, member.role) && !isCurrentUser
     const bannable = canBan(currentUserRole, member.role) && !isCurrentUser
+    const canLiftBan = (currentUserRole === 'owner' || currentUserRole === 'admin') && !isCurrentUser
 
     const kick = async () => {
         const ok = await confirmAction({
@@ -66,7 +67,11 @@ export default function MemberDetail({
                 <Avatar name={member.displayName} size={44} online={member.isOnline} />
                 <div className="member-detail__titles">
                     <h3>{member.displayName}{isCurrentUser && <span className="member-detail__you"> (you)</span>}</h3>
-                    <p>Joined {new Date(member.joinedAt).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}{member.isOnline ? ', online now' : ''}</p>
+                    <p>
+                        {member.isBanned
+                            ? `User ID: ${member.userId}`
+                            : `Joined ${new Date(member.joinedAt).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}${member.isOnline ? ', online now' : ''}`}
+                    </p>
                 </div>
                 <Badge tone={member.isBanned ? 'danger' : 'neutral'}>
                     {member.isBanned ? 'Banned' : member.role.charAt(0).toUpperCase() + member.role.slice(1)}
@@ -75,10 +80,23 @@ export default function MemberDetail({
 
             {member.isBanned ? (
                 <section className="member-detail__section">
+                    <h4>Ban details</h4>
                     <p className="member-detail__note">
-                        Banned{member.bannedAt ? ` on ${new Date(member.bannedAt).toLocaleDateString()}` : ''}{member.banReason ? `: ${member.banReason}` : '.'}
+                        Banned{member.bannedAt ? ` on ${new Date(member.bannedAt).toLocaleString()}` : ''}{member.bannedBy ? ` by ${member.bannedBy}` : ''}.
                     </p>
-                    {onUnban && bannable && <Button icon={<Unlock size={14} />} onClick={onUnban}>Lift ban</Button>}
+                    {member.banReason && (
+                        <p className="member-detail__note">
+                            Reason: {member.banReason}
+                        </p>
+                    )}
+                    <p className="member-detail__note">
+                        ID: <span className="mono">{member.userId}</span>
+                    </p>
+                    {onUnban && canLiftBan && (
+                        <div className="member-detail__actions">
+                            <Button variant="primary" icon={<Unlock size={14} />} onClick={onUnban}>Lift ban</Button>
+                        </div>
+                    )}
                 </section>
             ) : (
                 <>

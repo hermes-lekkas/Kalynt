@@ -1,21 +1,16 @@
-name: Build & Release
+name: Build Installers
 
 on:
   push:
     branches: [ "main" ]
-  release:
-    types: [published]
+  pull_request:
+    branches: [ "main" ]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Release tag to build (e.g. v1.0.4-beta)'
-        required: true
 
 permissions:
-  contents: write
+  contents: read
 
 env:
-  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   NODE_OPTIONS: '--max-old-space-size=4096'
 
 jobs:
@@ -26,8 +21,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -51,7 +44,7 @@ jobs:
         env:
           CXXFLAGS: '-std=c++20'
           npm_config_cxx: '-std=c++20'
-        run: npx @electron/rebuild
+        run: npm run rebuild:native
 
       - name: Build & Package (Windows)
         working-directory: apps/desktop
@@ -62,13 +55,18 @@ jobs:
           npx tsc
           npx tsc -p tsconfig.node.json
           npx vite build
-          npx electron-builder --win --publish ${{ github.event_name == 'push' && 'never' || 'always' }}
+          npx electron-builder --win --publish never
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-build
-          path: apps/desktop/release/*.exe
+          path: |
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.exe.blockmap
+            apps/desktop/release/latest.yml
+          if-no-files-found: error
+          compression-level: 0
           retention-days: 30
 
   build-macos:
@@ -76,8 +74,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -101,7 +97,7 @@ jobs:
         env:
           CXXFLAGS: '-std=c++20'
           npm_config_cxx: '-std=c++20'
-        run: npx @electron/rebuild
+        run: npm run rebuild:native
 
       - name: Build Swift Native Helper
         working-directory: packages/native-macos
@@ -116,13 +112,20 @@ jobs:
           npx tsc
           npx tsc -p tsconfig.node.json
           npx vite build
-          npx electron-builder --mac --publish ${{ github.event_name == 'push' && 'never' || 'always' }}
+          npx electron-builder --mac --publish never
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
           name: macos-build
-          path: apps/desktop/release/*.dmg
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.dmg.blockmap
+            apps/desktop/release/*.zip
+            apps/desktop/release/*.zip.blockmap
+            apps/desktop/release/latest-mac.yml
+          if-no-files-found: error
+          compression-level: 0
           retention-days: 30
 
   build-linux:
@@ -130,8 +133,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -155,7 +156,7 @@ jobs:
         env:
           CXXFLAGS: '-std=c++20'
           npm_config_cxx: '-std=c++20'
-        run: npx @electron/rebuild
+        run: npm run rebuild:native
 
       - name: Build & Package (Linux)
         working-directory: apps/desktop
@@ -166,7 +167,7 @@ jobs:
           npx tsc
           npx tsc -p tsconfig.node.json
           npx vite build
-          npx electron-builder --linux --publish ${{ github.event_name == 'push' && 'never' || 'always' }}
+          npx electron-builder --linux --publish never
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
@@ -175,4 +176,7 @@ jobs:
           path: |
             apps/desktop/release/*.AppImage
             apps/desktop/release/*.deb
+            apps/desktop/release/latest-linux.yml
+          if-no-files-found: error
+          compression-level: 0
           retention-days: 30

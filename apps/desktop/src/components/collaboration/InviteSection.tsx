@@ -1,30 +1,39 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Check, Copy } from 'lucide-react'
 import { useAppStore } from '../../stores/appStore'
+import { encryptionService } from '../../services/encryptionService'
 import { hasRoomPassword } from '../../services/roomPasswordStore'
 import { Badge, Button, Field, TextInput } from '../ui'
 
 interface InviteSectionProps {
     spaceId: string
-    onGenerateLink: () => { url: string; code: string } | null
+    onGenerateLink: (options?: { passwordProtected?: boolean }) => { url: string; code: string } | null
     onOpenSecurity: () => void
 }
 
 export default function InviteSection({ spaceId, onGenerateLink, onOpenSecurity }: InviteSectionProps) {
     const spaceName = useAppStore(s => s.currentSpace?.name)
-    const [invite] = useState(onGenerateLink)
     const [copied, setCopied] = useState<'link' | 'code' | null>(null)
     // null until secure storage answers, so the callout doesn't flash the wrong state
-    const [protectedRoom, setProtectedRoom] = useState<boolean | null>(null)
+    const [protectedRoom, setProtectedRoom] = useState<boolean | null>(() =>
+        encryptionService.hasRoomKey(spaceId) ? true : null
+    )
 
     useEffect(() => {
         let live = true
-        hasRoomPassword(spaceId).then(value => { if (live) setProtectedRoom(value) })
+        hasRoomPassword(spaceId).then(value => {
+            if (live) setProtectedRoom(value || encryptionService.hasRoomKey(spaceId))
+        })
         return () => { live = false }
     }, [spaceId])
+
+    const invite = useMemo(
+        () => onGenerateLink({ passwordProtected: Boolean(protectedRoom) }),
+        [onGenerateLink, protectedRoom]
+    )
 
     const copy = async (text: string, which: 'link' | 'code') => {
         await navigator.clipboard.writeText(text)

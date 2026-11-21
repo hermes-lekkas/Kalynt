@@ -22,6 +22,13 @@ export type TierType = 'starter' | 'pro' | 'enterprise' | 'beta'
 export type ThemePreference = 'light' | 'dark' | 'system'
 export type ResolvedTheme = 'light' | 'dark'
 
+export interface ExtensionThemeSelection {
+    id: string
+    extensionId: string
+    label: string
+    uiTheme: 'vs' | 'vs-dark' | 'hc-black' | 'hc-light'
+}
+
 export function resolveTheme(theme: ThemePreference): ResolvedTheme {
     if (theme === 'light') return 'light'
     if (theme === 'dark') return 'dark'
@@ -64,6 +71,7 @@ interface AppState {
     settingsTab: string | null
     theme: ThemePreference
     resolvedTheme: ResolvedTheme
+    extensionTheme: ExtensionThemeSelection | null
 
     // Actions
     initialize: () => Promise<void>
@@ -78,6 +86,7 @@ interface AppState {
     setSettingsTab: (tab: string | null) => void
     setTheme: (theme: ThemePreference) => void
     setResolvedTheme: (resolvedTheme: ResolvedTheme) => void
+    setExtensionTheme: (extensionTheme: ExtensionThemeSelection | null) => void
     reorderSpaces: (fromIndex: number, toIndex: number) => void
 
     // API Key actions (now async for safeStorage)
@@ -98,7 +107,7 @@ export const useAppStore = create<AppState>()(
     persist(
         (set, get) => ({
             isInitialized: false,
-            version: '2.0.0',
+            version: '2.1.0',
             spaces: [],
             currentSpace: null,
             apiKeys: {},
@@ -113,12 +122,27 @@ export const useAppStore = create<AppState>()(
             settingsTab: null,
             theme: 'dark',
             resolvedTheme: 'dark',
+            extensionTheme: null,
 
             setStartupStatus: (status) => set({ startupStatus: status }),
             setShowSettings: (show) => set({ showSettings: show }),
             setSettingsTab: (tab) => set({ settingsTab: tab }),
-            setTheme: (theme) => set({ theme, resolvedTheme: resolveTheme(theme) }),
+            setTheme: (theme) => {
+                const resolved = resolveTheme(theme)
+                set({ theme, resolvedTheme: resolved, extensionTheme: null })
+                void import('../services/extensions/themeService').then(({ restoreBuiltinTheme }) => restoreBuiltinTheme(resolved)).catch(() => undefined)
+            },
             setResolvedTheme: (resolvedTheme) => set({ resolvedTheme }),
+            setExtensionTheme: (extensionTheme) => {
+                if (!extensionTheme) {
+                    const resolved = resolveTheme(get().theme)
+                    set({ extensionTheme: null, resolvedTheme: resolved })
+                    void import('../services/extensions/themeService').then(({ restoreBuiltinTheme }) => restoreBuiltinTheme(resolved)).catch(() => undefined)
+                    return
+                }
+                const base: ResolvedTheme = extensionTheme.uiTheme === 'vs' || extensionTheme.uiTheme === 'hc-light' ? 'light' : 'dark'
+                set({ extensionTheme, theme: base, resolvedTheme: base })
+            },
 
             reorderSpaces: (fromIndex, toIndex) => {
                 const { spaces } = get()
@@ -155,6 +179,14 @@ export const useAppStore = create<AppState>()(
                     // Load API keys from secure storage
                     set({ startupStatus: 'Unlocking saved API keys' })
                     await get().loadAPIKeys()
+
+                    // Initialize extension IPC listeners (show-message, contributions) & restore any active extension theme
+                    void import('../services/extensions/themeService')
+                        .then(({ ensureExtensionThemeWatchers, syncActiveExtensionTheme }) => {
+                            ensureExtensionThemeWatchers()
+                            return syncActiveExtensionTheme()
+                        })
+                        .catch(error => logger.general.warn('Failed to synchronize extension theme', error))
                 }
 
                 set({ isInitialized: true, startupStatus: 'Ready' })
@@ -257,7 +289,8 @@ export const useAppStore = create<AppState>()(
                 // Note: apiKeys are stored in safeStorage, not localStorage
                 userName: state.userName,
                 sidebarCollapsed: state.sidebarCollapsed,
-                theme: state.theme
+                theme: state.theme,
+                extensionTheme: state.extensionTheme
             }),
             onRehydrateStorage: () => {
                 return (state, error) => {

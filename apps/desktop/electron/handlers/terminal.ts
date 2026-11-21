@@ -160,6 +160,19 @@ export function registerTerminalHandlers(
         }
     })
 
+    ipc.handle('runtime:sendLSPNotification', async (_event, options) => {
+        try {
+            await terminalService!.languageGateway.sendLSPNotification(
+                options.sessionId,
+                options.method,
+                options.params
+            )
+            return { success: true }
+        } catch (error) {
+            return { success: false, error: error instanceof Error ? error.message : String(error) }
+        }
+    })
+
     ipc.handle('runtime:getLanguageServers', async () => {
         const servers = await terminalService!.languageGateway.getLanguageServers()
         return { success: true, servers }
@@ -355,6 +368,9 @@ function setupEventForwarding(service: TerminalService, getMainWindow: () => Bro
     service.languageGateway.on('language_server_error', (data) => {
         send('runtime:languageServerError', data)
     })
+    service.languageGateway.on('lsp_notification', (data) => {
+        send('runtime:lspNotification', data)
+    })
     service.languageGateway.on('debug_session_started', (data) => {
         send('runtime:debugSessionStarted', data)
     })
@@ -421,6 +437,14 @@ export async function killAllTerminals(): Promise<number> {
         })
     })))
     return terminals.length
+}
+
+/**
+ * Kills every active TaskRunnerService execution and its child process tree.
+ */
+export async function killAllTaskExecutions(): Promise<{ stopped: number; failed: number; errors: string[] }> {
+    if (!terminalService) return { stopped: 0, failed: 0, errors: [] }
+    return terminalService.taskRunner.killAllTaskExecutions()
 }
 
 /**

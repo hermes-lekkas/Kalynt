@@ -70,11 +70,13 @@ export interface TerminalAPI {
 // Language runtime interface
 export interface RuntimeAPI {
     // Language servers
-    startLSP: (sessionId: string, languageId: string, workspacePath: string, options?: any) => Promise<{ success: boolean; error?: string }>
+    startLSP: (sessionId: string, languageId: string, workspacePath: string, options?: any) => Promise<{ success: boolean; sessionId?: string; error?: string; actionableHint?: string }>
 
     stopLSP: (sessionId: string) => Promise<{ success: boolean; error?: string }>
 
     sendLSPRequest: (sessionId: string, method: string, params: any) => Promise<{ success: boolean; result?: any; error?: string }>
+
+    sendLSPNotification: (sessionId: string, method: string, params?: any) => Promise<{ success: boolean; error?: string }>
 
     getLanguageServers: () => Promise<{ success: boolean; servers?: any[]; error?: string }>
 
@@ -91,6 +93,10 @@ export interface RuntimeAPI {
     onLanguageServerStarted: (callback: (data: { sessionId: string; languageId: string; capabilities: any }) => void) => () => void
 
     onLanguageServerStopped: (callback: (data: { sessionId: string; exitCode: number }) => void) => () => void
+
+    onLanguageServerError?: (callback: (data: { sessionId: string; languageId?: string; error: string; actionableHint?: string }) => void) => () => void
+
+    onLSPNotification: (callback: (data: { sessionId: string; languageId?: string; method: string; params: any }) => void) => () => void
 
     onDebugSessionStarted: (callback: (data: { sessionId: string; languageId: string; port: number; configuration: any }) => void) => () => void
 
